@@ -1,0 +1,65 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "YarmiplayServerTV",
+  "version": "0.1.0",
+  "identifier": "com.yarmiplay.servertv",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "YarmiplayServerTV",
+        "width": 1080,
+        "height": 740,
+        "minWidth": 820,
+        "minHeight": 560,
+        "visible": false,
+        "center": true,
+        "backgroundColor": "#0E1116"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis", "dmg", "app", "deb", "appimage"],
+    "category": "Video",
+    "shortDescription": "Syncplay + Jellyfin server for YarmiplayTV",
+    "longDescription": "Runs a Syncplay server and a Jellyfin server from the system tray, with optional UPnP port forwarding and Let's Encrypt certificates for a DuckDNS domain.",
+    "copyright": "© 2026 Yarmiplay",
+    "publisher": "Yarmiplay",
+    "license": "GPL-3.0-or-later",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "wix": {
+        "upgradeCode": "6f3e2b1c-8d4a-4f7e-9b2c-5a1d3e7f9c42"
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    }
+  }
+}

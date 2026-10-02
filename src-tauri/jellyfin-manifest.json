@@ -1,0 +1,85 @@
+{
+  "jellyfin": "12.1",
+  "ffmpeg": "8.1.3-1",
+  "platforms": {
+    "linux-aarch64": {
+      "server": {
+        "url": "https://repo.jellyfin.org/files/server/linux/stable/v12.1/arm64/jellyfin_12.1-arm64.tar.xz",
+        "sha256": "39eba9b231e6d3c297be8c1b43a80c50cc22ec48329474a5e47595e860223e3a",
+        "size": 84187524,
+        "format": "tar.xz"
+      },
+      "ffmpeg": {
+        "url": "https://repo.jellyfin.org/files/ffmpeg/linux/8.x/8.1.3-1/arm64/jellyfin-ffmpeg_8.1.3-1_portable_linuxarm64-gpl.tar.xz",
+        "sha256": "7bc8e8d0986f7f4693f63e9728570f671f07b6e21c05d5465dd7ce461d1631dc",
+        "size": 54137808,
+        "format": "tar.xz"
+      }
+    },
+    "linux-x86_64": {
+      "server": {
+        "url": "https://repo.jellyfin.org/files/server/linux/stable/v12.1/amd64/jellyfin_12.1-amd64.tar.xz",
+        "sha256": "09e58d1dc3722fb36b5ef0975fe55a65de5c73e8867ef7bbcd7ac81d44e1c59b",
+        "size": 88731316,
+        "format": "tar.xz"
+      },
+      "ffmpeg": {
+        "url": "https://repo.jellyfin.org/files/ffmpeg/linux/8.x/8.1.3-1/amd64/jellyfin-ffmpeg_8.1.3-1_portable_linux64-gpl.tar.xz",
+        "sha256": "b86dc023c64a5a9a410e6e3a938a970460214fae78f31c1553c9f88f1c289b6a",
+        "size": 60368340,
+        "format": "tar.xz"
+      }
+    },
+    "macos-aarch64": {
+      "server": {
+        "url": "https://repo.jellyfin.org/files/server/macos/stable/v12.1/arm64/jellyfin_12.1-arm64.tar.xz",
+        "sha256": "139931bebdc0dd6997d722816b45659e648ffac1b8dae84134373983f005abaf",
+        "size": 85662936,
+        "format": "tar.xz"
+      },
+      "ffmpeg": {
+        "url": "https://repo.jellyfin.org/files/ffmpeg/macos/8.x/8.1.3-1/arm64/jellyfin-ffmpeg_8.1.3-1_portable_macarm64-gpl.tar.xz",
+        "sha256": "22445d7299742749ad2eeb9ce87963d50def0357e45b3e6c7b69987c8365dbf6",
+        "size": 32902204,
+        "format": "tar.xz"
+      }
+    },
+    "macos-x86_64": {
+      "server": {
+        "url": "https://repo.jellyfin.org/files/server/macos/stable/v12.1/amd64/jellyfin_12.1-amd64.tar.xz",
+        "sha256": "74c915d9e198976e70123941a24a8cdd839378a2d685e364e0b6133af9950d5b",
+        "size": 89776692,
+        "format": "tar.xz"
+      },
+      "ffmpeg": {
+        "url": "https://repo.jellyfin.org/files/ffmpeg/macos/8.x/8.1.3-1/x86_64/jellyfin-ffmpeg_8.1.3-1_portable_mac64-gpl.tar.xz",
+        "sha256": "cb2b5c154d49a6b6bfe29fa6c16510e85dcbf60b805764121a167b093d4bb6fb",
+        "size": 37952072,
+        "format": "tar.xz"
+      }
+    },
+    "windows-aarch64": {
+      "server": {
+        "url": "https://repo.jellyfin.org/files/server/windows/stable/v12.1/arm64/jellyfin_12.1-arm64.zip",
+        "sha256": "70d57e9a6ea9746fdfca976d737643b8348c5d5ae11e49e79721e4d96af66afc",
+        "size": 137545334,
+        "format": "zip"
+      },
+      "ffmpeg": {
+        "url": "https://repo.jellyfin.org/files/ffmpeg/windows/8.x/8.1.3-1/winarm64/jellyfin-ffmpeg_8.1.3-1_portable_winarm64-clang-gpl.zip",
+        "sha256": "4118c7046bf3410e342b6cf583ccdae01b940df3c2b3e3f7d329d34569da3283",
+        "size": 55719055,
+        "format": "zip"
+      }
+    },
+    "windows-x86_64": {
+      "server": {
+        "url": "https://repo.jellyfin.org/files/server/windows/stable/v12.1/amd64/jellyfin_12.1-amd64.zip",
+        "sha256": "e6290748a8674885865eb1f307161f8c455ae12a5cb5f9696e42a0162e182085",
+        "size": 208579591,
+        "format": "zip"
+      },
+      "bundled_ffmpeg": "ffmpeg.exe"
+    }
+  }
+}

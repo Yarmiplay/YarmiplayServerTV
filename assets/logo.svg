@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1B2A41"/>
+      <stop offset="1" stop-color="#0E1116"/>
+    </linearGradient>
+  </defs>
+  <rect x="61.44" y="61.44" width="901.12" height="901.12" rx="198.25" fill="url(#tile)" stroke="#FFFFFF" stroke-opacity="0.11" stroke-width="8"/>
+  <!-- YarmiplayTV ic_logo.xml triangles: 108-unit viewport, scaled 1.3x around the centre -->
+  <g transform="translate(512 512) scale(12.3259) translate(-54 -54)">
+    <path d="M30,28 L30,80 L70,54 Z" fill="#3DA5F4"/>
+    <path d="M46,34 L46,74 L78,54 Z" fill="#FFFFFF" fill-opacity="0.8"/>
+  </g>
+  <!-- server badge -->
+  <rect x="616" y="628" width="300" height="290" rx="52" fill="#0E1116" stroke="#3DA5F4" stroke-width="10"/>
+  <g fill="#E8ECF2">
+    <rect x="656" y="672" width="220" height="56" rx="14"/>
+    <rect x="656" y="745" width="220" height="56" rx="14"/>
+    <rect x="656" y="818" width="220" height="56" rx="14"/>
+  </g>
+  <g fill="#4CC38A">
+    <circle cx="838" cy="700" r="12"/>
+    <circle cx="838" cy="773" r="12"/>
+    <circle cx="838" cy="846" r="12"/>
+  </g>
+  <g fill="#212733">
+    <rect x="680" y="692" width="96" height="16" rx="8"/>
+    <rect x="680" y="765" width="96" height="16" rx="8"/>
+    <rect x="680" y="838" width="96" height="16" rx="8"/>
+  </g>
+</svg>

@@ -1,0 +1,18 @@
+node_modules/
+dist/
+_site/
+build/
+target/
+src-tauri/target/
+src-tauri/gen/
+*.log
+.DS_Store
+.vscode/
+.idea/
+
+# Never commit secrets or certificates
+console-settings.json
+acme/
+*.pem
+*.pfx
+.env

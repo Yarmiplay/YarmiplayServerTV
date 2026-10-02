@@ -1,0 +1,145 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Rust unit tests, the UI type check, and two scripted Syncplay clients
+  # (scripts/fake_peer.py, from YarmiplayTV) against the built-in server.
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libdbus-1-dev libxdo-dev libssl-dev build-essential file patchelf
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: UI type check and build
+        run: |
+          npm ci
+          npm run check
+          npm run build
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Syncplay interop
+        run: |
+          (cd src-tauri && cargo build --locked --example syncplay_server)
+          src-tauri/target/debug/examples/syncplay_server 18999 > "$RUNNER_TEMP/server.log" 2>&1 &
+          for i in $(seq 1 30); do nc -z 127.0.0.1 18999 && break; sleep 1; done
+          python scripts/fake_peer.py --host 127.0.0.1 --port 18999 --name Bob --room ci --file A.mkv --size 100 --duration 1000 \
+            --script "wait 4; expect-room paused=false within=10; expect-room position~300 within=12; expect-user Alice file=A.mkv; wait 2; quit" \
+            > "$RUNNER_TEMP/bob.log" 2>&1 &
+          BOB=$!
+          sleep 1
+          python scripts/fake_peer.py --host 127.0.0.1 --port 18999 --name Alice --room ci --file A.mkv --size 100 --duration 1000 \
+            --script "wait 2; playlist A.mkv|B.mkv; select 0; ready; play; wait 3; seek 300; wait 8; quit"
+          wait $BOB
+          cat "$RUNNER_TEMP/bob.log"
+          grep -q "RESULT: OK" "$RUNNER_TEMP/bob.log"
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: interop-logs
+          path: ${{ runner.temp }}/*.log
+
+  # Installers for each OS. The download page picks them up by their yarmiplayservertv- artifact names.
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+            args: ""
+            bundle: src-tauri/target/release/bundle
+          - os: macos-latest
+            name: macos
+            args: --target universal-apple-darwin
+            bundle: src-tauri/target/universal-apple-darwin/release/bundle
+          - os: ubuntu-22.04
+            name: linux
+            args: ""
+            bundle: src-tauri/target/release/bundle
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libdbus-1-dev libxdo-dev libssl-dev build-essential file patchelf
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.name }}
+
+      - run: npm ci
+
+      - name: Build the installers
+        run: npx tauri build ${{ matrix.args }}
+
+      - name: Collect
+        run: |
+          mkdir out
+          b="${{ matrix.bundle }}"
+          case "${{ matrix.name }}" in
+            windows) cp "$b"/msi/*.msi "$b"/nsis/*.exe out/ ;;
+            macos) cp "$b"/dmg/*.dmg out/ ;;
+            linux) cp "$b"/deb/*.deb "$b"/appimage/*.AppImage out/ ;;
+          esac
+          ls -l out
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: yarmiplayservertv-${{ matrix.name }}
+          path: out/*
+          if-no-files-found: error
