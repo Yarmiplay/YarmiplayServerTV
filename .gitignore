@@ -13,6 +13,11 @@ src-tauri/gen/
 # Never commit secrets or certificates
 console-settings.json
 acme/
+secrets.json
 *.pem
+*.key
 *.pfx
+*.p12
+*.crt
 .env
+.env.*
