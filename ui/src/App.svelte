@@ -98,12 +98,18 @@
     gap: 10px;
     padding: 0 6px;
   }
+  .brand img {
+    flex-shrink: 0;
+  }
   .title {
+    min-width: 0;
     font-weight: 800;
     font-size: 1.12em;
+    line-height: 1.15;
     letter-spacing: -0.01em;
   }
   .title span {
+    display: block;
     color: var(--accent);
   }
   nav {
