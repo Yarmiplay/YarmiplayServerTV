@@ -2,6 +2,7 @@
   "name": "yarmiplayservertv",
   "private": true,
   "version": "1.0.0",
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,9 +12,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",
-    "@tauri-apps/plugin-autostart": "^2.7.0",
     "@tauri-apps/plugin-clipboard-manager": "^2.4.1",
-    "@tauri-apps/plugin-dialog": "^2.8.1",
     "@tauri-apps/plugin-opener": "^2.7.0"
   },
   "devDependencies": {

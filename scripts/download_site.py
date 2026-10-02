@@ -50,6 +50,7 @@ class Platform:
     title: str
     blurb: str
     steps: list[str]
+    uninstall: str
 
 
 BUILD_FROM_SOURCE = "git clone {repo}\ncd YarmiplayServerTV\nnpm install\nnpx tauri build".format(repo=REPO_URL)
@@ -62,18 +63,18 @@ PLATFORMS = [
     Platform("windows", "Windows", "Windows 10 or 11, 64-bit.", [
         WINDOWS_UNSIGNED,
         "YarmiplayServerTV starts in the system tray. Click the tray icon to open the control panel.",
-    ]),
+    ], "Quit the app from the tray, then remove it in <b>Settings &gt; Apps</b>."),
     Platform("macos", "macOS", "macOS 11 or newer, Apple Silicon and Intel.", [
         "Open the disk image and drag YarmiplayServerTV to Applications.",
         "The app isn't notarized yet: the first time, right-click it in Applications and choose <b>Open</b>, "
         "then <b>Open</b> again. If macOS says the app is damaged, run "
         "<code>xattr -cr /Applications/YarmiplayServerTV.app</code> in Terminal.",
-    ]),
+    ], "Quit the app from the menu bar, then move it from Applications to the Trash."),
     Platform("linux", "Linux", "64-bit, with a desktop that shows tray icons.", [
         "Install the .deb with <code>sudo apt install ./YarmiplayServerTV.deb</code>, or mark the AppImage "
         "executable (<code>chmod +x YarmiplayServerTV.AppImage</code>) and run it.",
         "On GNOME, the AppIndicator extension is needed to see the tray icon.",
-    ]),
+    ], "Quit the app from the tray, then <code>sudo apt remove yarmiplay-server-tv</code>, or delete the AppImage."),
 ]
 
 
@@ -102,6 +103,8 @@ def render_page(downloads, version, built, windows_signed=False):
                             for s in p.steps)
             sums = "".join(f"<div>{html.escape(d.href)}<br><code>{d.sha256}</code></div>" for d in files if d.sha256)
             body = (f'<div class="dl">{buttons}</div><ol>{steps}</ol>'
+                    f'<p class="uninstall"><b>Uninstall:</b> {p.uninstall} Settings and Jellyfin data stay in your '
+                    f'<a href="{REPO_URL}#uninstalling">app-data folder</a>.</p>'
                     + (f"<details><summary>SHA-256</summary>{sums}</details>" if sums else ""))
         else:
             body = (f'<p class="none">No package for this platform yet. Build it from source '
@@ -137,7 +140,8 @@ def render_page(downloads, version, built, windows_signed=False):
           font-size:.8em; font-weight:700; padding:.1em .7em; border-radius:99px; }}
  .card.here .badge {{ display:block; }}
  h2 {{ margin:0 0 .2em; font-size:1.35em; }}
- .blurb, ol, details, .none {{ color:var(--muted); }}
+ .blurb, ol, details, .none, .uninstall {{ color:var(--muted); }}
+ .uninstall {{ font-size:.85em; margin:.6em 0 0; }}
  .blurb {{ margin:0 0 1em; }}
  .dl {{ display:flex; flex-wrap:wrap; gap:.6em; margin-bottom:.8em; }}
  .btn {{ display:inline-flex; flex-direction:column; padding:.6em 1.2em; border-radius:10px; background:var(--accent);

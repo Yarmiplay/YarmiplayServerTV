@@ -99,6 +99,23 @@ per-user app-data folder; **Open data folder** on the dashboard opens it.
 Tokens and passwords never appear in the logs; the **Logs** page shows the app's activity and Jellyfin's
 warnings.
 
+## Uninstalling
+
+1. If you switched on **Start with system**, switch it off first, so no login entry is left behind.
+2. Choose **Quit** in the tray menu. This stops Jellyfin and removes any UPnP port forwards the app made.
+3. Remove the app:
+   - Windows: **Settings > Apps > Installed apps**, then YarmiplayServerTV > **Uninstall**.
+   - macOS: move YarmiplayServerTV from Applications to the Trash.
+   - Linux: `sudo apt remove yarmiplay-server-tv`, or delete the AppImage.
+4. To remove your settings, certificates and Jellyfin (with its library database) too, delete the folders
+   listed in [Where things are stored](#where-things-are-stored). The DuckDNS token and Jellyfin sign-in are
+   kept in the system credential store under `YarmiplayServerTV`; **Remove** next to the DuckDNS token on the
+   Network page and
+   **Sign out** on the Jellyfin page delete them, or remove them in Windows Credential Manager, Keychain Access
+   (macOS) or your Linux keyring app.
+
+Your media folders are never changed or deleted.
+
 ## Building from source
 
 You need [Node.js](https://nodejs.org) 22, [Rust](https://rustup.rs) (stable) and the
@@ -150,8 +167,9 @@ them. Signing needs the repository variable `SIGNPATH_ORGANIZATION_ID` and the s
 SignPath CI user with submitter rights), a SignPath project with the slug `YarmiplayServerTV` linked to the
 GitHub.com trusted build system, its `release-signing` policy, and
 [.github/signpath/artifact-configuration.xml](.github/signpath/artifact-configuration.xml) as its default
-artifact configuration. Without the variable the installers are built but not signed or released. SmartScreen
-may still warn about a newly signed release until it has been downloaded enough.
+artifact configuration. Without the variable the release gets the unsigned installers, and the download page
+keeps offering the ones from `main`. SmartScreen may still warn about a newly signed release until it has been
+downloaded enough.
 
 ## Code signing policy
 
@@ -166,9 +184,19 @@ Only the Windows installers and the YarmiplayServerTV program in them are signed
 the app downloads unmodified Jellyfin releases, as their project publishes them, when you first switch it on.
 
 Privacy: this program will not transfer any information to other networked systems unless specifically
-requested by the user or the person installing or operating it. It runs the servers you switch on, and
-connects only to what the features you enable need: `repo.jellyfin.org` to download Jellyfin, your router for
-UPnP, and DuckDNS, Let's Encrypt and public DNS resolvers (Google, Cloudflare) for DuckDNS and HTTPS.
+requested by the user or the person installing or operating it. There is no telemetry, update check or
+account. Every server and network feature is off until you switch it on, and each one only talks to what it
+needs:
+
+- **Jellyfin:** downloads Jellyfin and ffmpeg from `repo.jellyfin.org` the first time you switch it on.
+  Jellyfin then runs on your computer as its own program; see Jellyfin's documentation for what it does.
+- **UPnP:** asks your router on the local network to add and remove port forwards.
+- **DuckDNS and HTTPS:** sends your DuckDNS token and public IP address to [DuckDNS](https://www.duckdns.org),
+  requests certificates from [Let's Encrypt](https://letsencrypt.org/privacy/) (with the contact email if you
+  enter one), and checks the DNS record through [Google Public DNS](https://developers.google.com/speed/public-dns/privacy)
+  and [Cloudflare DNS](https://developers.cloudflare.com/1.1.1.1/privacy/public-dns-resolver/).
+- **Syncplay server:** people you give the address to connect to it. File names, playback and chat are
+  passed between them and not stored; the app's log on your computer notes who joined and left which room.
 
 ## License
 

@@ -4,7 +4,7 @@ name: Release
 # Windows installers, has them code signed through SignPath (certificate by SignPath Foundation) once an
 # approver accepts the signing request, and attaches them to the tag's GitHub release, where the download page
 # takes them from. Signing needs the variable SIGNPATH_ORGANIZATION_ID and the secret SIGNPATH_API_TOKEN;
-# without them the installers are built but not signed or released.
+# without the variable the unsigned installers are released instead (the download page keeps using main's).
 on:
   push:
     tags: ["v*"]
@@ -90,20 +90,26 @@ jobs:
           retention-days: 7
 
   # Checks the signatures the way Windows does (including the app inside the .msi) and attaches the
-  # installers to the tag's release.
+  # installers to the tag's release. Without SignPath it releases the unsigned installers.
   publish-windows:
     needs: [windows-installers, sign-windows]
+    if: >-
+      always() && needs.windows-installers.result == 'success' &&
+      (needs.sign-windows.result == 'success' || needs.sign-windows.result == 'skipped')
     runs-on: windows-latest
     timeout-minutes: 15
     permissions:
       contents: write
+    env:
+      SIGNED: ${{ needs.sign-windows.result == 'success' }}
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: windows-installers-signed
+          name: ${{ needs.sign-windows.result == 'success' && 'windows-installers-signed' || 'windows-installers-unsigned' }}
           path: signed
 
       - name: Verify the signatures
+        if: env.SIGNED == 'true'
         shell: pwsh
         run: |
           $msi = Get-Item signed\*.msi
@@ -123,12 +129,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.windows-installers.outputs.version }}
         run: |
+          if [ "$SIGNED" = true ]; then
+            signing="Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org)."
+          else
+            signing="These installers aren't code signed yet, so Windows SmartScreen may warn: choose More info, then Run anyway."
+          fi
+          notes="Windows installers for YarmiplayServerTV $VERSION. Other platforms: https://yarmiplay.github.io/YarmiplayServerTV/
+
+          $signing See the [code signing policy](https://github.com/$GITHUB_REPOSITORY#code-signing-policy)."
           if gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" signed/* -R "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --notes "$notes"
           else
             gh release create "$GITHUB_REF_NAME" signed/* -R "$GITHUB_REPOSITORY" --verify-tag \
-              --title "YarmiplayServerTV $GITHUB_REF_NAME" \
-              --notes "Windows installers for YarmiplayServerTV $VERSION. Other platforms: https://yarmiplay.github.io/YarmiplayServerTV/
-
-          Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org). See the [code signing policy](https://github.com/$GITHUB_REPOSITORY#code-signing-policy)."
+              --title "YarmiplayServerTV $GITHUB_REF_NAME" --notes "$notes"
           fi
