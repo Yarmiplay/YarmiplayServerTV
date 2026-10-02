@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The default artifact configuration of the YarmiplayServerTV project in SignPath (paste it there when it
+  changes). release.yml submits the windows-installers-unsigned artifact (Tauri's .msi and NSIS .exe at its
+  root) with the version from tauri.conf.json as the version parameter. The .msi and the app inside it are
+  signed; the NSIS installer is signed as a whole, as its payload is compressed. Jellyfin isn't bundled: the
+  app downloads it later from repo.jellyfin.org.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <msi-file path="YarmiplayServerTV_${version}_x64_en-US.msi" author="Yarmiplay">
+      <pe-file path="**/yarmiplayservertv.exe" product-name="YarmiplayServerTV" product-version="${version}">
+        <authenticode-sign />
+      </pe-file>
+      <authenticode-sign />
+    </msi-file>
+    <pe-file path="YarmiplayServerTV_${version}_x64-setup.exe" product-name="YarmiplayServerTV" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

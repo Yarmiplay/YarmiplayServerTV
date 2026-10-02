@@ -54,10 +54,13 @@ class Platform:
 
 BUILD_FROM_SOURCE = "git clone {repo}\ncd YarmiplayServerTV\nnpm install\nnpx tauri build".format(repo=REPO_URL)
 
+WINDOWS_UNSIGNED = ("Run the installer. This build isn't code-signed, so Windows SmartScreen may warn you: "
+                    "choose <b>More info</b>, then <b>Run anyway</b>.")
+WINDOWS_SIGNED = "Run the installer (code-signed by SignPath Foundation)."
+
 PLATFORMS = [
     Platform("windows", "Windows", "Windows 10 or 11, 64-bit.", [
-        "Run the installer. The app isn't code-signed yet, so Windows SmartScreen may warn you: choose "
-        "<b>More info</b>, then <b>Run anyway</b>.",
+        WINDOWS_UNSIGNED,
         "YarmiplayServerTV starts in the system tray. Click the tray icon to open the control panel.",
     ]),
     Platform("macos", "macOS", "macOS 11 or newer, Apple Silicon and Intel.", [
@@ -86,7 +89,7 @@ def fmt_size(n):
     return f"{n / 1e6:.1f} MB"
 
 
-def render_page(downloads, version, built):
+def render_page(downloads, version, built, windows_signed=False):
     """downloads: {platform key: [Download]}. Returns the page as a str."""
     cards = []
     for p in PLATFORMS:
@@ -95,7 +98,8 @@ def render_page(downloads, version, built):
             buttons = "".join(
                 f'<a class="btn" href="{html.escape(d.href)}" download>{html.escape(d.label)}'
                 f'<small>{fmt_size(d.size)}</small></a>' for d in files)
-            steps = "".join(f"<li>{s}</li>" for s in p.steps)
+            steps = "".join(f"<li>{WINDOWS_SIGNED if windows_signed and s == WINDOWS_UNSIGNED else s}</li>"
+                            for s in p.steps)
             sums = "".join(f"<div>{html.escape(d.href)}<br><code>{d.sha256}</code></div>" for d in files if d.sha256)
             body = (f'<div class="dl">{buttons}</div><ol>{steps}</ol>'
                     + (f"<details><summary>SHA-256</summary>{sums}</details>" if sums else ""))
@@ -168,7 +172,8 @@ def render_page(downloads, version, built):
  <strong>Need the player?</strong>
  <p><a href="{CLIENT_URL}">Get YarmiplayTV</a> for Google TV, Android and desktop, then connect it to this server.</p>
 </section>
-<footer><a href="{REPO_URL}">Source</a> &middot; <a href="{REPO_URL}#readme">Setup guide</a> &middot; <a href="{CLIENT_REPO}">YarmiplayTV</a></footer>
+<footer><a href="{REPO_URL}">Source</a> &middot; <a href="{REPO_URL}#readme">Setup guide</a> &middot; <a href="{CLIENT_REPO}">YarmiplayTV</a>
+ &middot; <a href="{REPO_URL}#code-signing-policy">Code signing policy</a></footer>
 </main>
 <script>
 (function () {{
@@ -187,7 +192,7 @@ def render_page(downloads, version, built):
 """
 
 
-def build(dist, out, version):
+def build(dist, out, version, windows_signed=False):
     found = {}
     for name in sorted(os.listdir(dist)) if os.path.isdir(dist) else []:
         path = os.path.join(dist, name)
@@ -216,7 +221,7 @@ def build(dist, out, version):
     shutil.copyfile(os.path.join(ROOT, "assets", "logo.svg"), os.path.join(out, "logo.svg"))
     built = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     with open(os.path.join(out, "index.html"), "w", encoding="utf-8") as f:
-        f.write(render_page(downloads, version, built))
+        f.write(render_page(downloads, version, built, windows_signed))
     open(os.path.join(out, ".nojekyll"), "w").close()
     print(f"wrote {out} ({sum(len(v) for v in downloads.values())} downloads)")
 
@@ -231,8 +236,9 @@ def main():
     ap.add_argument("--dist", required=True, help="folder with the built installers")
     ap.add_argument("--out", required=True, help="site folder to (re)create")
     ap.add_argument("--version", default=None, help="defaults to the version in tauri.conf.json")
+    ap.add_argument("--windows-signed", action="store_true", help="the Windows installers are code-signed")
     a = ap.parse_args()
-    build(a.dist, a.out, a.version or app_version())
+    build(a.dist, a.out, a.version or app_version(), a.windows_signed)
 
 
 if __name__ == "__main__":

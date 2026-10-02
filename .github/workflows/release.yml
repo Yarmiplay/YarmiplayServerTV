@@ -1,0 +1,134 @@
+name: Release
+
+# For a version tag (v1.0.1, v1.1.0), which has to match the version in src-tauri/tauri.conf.json: builds the
+# Windows installers, has them code signed through SignPath (certificate by SignPath Foundation) once an
+# approver accepts the signing request, and attaches them to the tag's GitHub release, where the download page
+# takes them from. Signing needs the variable SIGNPATH_ORGANIZATION_ID and the secret SIGNPATH_API_TOKEN;
+# without them the installers are built but not signed or released.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-installers:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the tag against the app version
+        id: version
+        run: |
+          version=$(python -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          echo "app version $version"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match the version $version in tauri.conf.json"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: npm ci
+
+      # SignPath's artifact configuration (.github/signpath/artifact-configuration.xml) expects the two
+      # installers at the root of the artifact.
+      - name: Installers
+        run: |
+          npx tauri build --bundles msi,nsis
+          mkdir windows
+          cp src-tauri/target/release/bundle/msi/*.msi src-tauri/target/release/bundle/nsis/*.exe windows/
+          ls -l windows
+
+      - id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-installers-unsigned
+          path: windows/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Waits on a Linux runner while the signing request awaits manual approval in SignPath.
+  sign-windows:
+    needs: windows-installers
+    if: vars.SIGNPATH_ORGANIZATION_ID != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Submit the signing request and wait for its approval
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: YarmiplayServerTV
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ needs.windows-installers.outputs.artifact-id }}
+          parameters: |
+            version: ${{ toJSON(needs.windows-installers.outputs.version) }}
+          wait-for-completion-timeout-in-seconds: 21000
+          output-artifact-directory: signed
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-installers-signed
+          path: signed/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Checks the signatures the way Windows does (including the app inside the .msi) and attaches the
+  # installers to the tag's release.
+  publish-windows:
+    needs: [windows-installers, sign-windows]
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-installers-signed
+          path: signed
+
+      - name: Verify the signatures
+        shell: pwsh
+        run: |
+          $msi = Get-Item signed\*.msi
+          Start-Process msiexec -Wait -ArgumentList "/a `"$($msi.FullName)`" /qn TARGETDIR=`"$env:RUNNER_TEMP\msi`""
+          $files = @(Get-Item signed\*.msi, signed\*.exe) + @(Get-ChildItem "$env:RUNNER_TEMP\msi" -Recurse -Filter yarmiplayservertv.exe)
+          if ($files.Count -ne 3) { throw "expected the .msi, the .exe and the app inside the .msi, found $($files.Count) files" }
+          foreach ($file in $files) {
+            $sig = Get-AuthenticodeSignature $file.FullName
+            "{0}: {1}, {2}" -f $file.Name, $sig.Status, $sig.SignerCertificate.Subject
+            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) { throw "$($file.Name) isn't validly signed and timestamped" }
+          }
+
+      - name: Attach the installers to the release
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.windows-installers.outputs.version }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" signed/* -R "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" signed/* -R "$GITHUB_REPOSITORY" --verify-tag \
+              --title "YarmiplayServerTV $GITHUB_REF_NAME" \
+              --notes "Windows installers for YarmiplayServerTV $VERSION. Other platforms: https://yarmiplay.github.io/YarmiplayServerTV/
+
+          Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org). See the [code signing policy](https://github.com/$GITHUB_REPOSITORY#code-signing-policy)."
+          fi

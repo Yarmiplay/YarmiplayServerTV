@@ -134,6 +134,42 @@ it with `python scripts/update_jellyfin_manifest.py`.
 - `src-tauri/src/orchestrator.rs`: keeps every service in line with the settings.
 - `ui/`: the control panel (Svelte).
 
+### Releases
+
+Bump the version in `src-tauri/tauri.conf.json` (and `package.json` / `src-tauri/Cargo.toml` to match), then
+push a matching tag:
+
+```sh
+git tag v1.0.1 && git push origin v1.0.1
+```
+
+`.github/workflows/release.yml` builds the Windows installers and submits them to [SignPath](https://signpath.io)
+for signing. An approver accepts the request in SignPath (the job waits up to 6 hours), then the signed `.msi`
+and `.exe` are verified and attached to the tag's GitHub release, and the download page is republished with
+them. Signing needs the repository variable `SIGNPATH_ORGANIZATION_ID` and the secret `SIGNPATH_API_TOKEN` (a
+SignPath CI user with submitter rights), a SignPath project with the slug `YarmiplayServerTV` linked to the
+GitHub.com trusted build system, its `release-signing` policy, and
+[.github/signpath/artifact-configuration.xml](.github/signpath/artifact-configuration.xml) as its default
+artifact configuration. Without the variable the installers are built but not signed or released. SmartScreen
+may still warn about a newly signed release until it has been downloaded enough.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by
+[SignPath Foundation](https://signpath.org).
+
+- Committers and reviewers: [Yarmiplay](https://github.com/Yarmiplay)
+- Approvers: [Yarmiplay](https://github.com/Yarmiplay)
+
+Only the Windows installers and the YarmiplayServerTV program in them are signed, built by
+`.github/workflows/release.yml` from a version tag of this repository. Jellyfin isn't part of the installers;
+the app downloads unmodified Jellyfin releases, as their project publishes them, when you first switch it on.
+
+Privacy: this program will not transfer any information to other networked systems unless specifically
+requested by the user or the person installing or operating it. It runs the servers you switch on, and
+connects only to what the features you enable need: `repo.jellyfin.org` to download Jellyfin, your router for
+UPnP, and DuckDNS, Let's Encrypt and public DNS resolvers (Google, Cloudflare) for DuckDNS and HTTPS.
+
 ## License
 
 GPL-3.0-or-later. Syncplay and Jellyfin are separate projects by their respective authors; this app
