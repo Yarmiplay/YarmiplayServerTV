@@ -76,7 +76,7 @@ pub enum MappingOutcome {
 
 fn http_client() -> Result<reqwest::Client, String> {
     super::install_crypto_provider();
-    reqwest::Client::builder()
+    crate::net::client_builder()
         .no_proxy()
         .timeout(HTTP_TIMEOUT)
         .build()
@@ -127,7 +127,11 @@ impl UpnpManager {
     }
 
     pub fn external_ip(&self) -> Option<IpAddr> {
-        self.status.read().external_ip.as_deref().and_then(|s| s.parse().ok())
+        self.status
+            .read()
+            .external_ip
+            .as_deref()
+            .and_then(|s| s.parse().ok())
     }
 
     /// Make the router's mappings match `desired` (port -> label). With an
@@ -186,7 +190,12 @@ impl UpnpManager {
             warn!(?external_ip, "router WAN address is private/CGNAT (double NAT); internet peers may not reach these forwards");
         }
 
-        let stale: Vec<u16> = inner.owned.keys().filter(|p| !desired.contains_key(p)).copied().collect();
+        let stale: Vec<u16> = inner
+            .owned
+            .keys()
+            .filter(|p| !desired.contains_key(p))
+            .copied()
+            .collect();
         for port in stale {
             match delete_mapping_with(&client, &gateway, port).await {
                 Ok(()) => info!(port, "UPnP mapping removed"),
@@ -199,14 +208,25 @@ impl UpnpManager {
         for (&port, label) in desired {
             let already = inner.owned.contains_key(&port);
             if already && !verify {
-                mappings.push(MappingStatus { port, label: label.clone(), state: "ok", error: None });
+                mappings.push(MappingStatus {
+                    port,
+                    label: label.clone(),
+                    state: "ok",
+                    error: None,
+                });
                 continue;
             }
             if already && verify {
                 if let Ok(Some(entry)) = get_mapping_with(&client, &gateway, port).await {
-                    let ours = entry.get("NewInternalClient").map(String::as_str) == Some(&gateway.local_ip.to_string());
+                    let ours = entry.get("NewInternalClient").map(String::as_str)
+                        == Some(&gateway.local_ip.to_string());
                     if ours {
-                        mappings.push(MappingStatus { port, label: label.clone(), state: "ok", error: None });
+                        mappings.push(MappingStatus {
+                            port,
+                            label: label.clone(),
+                            state: "ok",
+                            error: None,
+                        });
                         continue;
                     }
                 }
@@ -216,11 +236,21 @@ impl UpnpManager {
                 Ok(MappingOutcome::Added) => {
                     info!(port, %label, local_ip = %gateway.local_ip, "UPnP mapping added");
                     inner.owned.insert(port, label.clone());
-                    mappings.push(MappingStatus { port, label: label.clone(), state: "ok", error: None });
+                    mappings.push(MappingStatus {
+                        port,
+                        label: label.clone(),
+                        state: "ok",
+                        error: None,
+                    });
                 }
                 Ok(MappingOutcome::AlreadyForwarded) => {
                     info!(port, "port already forwarded to this PC by another router entry; leaving it as is");
-                    mappings.push(MappingStatus { port, label: label.clone(), state: "manual", error: None });
+                    mappings.push(MappingStatus {
+                        port,
+                        label: label.clone(),
+                        state: "manual",
+                        error: None,
+                    });
                 }
                 Err(e) => {
                     warn!(port, error = %e, "UPnP mapping failed");
@@ -404,7 +434,11 @@ fn parse_ssdp_headers(message: &str) -> HashMap<String, String> {
 }
 
 fn is_gateway_response(headers: &HashMap<String, String>) -> bool {
-    const MARKERS: [&str; 3] = ["InternetGatewayDevice", "WANIPConnection", "WANPPPConnection"];
+    const MARKERS: [&str; 3] = [
+        "InternetGatewayDevice",
+        "WANIPConnection",
+        "WANPPPConnection",
+    ];
     ["st", "usn"].iter().any(|key| {
         headers
             .get(*key)
@@ -471,8 +505,10 @@ fn find_wan_service(xml: &str, location: &str) -> Result<(String, String), Strin
         .descendants()
         .filter(|n| n.is_element() && n.tag_name().name() == "service")
     {
-        let (Some(st), Some(ctrl)) = (child_text(node, "serviceType"), child_text(node, "controlURL"))
-        else {
+        let (Some(st), Some(ctrl)) = (
+            child_text(node, "serviceType"),
+            child_text(node, "controlURL"),
+        ) else {
             continue;
         };
         let entry = (st.to_string(), ctrl.to_string());
@@ -573,7 +609,10 @@ async fn soap_call(
     let response = client
         .post(&gateway.control_url)
         .header("Content-Type", "text/xml; charset=\"utf-8\"")
-        .header("SOAPAction", format!("\"{}#{action}\"", gateway.service_type))
+        .header(
+            "SOAPAction",
+            format!("\"{}#{action}\"", gateway.service_type),
+        )
         .body(soap_envelope(&gateway.service_type, action, args))
         .send()
         .await
@@ -591,7 +630,10 @@ async fn soap_call(
 
 // ---------------------------------------------------------------- actions
 
-async fn external_ip_with(client: &reqwest::Client, gateway: &Gateway) -> Result<IpAddr, UpnpError> {
+async fn external_ip_with(
+    client: &reqwest::Client,
+    gateway: &Gateway,
+) -> Result<IpAddr, UpnpError> {
     let fields = soap_call(client, gateway, "GetExternalIPAddress", &[]).await?;
     let raw = fields
         .get("NewExternalIPAddress")
@@ -671,11 +713,22 @@ async fn ensure_mapping_with(
 ) -> Result<MappingOutcome, UpnpError> {
     match get_mapping_with(client, gateway, external_port).await {
         Ok(Some(existing)) => {
-            let internal_client = existing.get("NewInternalClient").map(String::as_str).unwrap_or("?");
-            let existing_port = existing.get("NewInternalPort").map(String::as_str).unwrap_or("?");
-            let description = existing.get("NewPortMappingDescription").map(String::as_str).unwrap_or("?");
+            let internal_client = existing
+                .get("NewInternalClient")
+                .map(String::as_str)
+                .unwrap_or("?");
+            let existing_port = existing
+                .get("NewInternalPort")
+                .map(String::as_str)
+                .unwrap_or("?");
+            let description = existing
+                .get("NewPortMappingDescription")
+                .map(String::as_str)
+                .unwrap_or("?");
             if description != MAPPING_DESCRIPTION {
-                if internal_client == gateway.local_ip.to_string() && existing_port == internal_port.to_string() {
+                if internal_client == gateway.local_ip.to_string()
+                    && existing_port == internal_port.to_string()
+                {
                     return Ok(MappingOutcome::AlreadyForwarded);
                 }
                 return Err(UpnpError::Other(format!(
@@ -701,7 +754,10 @@ async fn ensure_mapping_with(
 /// RFC 1918 private or RFC 6598 carrier-grade NAT (100.64.0.0/10).
 pub fn is_private_or_cgnat(ip: Ipv4Addr) -> bool {
     let [a, b, ..] = ip.octets();
-    ip.is_private() || ip.is_loopback() || ip.is_link_local() || (a == 100 && (64..128).contains(&b))
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || (a == 100 && (64..128).contains(&b))
 }
 
 #[cfg(test)]
@@ -738,7 +794,10 @@ mod tests {
     fn ssdp_headers_parse_and_gateway_match() {
         let reply = "HTTP/1.1 200 OK\r\nLocation: http://192.168.1.1:5000/rootDesc.xml\r\nST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\nUSN: uuid:abc::urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n\r\n";
         let h = parse_ssdp_headers(reply);
-        assert_eq!(h.get("location").unwrap(), "http://192.168.1.1:5000/rootDesc.xml");
+        assert_eq!(
+            h.get("location").unwrap(),
+            "http://192.168.1.1:5000/rootDesc.xml"
+        );
         assert!(is_gateway_response(&h));
         let chromecast = parse_ssdp_headers(
             "HTTP/1.1 200 OK\r\nST: urn:dial-multiscreen-org:service:dial:1\r\nUSN: uuid:x::urn:dial-multiscreen-org:service:dial:1\r\nLOCATION: http://192.168.1.9:8008/ssdp/device-desc.xml\r\n",
@@ -748,7 +807,8 @@ mod tests {
 
     #[test]
     fn wan_service_prefers_ip_connection_and_resolves_relative() {
-        let (st, ctrl) = find_wan_service(IGD_DESC, "http://192.168.1.1:5000/rootDesc.xml").unwrap();
+        let (st, ctrl) =
+            find_wan_service(IGD_DESC, "http://192.168.1.1:5000/rootDesc.xml").unwrap();
         assert_eq!(st, "urn:schemas-upnp-org:service:WANIPConnection:1");
         assert_eq!(ctrl, "http://192.168.1.1:5000/ctl/IPConn");
     }
@@ -760,7 +820,9 @@ mod tests {
             "AddPortMapping",
             &[("NewPortMappingDescription", "a<b>&\"c'".into())],
         );
-        assert!(env.contains("<NewPortMappingDescription>a&lt;b&gt;&amp;&quot;c&apos;</NewPortMappingDescription>"));
+        assert!(env.contains(
+            "<NewPortMappingDescription>a&lt;b&gt;&amp;&quot;c&apos;</NewPortMappingDescription>"
+        ));
         assert!(parse_xml(&env).is_ok());
     }
 
@@ -840,35 +902,64 @@ mod tests {
         let router = Arc::new(Mutex::new(FakeRouter::default()));
         let base = fake_router(router.clone()).await;
         let client = http_client().unwrap();
-        let gw = resolve_gateway(&client, &format!("{base}/rootDesc.xml"), Ipv4Addr::new(192, 168, 1, 77))
-            .await
-            .unwrap();
-        assert_eq!(external_ip_with(&client, &gw).await.unwrap(), "203.0.113.7".parse::<IpAddr>().unwrap());
+        let gw = resolve_gateway(
+            &client,
+            &format!("{base}/rootDesc.xml"),
+            Ipv4Addr::new(192, 168, 1, 77),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            external_ip_with(&client, &gw).await.unwrap(),
+            "203.0.113.7".parse::<IpAddr>().unwrap()
+        );
         router.lock().actions.clear();
 
         // Absent: plain add with our description and lease 0.
-        assert_eq!(ensure_mapping_with(&client, &gw, 8999, 8999).await.unwrap(), MappingOutcome::Added);
+        assert_eq!(
+            ensure_mapping_with(&client, &gw, 8999, 8999).await.unwrap(),
+            MappingOutcome::Added
+        );
         {
             let r = router.lock();
             assert_eq!(r.actions, ["GetSpecificPortMappingEntry", "AddPortMapping"]);
-            assert!(r.last_add_body.contains("<NewPortMappingDescription>YarmiplayServerTV</NewPortMappingDescription>"));
-            assert!(r.last_add_body.contains("<NewLeaseDuration>0</NewLeaseDuration>"));
+            assert!(r.last_add_body.contains(
+                "<NewPortMappingDescription>YarmiplayServerTV</NewPortMappingDescription>"
+            ));
+            assert!(r
+                .last_add_body
+                .contains("<NewLeaseDuration>0</NewLeaseDuration>"));
         }
 
         // Our own stale entry is replaced.
         router.lock().actions.clear();
-        assert_eq!(ensure_mapping_with(&client, &gw, 8999, 8999).await.unwrap(), MappingOutcome::Added);
-        assert_eq!(router.lock().actions, ["GetSpecificPortMappingEntry", "DeletePortMapping", "AddPortMapping"]);
+        assert_eq!(
+            ensure_mapping_with(&client, &gw, 8999, 8999).await.unwrap(),
+            MappingOutcome::Added
+        );
+        assert_eq!(
+            router.lock().actions,
+            [
+                "GetSpecificPortMappingEntry",
+                "DeletePortMapping",
+                "AddPortMapping"
+            ]
+        );
 
         // A manual router entry to this PC is accepted and left alone.
         router.lock().entry = Some(("192.168.1.77".into(), "my forward".into()));
         router.lock().actions.clear();
-        assert_eq!(ensure_mapping_with(&client, &gw, 8999, 8999).await.unwrap(), MappingOutcome::AlreadyForwarded);
+        assert_eq!(
+            ensure_mapping_with(&client, &gw, 8999, 8999).await.unwrap(),
+            MappingOutcome::AlreadyForwarded
+        );
         assert_eq!(router.lock().actions, ["GetSpecificPortMappingEntry"]);
 
         // A foreign entry to another PC is an error and is not touched.
         router.lock().entry = Some(("192.168.1.50".into(), "nas".into()));
-        let err = ensure_mapping_with(&client, &gw, 8999, 8999).await.unwrap_err();
+        let err = ensure_mapping_with(&client, &gw, 8999, 8999)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("192.168.1.50"));
         assert!(router.lock().entry.is_some());
     }

@@ -63,7 +63,8 @@ fn forward_output<R: tokio::io::AsyncRead + Unpin + Send + 'static>(reader: R) {
 
 impl JellyfinProcess {
     pub fn spawn(installed: &Installed, dirs: &DataDirs) -> Result<Self, String> {
-        dirs.ensure().map_err(|e| format!("Jellyfin folders: {e}"))?;
+        dirs.ensure()
+            .map_err(|e| format!("Jellyfin folders: {e}"))?;
         let mut cmd = Command::new(&installed.exe);
         cmd.arg("--datadir")
             .arg(&dirs.data)
@@ -102,7 +103,9 @@ impl JellyfinProcess {
             });
         }
 
-        let mut child = cmd.spawn().map_err(|e| format!("could not start Jellyfin: {e}"))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("could not start Jellyfin: {e}"))?;
         if let Some(out) = child.stdout.take() {
             forward_output(out);
         }
@@ -147,7 +150,10 @@ impl JellyfinProcess {
                 libc::kill(-(pid as i32), libc::SIGTERM);
             }
         }
-        if tokio::time::timeout(grace, self.child.wait()).await.is_err() {
+        if tokio::time::timeout(grace, self.child.wait())
+            .await
+            .is_err()
+        {
             #[cfg(unix)]
             if let Some(pid) = self.child.id() {
                 unsafe {
@@ -161,8 +167,12 @@ impl JellyfinProcess {
 }
 
 /// Poll `/System/Info/Public` until Jellyfin answers.
-pub async fn wait_ready(port: u16, proc: &mut JellyfinProcess, timeout: std::time::Duration) -> Result<(), String> {
-    let client = reqwest::Client::builder()
+pub async fn wait_ready(
+    port: u16,
+    proc: &mut JellyfinProcess,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let client = crate::net::client_builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()
         .map_err(|e| e.to_string())?;
@@ -188,8 +198,9 @@ pub async fn wait_ready(port: u16, proc: &mut JellyfinProcess, timeout: std::tim
 mod job {
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
     pub struct Job(HANDLE);

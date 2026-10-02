@@ -29,7 +29,10 @@ const DUCKDNS_ATTEMPTS: u32 = 4;
 const DUCKDNS_RETRY_DELAY: Duration = Duration::from_secs(2);
 #[cfg(test)]
 const DUCKDNS_RETRY_DELAY: Duration = Duration::from_millis(10);
-const DOH_URLS: [&str; 2] = ["https://dns.google/resolve", "https://cloudflare-dns.com/dns-query"];
+const DOH_URLS: [&str; 2] = [
+    "https://dns.google/resolve",
+    "https://cloudflare-dns.com/dns-query",
+];
 const TXT_PROPAGATION_TIMEOUT: Duration = Duration::from_secs(120);
 const TXT_POLL_INTERVAL: Duration = Duration::from_secs(4);
 /// Extra settle time after the TXT is visible, for Let's Encrypt's other vantage points.
@@ -60,7 +63,10 @@ impl DuckDns {
         if token.is_empty() {
             return Err("DuckDNS token is empty".into());
         }
-        Ok(Self { subdomain, token: token.to_string() })
+        Ok(Self {
+            subdomain,
+            token: token.to_string(),
+        })
     }
 
     pub fn fqdn(&self) -> String {
@@ -71,14 +77,21 @@ impl DuckDns {
 /// `yarmiplay` / `YarmiPlay.duckdns.org.` -> `yarmiplay`.
 pub fn normalize_domain(domain: &str) -> Result<String, String> {
     let domain = domain.trim().trim_end_matches('.').to_ascii_lowercase();
-    let subdomain = domain.strip_suffix(DUCKDNS_SUFFIX).unwrap_or(&domain).to_string();
+    let subdomain = domain
+        .strip_suffix(DUCKDNS_SUFFIX)
+        .unwrap_or(&domain)
+        .to_string();
     let valid = !subdomain.is_empty()
         && subdomain.len() <= 63
         && !subdomain.starts_with('-')
         && !subdomain.ends_with('-')
-        && subdomain.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        && subdomain
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-');
     if !valid {
-        return Err(format!("invalid DuckDNS domain {domain:?} (expected e.g. myname or myname.duckdns.org)"));
+        return Err(format!(
+            "invalid DuckDNS domain {domain:?} (expected e.g. myname or myname.duckdns.org)"
+        ));
     }
     Ok(subdomain)
 }
@@ -162,7 +175,7 @@ pub fn unix_now() -> i64 {
 
 fn http_client(timeout: Duration) -> Result<reqwest::Client, String> {
     super::install_crypto_provider();
-    reqwest::Client::builder()
+    crate::net::client_builder()
         .timeout(timeout)
         .build()
         .map_err(|e| format!("HTTP client: {e}"))
@@ -170,7 +183,11 @@ fn http_client(timeout: Duration) -> Result<reqwest::Client, String> {
 
 /// DuckDNS `/update` with retries on network errors and 5xx. Errors never include the
 /// request URL (it holds the token).
-async fn duckdns_update(api: &str, duck: &DuckDns, extra: &[(&str, &str)]) -> Result<String, String> {
+async fn duckdns_update(
+    api: &str,
+    duck: &DuckDns,
+    extra: &[(&str, &str)],
+) -> Result<String, String> {
     let mut delay = DUCKDNS_RETRY_DELAY;
     for attempt in 1..=DUCKDNS_ATTEMPTS {
         match duckdns_update_once(api, duck, extra).await {
@@ -225,7 +242,11 @@ async fn duckdns_update_once(
 
 /// Point `<subdomain>.duckdns.org` at `ip` (`None` = DuckDNS uses the caller's
 /// IPv4). Returns the address DuckDNS now has on record.
-pub async fn duckdns_set_ip(api: &str, duck: &DuckDns, ip: Option<IpAddr>) -> Result<Option<IpAddr>, String> {
+pub async fn duckdns_set_ip(
+    api: &str,
+    duck: &DuckDns,
+    ip: Option<IpAddr>,
+) -> Result<Option<IpAddr>, String> {
     let ip = ip.map(|ip| ip.to_string());
     let extra: Vec<(&str, &str)> = ip.as_deref().map(|ip| ("ip", ip)).into_iter().collect();
     let body = duckdns_update(api, duck, &extra).await?;
@@ -236,11 +257,15 @@ pub async fn duckdns_set_ip(api: &str, duck: &DuckDns, ip: Option<IpAddr>) -> Re
 }
 
 pub async fn duckdns_set_txt(api: &str, duck: &DuckDns, value: &str) -> Result<(), String> {
-    duckdns_update(api, duck, &[("txt", value)]).await.map(|_| ())
+    duckdns_update(api, duck, &[("txt", value)])
+        .await
+        .map(|_| ())
 }
 
 pub async fn duckdns_clear_txt(api: &str, duck: &DuckDns) -> Result<(), String> {
-    duckdns_update(api, duck, &[("txt", "cleared"), ("clear", "true")]).await.map(|_| ())
+    duckdns_update(api, duck, &[("txt", "cleared"), ("clear", "true")])
+        .await
+        .map(|_| ())
 }
 
 /// TXT strings from a DNS-over-HTTPS JSON answer (quotes and chunking removed).
@@ -252,7 +277,13 @@ fn doh_txt_values(json: &serde_json::Value) -> Vec<String> {
                 .iter()
                 .filter(|a| a.get("type").and_then(|t| t.as_u64()) == Some(16))
                 .filter_map(|a| a.get("data").and_then(|d| d.as_str()))
-                .map(|d| d.split('"').enumerate().filter(|(i, _)| i % 2 == 1).map(|(_, s)| s).collect::<String>())
+                .map(|d| {
+                    d.split('"')
+                        .enumerate()
+                        .filter(|(i, _)| i % 2 == 1)
+                        .map(|(_, s)| s)
+                        .collect::<String>()
+                })
                 .map(|joined| joined.trim().to_string())
                 .collect()
         })
@@ -272,7 +303,9 @@ async fn wait_for_txt(name: &str, value: &str) -> Result<(), String> {
                 .send()
                 .await;
             let Ok(res) = res else { continue };
-            let Ok(json) = res.json::<serde_json::Value>().await else { continue };
+            let Ok(json) = res.json::<serde_json::Value>().await else {
+                continue;
+            };
             if doh_txt_values(&json).iter().any(|v| v == value) {
                 info!(%name, resolver = url, "ACME TXT record visible in public DNS");
                 tokio::time::sleep(TXT_SETTLE).await;
@@ -356,11 +389,17 @@ async fn load_or_create_account(opts: &AcmeOptions) -> Result<Account, String> {
                     .await
                     .map_err(|e| format!("restore ACME account {}: {e}", path.display()));
             }
-            Err(e) => warn!(path = %path.display(), error = %e, "ACME account file unreadable, creating a new account"),
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "ACME account file unreadable, creating a new account")
+            }
         }
     }
 
-    let contact = opts.email.as_ref().filter(|e| !e.trim().is_empty()).map(|e| format!("mailto:{}", e.trim()));
+    let contact = opts
+        .email
+        .as_ref()
+        .filter(|e| !e.trim().is_empty())
+        .map(|e| format!("mailto:{}", e.trim()));
     let contacts: Vec<&str> = contact.iter().map(String::as_str).collect();
     let (account, creds) = builder()?
         .create(
@@ -397,7 +436,11 @@ async fn issue(opts: &AcmeOptions) -> Result<(String, String), String> {
     result
 }
 
-async fn drive_order(order: &mut Order, opts: &AcmeOptions, host: &str) -> Result<(String, String), String> {
+async fn drive_order(
+    order: &mut Order,
+    opts: &AcmeOptions,
+    host: &str,
+) -> Result<(String, String), String> {
     {
         let mut authorizations = order.authorizations();
         while let Some(result) = authorizations.next().await {
@@ -524,7 +567,11 @@ mod tests {
         }
     }
 
-    fn self_signed(host: &str, not_before: (i32, u8, u8), not_after: (i32, u8, u8)) -> (String, String) {
+    fn self_signed(
+        host: &str,
+        not_before: (i32, u8, u8),
+        not_after: (i32, u8, u8),
+    ) -> (String, String) {
         let mut params = rcgen::CertificateParams::new(vec![host.to_string()]).unwrap();
         params.not_before = rcgen::date_time_ymd(not_before.0, not_before.1, not_before.2);
         params.not_after = rcgen::date_time_ymd(not_after.0, not_after.1, not_after.2);
@@ -545,10 +592,22 @@ mod tests {
     #[test]
     fn next_check_delay_bounds() {
         let now = 10_000_000;
-        let cert = IssuedCert { host: String::new(), cert_pem: String::new(), key_pem: String::new(), not_before: now, not_after: now + 90 * DAY };
+        let cert = IssuedCert {
+            host: String::new(),
+            cert_pem: String::new(),
+            key_pem: String::new(),
+            not_before: now,
+            not_after: now + 90 * DAY,
+        };
         assert_eq!(next_check_delay(&cert, now, false), RENEW_CHECK_INTERVAL);
-        assert_eq!(next_check_delay(&cert, now + 45 * DAY - 120, false), Duration::from_secs(120));
-        assert_eq!(next_check_delay(&cert, now + 60 * DAY, false), MIN_CHECK_DELAY);
+        assert_eq!(
+            next_check_delay(&cert, now + 45 * DAY - 120, false),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            next_check_delay(&cert, now + 60 * DAY, false),
+            MIN_CHECK_DELAY
+        );
         assert_eq!(next_check_delay(&cert, now, true), RETRY_AFTER_FAILURE);
     }
 
@@ -568,7 +627,12 @@ mod tests {
         assert!(load_cached(&o).is_none());
         let (cert, key) = self_signed("yarmiplay.duckdns.org", (2026, 1, 1), (2099, 1, 1));
         save_cert(&o, &cert, &key).unwrap();
-        assert!(dir.path().join("staging").join("yarmiplay.duckdns.org").join(CERT_FILE).is_file());
+        assert!(dir
+            .path()
+            .join("staging")
+            .join("yarmiplay.duckdns.org")
+            .join(CERT_FILE)
+            .is_file());
         assert!(!load_cached(&o).unwrap().needs_renewal(unix_now()));
         let (old_cert, old_key) = self_signed("yarmiplay.duckdns.org", (2020, 1, 1), (2020, 3, 1));
         save_cert(&o, &old_cert, &old_key).unwrap();
@@ -583,7 +647,14 @@ mod tests {
                 && req.query.get("domains").map(String::as_str) == Some("yarmiplay")
                 && req.query.get("token").map(String::as_str) == Some(TEST_TOKEN);
             log.lock().push(req.query);
-            (200, if ok { "OK\n203.0.113.10\n\nUPDATED".into() } else { "KO".into() })
+            (
+                200,
+                if ok {
+                    "OK\n203.0.113.10\n\nUPDATED".into()
+                } else {
+                    "KO".into()
+                },
+            )
         }))
         .await;
         (base, seen)
@@ -593,16 +664,26 @@ mod tests {
     async fn duckdns_api_sets_ip_txt_and_clears() {
         let (api, seen) = fake_duckdns().await;
         let duck = DuckDns::new("yarmiplay.duckdns.org", TEST_TOKEN).unwrap();
-        let ip = duckdns_set_ip(&api, &duck, Some("203.0.113.10".parse().unwrap())).await.unwrap();
+        let ip = duckdns_set_ip(&api, &duck, Some("203.0.113.10".parse().unwrap()))
+            .await
+            .unwrap();
         assert_eq!(ip, Some("203.0.113.10".parse().unwrap()));
         duckdns_set_ip(&api, &duck, None).await.unwrap();
-        duckdns_set_txt(&api, &duck, "abc-DNS01-value").await.unwrap();
+        duckdns_set_txt(&api, &duck, "abc-DNS01-value")
+            .await
+            .unwrap();
         duckdns_clear_txt(&api, &duck).await.unwrap();
         let calls = seen.lock().clone();
         assert_eq!(calls.len(), 4);
         assert_eq!(calls[0].get("ip").map(String::as_str), Some("203.0.113.10"));
-        assert!(!calls[1].contains_key("ip"), "None lets DuckDNS auto-detect");
-        assert_eq!(calls[2].get("txt").map(String::as_str), Some("abc-DNS01-value"));
+        assert!(
+            !calls[1].contains_key("ip"),
+            "None lets DuckDNS auto-detect"
+        );
+        assert_eq!(
+            calls[2].get("txt").map(String::as_str),
+            Some("abc-DNS01-value")
+        );
         assert_eq!(calls[3].get("clear").map(String::as_str), Some("true"));
     }
 
@@ -611,7 +692,10 @@ mod tests {
         let (api, _) = fake_duckdns().await;
         let wrong = DuckDns::new("yarmiplay", "wrong-token-value-9999").unwrap();
         let err = duckdns_set_txt(&api, &wrong, "v").await.unwrap_err();
-        assert!(err.contains("KO") && err.contains("yarmiplay.duckdns.org"), "{err}");
+        assert!(
+            err.contains("KO") && err.contains("yarmiplay.duckdns.org"),
+            "{err}"
+        );
         assert!(!err.contains("wrong-token-value-9999"));
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -626,13 +710,20 @@ mod tests {
 
     #[test]
     fn duckdns_domain_normalization() {
-        for input in ["yarmiplay", "YarmiPlay.duckdns.org", " yarmiplay.duckdns.org. "] {
+        for input in [
+            "yarmiplay",
+            "YarmiPlay.duckdns.org",
+            " yarmiplay.duckdns.org. ",
+        ] {
             let d = DuckDns::new(input, " t ").unwrap();
             assert_eq!(d.fqdn(), "yarmiplay.duckdns.org");
             assert_eq!(d.token, "t");
         }
         for bad in ["", ".duckdns.org", "bad name", "-x", "a.b"] {
-            assert!(DuckDns::new(bad, "t").is_err(), "{bad:?} should be rejected");
+            assert!(
+                DuckDns::new(bad, "t").is_err(),
+                "{bad:?} should be rejected"
+            );
         }
         assert!(DuckDns::new("yarmiplay", "  ").is_err());
     }
@@ -665,12 +756,16 @@ mod tests {
             duckdns_api: None,
             directory: None,
         };
-        let ip = duckdns_set_ip(o.duckdns_api(), &o.duckdns, None).await.expect("duckdns ip update");
+        let ip = duckdns_set_ip(o.duckdns_api(), &o.duckdns, None)
+            .await
+            .expect("duckdns ip update");
         eprintln!("duckdns ip {ip:?}");
         let cert = load_or_issue(&o, true).await.expect("staging issuance");
         eprintln!("issued for {} valid until {}", cert.host, cert.not_after);
         assert_eq!(cert.host, "yarmiplay.duckdns.org");
         assert!(crate::tls::server_config(&cert.cert_pem, &cert.key_pem).is_ok());
-        assert!(crate::jellyfin::netconfig::pem_to_pfx(&cert.cert_pem, &cert.key_pem, "pw").is_ok());
+        assert!(
+            crate::jellyfin::netconfig::pem_to_pfx(&cert.cert_pem, &cert.key_pem, "pw").is_ok()
+        );
     }
 }

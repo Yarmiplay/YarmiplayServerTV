@@ -113,7 +113,9 @@ impl Settings {
                 return Err(format!("{name} port must be between 1024 and 65535"));
             }
         }
-        if self.syncplay.port == self.jellyfin.http_port || self.syncplay.port == self.jellyfin.https_port {
+        if self.syncplay.port == self.jellyfin.http_port
+            || self.syncplay.port == self.jellyfin.https_port
+        {
             return Err("Syncplay and Jellyfin need different ports".into());
         }
         if self.jellyfin.http_port == self.jellyfin.https_port {

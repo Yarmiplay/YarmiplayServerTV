@@ -78,7 +78,8 @@ pub fn current(root: &Path) -> Option<Installed> {
     let raw = std::fs::read_to_string(installed_file(root)).ok()?;
     let installed: Installed = serde_json::from_str(&raw).ok()?;
     let m = manifest();
-    (installed.version == m.jellyfin && installed.exe.is_file() && installed.web.is_dir()).then_some(installed)
+    (installed.version == m.jellyfin && installed.exe.is_file() && installed.web.is_dir())
+        .then_some(installed)
 }
 
 pub async fn ensure(root: &Path, progress: ProgressFn) -> Result<Installed, String> {
@@ -97,7 +98,7 @@ pub async fn ensure(root: &Path, progress: ProgressFn) -> Result<Installed, Stri
     std::fs::create_dir_all(&downloads).map_err(|e| e.to_string())?;
 
     let total = entry.server.size + entry.ffmpeg.as_ref().map_or(0, |f| f.size);
-    let client = reqwest::Client::builder()
+    let client = crate::net::client_builder()
         .user_agent(concat!("YarmiplayServerTV/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(std::time::Duration::from_secs(20))
         .build()
@@ -115,9 +116,15 @@ pub async fn ensure(root: &Path, progress: ProgressFn) -> Result<Installed, Stri
         None => None,
     };
 
-    progress(Progress { downloaded: total, total, stage: "extract" });
+    progress(Progress {
+        downloaded: total,
+        total,
+        stage: "extract",
+    });
     let install_dir = root.join("install").join(&m.jellyfin);
-    let staging = root.join("install").join(format!(".staging-{}", uuid::Uuid::new_v4().simple()));
+    let staging = root
+        .join("install")
+        .join(format!(".staging-{}", uuid::Uuid::new_v4().simple()));
     let server_format = entry.server.format.clone();
     let bundled = entry.bundled_ffmpeg.clone();
     let staging2 = staging.clone();
@@ -131,15 +138,18 @@ pub async fn ensure(root: &Path, progress: ProgressFn) -> Result<Installed, Stri
         if let Some((archive, format)) = &ffmpeg_archive {
             let dir = staging2.join("ffmpeg");
             extract(archive, format, &dir)?;
-            let found = find_file(&dir, &[exe_name("ffmpeg")]).ok_or("ffmpeg not found in the jellyfin-ffmpeg archive")?;
+            let found = find_file(&dir, &[exe_name("ffmpeg")])
+                .ok_or("ffmpeg not found in the jellyfin-ffmpeg archive")?;
             ffmpeg_rel = Some(found.strip_prefix(&staging2).unwrap().to_path_buf());
         } else if let Some(name) = &bundled {
             if let Some(found) = find_file(&server_dir, &[name.as_str()]) {
                 ffmpeg_rel = Some(found.strip_prefix(&staging2).unwrap().to_path_buf());
             }
         }
-        let exe = find_file(&server_dir, &[exe_name("jellyfin").as_str()]).ok_or("jellyfin executable not found in the archive")?;
-        let web = find_dir_with(&server_dir, "jellyfin-web", "index.html").ok_or("jellyfin-web not found in the archive")?;
+        let exe = find_file(&server_dir, &[exe_name("jellyfin").as_str()])
+            .ok_or("jellyfin executable not found in the archive")?;
+        let web = find_dir_with(&server_dir, "jellyfin-web", "index.html")
+            .ok_or("jellyfin-web not found in the archive")?;
         let exe_rel = exe.strip_prefix(&staging2).unwrap().to_path_buf();
         let web_rel = web.strip_prefix(&staging2).unwrap().to_path_buf();
 
@@ -203,7 +213,9 @@ async fn download(
     progress: &ProgressFn,
 ) -> Result<(), String> {
     if let Ok(meta) = std::fs::metadata(dest) {
-        if meta.len() == artifact.size && sha256_file(dest).as_deref() == Some(artifact.sha256.as_str()) {
+        if meta.len() == artifact.size
+            && sha256_file(dest).as_deref() == Some(artifact.sha256.as_str())
+        {
             return Ok(());
         }
     }
@@ -229,7 +241,11 @@ async fn download(
         }
         if last_report.elapsed() > std::time::Duration::from_millis(250) {
             last_report = std::time::Instant::now();
-            progress(Progress { downloaded: offset + done, total, stage: "download" });
+            progress(Progress {
+                downloaded: offset + done,
+                total,
+                stage: "download",
+            });
         }
     }
     file.flush().map_err(|e| e.to_string())?;
@@ -240,7 +256,11 @@ async fn download(
         return Err(format!("checksum mismatch for {}", artifact.url));
     }
     std::fs::rename(&part, dest).map_err(|e| e.to_string())?;
-    progress(Progress { downloaded: offset + done, total, stage: "download" });
+    progress(Progress {
+        downloaded: offset + done,
+        total,
+        stage: "download",
+    });
     Ok(())
 }
 
@@ -259,7 +279,9 @@ fn extract(archive: &Path, format: &str, dest: &Path) -> Result<(), String> {
             let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("zip: {e}"))?;
             for i in 0..zip.len() {
                 let mut entry = zip.by_index(i).map_err(|e| format!("zip: {e}"))?;
-                let Some(rel) = entry.enclosed_name() else { continue };
+                let Some(rel) = entry.enclosed_name() else {
+                    continue;
+                };
                 let out = dest.join(rel);
                 if entry.is_dir() {
                     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
@@ -273,7 +295,10 @@ fn extract(archive: &Path, format: &str, dest: &Path) -> Result<(), String> {
                 #[cfg(unix)]
                 if let Some(mode) = entry.unix_mode() {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&out, std::fs::Permissions::from_mode(mode & 0o777));
+                    let _ = std::fs::set_permissions(
+                        &out,
+                        std::fs::Permissions::from_mode(mode & 0o777),
+                    );
                 }
             }
         }
@@ -299,7 +324,11 @@ fn find_file<S: AsRef<str>>(root: &Path, names: &[S]) -> Option<PathBuf> {
         entries.sort_by_key(|e| e.file_name());
         for e in &entries {
             let path = e.path();
-            if path.is_file() && names.iter().any(|n| e.file_name().to_string_lossy() == n.as_ref()) {
+            if path.is_file()
+                && names
+                    .iter()
+                    .any(|n| e.file_name().to_string_lossy() == n.as_ref())
+            {
                 return Some(path);
             }
         }
@@ -335,11 +364,24 @@ mod tests {
     #[test]
     fn manifest_covers_desktop_platforms() {
         let m = manifest();
-        for key in ["windows-x86_64", "windows-aarch64", "linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-aarch64"] {
-            let e = m.platforms.get(key).unwrap_or_else(|| panic!("{key} missing"));
+        for key in [
+            "windows-x86_64",
+            "windows-aarch64",
+            "linux-x86_64",
+            "linux-aarch64",
+            "macos-x86_64",
+            "macos-aarch64",
+        ] {
+            let e = m
+                .platforms
+                .get(key)
+                .unwrap_or_else(|| panic!("{key} missing"));
             assert!(e.server.url.starts_with("https://repo.jellyfin.org/"));
             assert_eq!(e.server.sha256.len(), 64);
-            assert!(e.ffmpeg.is_some() || e.bundled_ffmpeg.is_some(), "{key} has no ffmpeg");
+            assert!(
+                e.ffmpeg.is_some() || e.bundled_ffmpeg.is_some(),
+                "{key} has no ffmpeg"
+            );
         }
         assert!(m.platforms.contains_key(&platform_key()));
     }
@@ -352,9 +394,11 @@ mod tests {
             let f = std::fs::File::create(&archive).unwrap();
             let mut z = zip::ZipWriter::new(f);
             let opts = zip::write::SimpleFileOptions::default();
-            z.start_file(format!("jellyfin/{}", exe_name("jellyfin")), opts).unwrap();
+            z.start_file(format!("jellyfin/{}", exe_name("jellyfin")), opts)
+                .unwrap();
             z.write_all(b"bin").unwrap();
-            z.start_file("jellyfin/jellyfin-web/index.html", opts).unwrap();
+            z.start_file("jellyfin/jellyfin-web/index.html", opts)
+                .unwrap();
             z.write_all(b"<html>").unwrap();
             z.start_file("../evil.txt", opts).unwrap();
             z.write_all(b"x").unwrap();
@@ -381,7 +425,8 @@ mod tests {
             h.set_size(data.len() as u64);
             h.set_mode(0o755);
             h.set_cksum();
-            b.append_data(&mut h, format!("pkg/{}", exe_name("ffmpeg")), &data[..]).unwrap();
+            b.append_data(&mut h, format!("pkg/{}", exe_name("ffmpeg")), &data[..])
+                .unwrap();
             b.into_inner().unwrap().finish().unwrap();
         }
         let out = dir.path().join("out");

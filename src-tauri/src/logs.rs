@@ -32,7 +32,10 @@ struct Buffer {
     seq: u64,
 }
 
-static BUFFER: Mutex<Buffer> = Mutex::new(Buffer { lines: VecDeque::new(), seq: 0 });
+static BUFFER: Mutex<Buffer> = Mutex::new(Buffer {
+    lines: VecDeque::new(),
+    seq: 0,
+});
 static SECRETS: RwLock<Vec<String>> = RwLock::new(Vec::new());
 static SINK: OnceLock<Sink> = OnceLock::new();
 
@@ -115,7 +118,10 @@ impl<S: Subscriber> Layer<S> for BufferLayer {
             Level::DEBUG => "debug",
             Level::TRACE => "trace",
         };
-        let short_target = target.strip_prefix("yarmiplayservertv_lib::").unwrap_or(target).to_string();
+        let short_target = target
+            .strip_prefix("yarmiplayservertv_lib::")
+            .unwrap_or(target)
+            .to_string();
         let line = {
             let mut buf = BUFFER.lock();
             buf.seq += 1;

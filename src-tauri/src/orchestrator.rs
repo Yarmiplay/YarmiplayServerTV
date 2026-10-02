@@ -166,8 +166,14 @@ impl App {
         self.save_settings(next)
     }
 
-    pub async fn set_duckdns_token(self: &Arc<Self>, token: Option<String>) -> Result<Snapshot, String> {
-        match token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
+    pub async fn set_duckdns_token(
+        self: &Arc<Self>,
+        token: Option<String>,
+    ) -> Result<Snapshot, String> {
+        match token
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+        {
             Some(t) => {
                 DuckDns::new("x", &t)?;
                 self.secrets.set(secrets::DUCKDNS_TOKEN, &t)?;
@@ -200,9 +206,13 @@ impl App {
             }
         }
         let password = hex::encode(rand::random::<[u8; 24]>());
-        let bytes = crate::jellyfin::netconfig::pem_to_pfx(&bundle.cert_pem, &bundle.key_pem, &password)?;
+        let bytes =
+            crate::jellyfin::netconfig::pem_to_pfx(&bundle.cert_pem, &bundle.key_pem, &password)?;
         crate::paths::write_atomic(&path, &bytes)?;
-        *pfx = Some(PfxState { fingerprint: bundle.fingerprint.clone(), password: password.clone() });
+        *pfx = Some(PfxState {
+            fingerprint: bundle.fingerprint.clone(),
+            password: password.clone(),
+        });
         Ok((path.to_string_lossy().into_owned(), password))
     }
 
@@ -217,18 +227,25 @@ impl App {
             let request = match (&token, s.tls.duckdns_domain.is_empty()) {
                 (_, true) => Err("Enter your DuckDNS domain".to_string()),
                 (None, _) => Err("Enter your DuckDNS token".to_string()),
-                (Some(t), false) => DuckDns::new(&s.tls.duckdns_domain, t).map(|duckdns| TlsRequest {
-                    duckdns,
-                    staging: s.tls.staging,
-                    email: Some(s.tls.email.clone()).filter(|e| !e.is_empty()),
-                }),
+                (Some(t), false) => {
+                    DuckDns::new(&s.tls.duckdns_domain, t).map(|duckdns| TlsRequest {
+                        duckdns,
+                        staging: s.tls.staging,
+                        email: Some(s.tls.email.clone()).filter(|e| !e.is_empty()),
+                    })
+                }
             };
             match request {
-                Ok(req) => self.tls.apply(Some(req), None, self.ip_source(), self.notify.clone()),
-                Err(msg) => self.tls.apply(None, Some(msg), self.ip_source(), self.notify.clone()),
+                Ok(req) => self
+                    .tls
+                    .apply(Some(req), None, self.ip_source(), self.notify.clone()),
+                Err(msg) => self
+                    .tls
+                    .apply(None, Some(msg), self.ip_source(), self.notify.clone()),
             }
         } else {
-            self.tls.apply(None, None, self.ip_source(), self.notify.clone());
+            self.tls
+                .apply(None, None, self.ip_source(), self.notify.clone());
         }
 
         // Syncplay.
@@ -246,26 +263,33 @@ impl App {
                     srv.set_options(opts);
                 }
             }
-            Some(port) => match SyncplayServer::start(port, opts, self.tls.store(), self.notify.clone()).await {
-                Ok(srv) => {
-                    *self.syncplay.lock() = Some(srv);
-                    *self.syncplay_error.write() = None;
+            Some(port) => {
+                match SyncplayServer::start(port, opts, self.tls.store(), self.notify.clone()).await
+                {
+                    Ok(srv) => {
+                        *self.syncplay.lock() = Some(srv);
+                        *self.syncplay_error.write() = None;
+                    }
+                    Err(e) => {
+                        let msg = if e.kind() == std::io::ErrorKind::AddrInUse {
+                            format!("Port {port} is already in use by another program")
+                        } else {
+                            format!("Could not listen on port {port}: {e}")
+                        };
+                        warn!(port, error = %e, "Syncplay server failed to start");
+                        *self.syncplay_error.write() = Some(msg);
+                    }
                 }
-                Err(e) => {
-                    let msg = if e.kind() == std::io::ErrorKind::AddrInUse {
-                        format!("Port {port} is already in use by another program")
-                    } else {
-                        format!("Could not listen on port {port}: {e}")
-                    };
-                    warn!(port, error = %e, "Syncplay server failed to start");
-                    *self.syncplay_error.write() = Some(msg);
-                }
-            },
+            }
             None => *self.syncplay_error.write() = None,
         }
 
         // Jellyfin.
-        let cert = if s.tls.enabled { self.tls.current() } else { None };
+        let cert = if s.tls.enabled {
+            self.tls.current()
+        } else {
+            None
+        };
         *self.applied_fingerprint.lock() = cert.as_ref().map(|c| c.fingerprint.clone());
         let https = cert.as_ref().and_then(|c| match self.ensure_pfx(c) {
             Ok(v) => Some(v),
@@ -277,7 +301,11 @@ impl App {
         let https_on = https.is_some();
         if s.jellyfin.enabled {
             let token = self.jellyfin_token.read().clone();
-            self.jellyfin.set_api(token.map(|t| JellyfinApi::new(s.jellyfin.http_port, &s.jellyfin.device_id, Some(t))));
+            self.jellyfin.set_api(
+                token.map(|t| {
+                    JellyfinApi::new(s.jellyfin.http_port, &s.jellyfin.device_id, Some(t))
+                }),
+            );
             self.jellyfin.apply(Some(JellyfinDesired {
                 http_port: s.jellyfin.http_port,
                 https_port: s.jellyfin.https_port,
@@ -313,7 +341,11 @@ impl App {
     /// Called (debounced) after any status change: a new or renewed
     /// certificate needs a fresh Jellyfin PFX.
     pub async fn after_change(self: &Arc<Self>) {
-        let current = if self.settings.read().tls.enabled { self.tls.current().map(|c| c.fingerprint.clone()) } else { None };
+        let current = if self.settings.read().tls.enabled {
+            self.tls.current().map(|c| c.fingerprint.clone())
+        } else {
+            None
+        };
         if *self.applied_fingerprint.lock() != current {
             info!("certificate changed, updating services");
             self.reconcile().await;
@@ -333,7 +365,10 @@ impl App {
                     rooms: srv.rooms(),
                     tls: self.tls.current().is_some(),
                 },
-                None => SyncplayStatus { error: self.syncplay_error.read().clone(), ..Default::default() },
+                None => SyncplayStatus {
+                    error: self.syncplay_error.read().clone(),
+                    ..Default::default()
+                },
             }
         };
         let tls = self.tls.status();
@@ -343,17 +378,29 @@ impl App {
         let lan_ip = crate::net::ip::primary_lan_ipv4().map(|ip| ip.to_string());
         let cert_host = self.tls.current().map(|c| c.host.clone());
         let public_host = cert_host.clone().or_else(|| upnp.external_ip.clone());
-        let mut addresses = Addresses { lan_ip: lan_ip.clone(), public_host: public_host.clone(), ..Default::default() };
+        let mut addresses = Addresses {
+            lan_ip: lan_ip.clone(),
+            public_host: public_host.clone(),
+            ..Default::default()
+        };
         if s.syncplay.enabled {
-            addresses.syncplay_lan = lan_ip.as_ref().map(|ip| format!("{ip}:{}", s.syncplay.port));
-            addresses.syncplay_public = public_host.as_ref().map(|h| format!("{h}:{}", s.syncplay.port));
+            addresses.syncplay_lan = lan_ip
+                .as_ref()
+                .map(|ip| format!("{ip}:{}", s.syncplay.port));
+            addresses.syncplay_public = public_host
+                .as_ref()
+                .map(|h| format!("{h}:{}", s.syncplay.port));
         }
         if s.jellyfin.enabled {
             addresses.jellyfin_local = Some(format!("http://localhost:{}", s.jellyfin.http_port));
-            addresses.jellyfin_lan = lan_ip.as_ref().map(|ip| format!("http://{ip}:{}", s.jellyfin.http_port));
+            addresses.jellyfin_lan = lan_ip
+                .as_ref()
+                .map(|ip| format!("http://{ip}:{}", s.jellyfin.http_port));
             addresses.jellyfin_public = match (&cert_host, jellyfin.https) {
                 (Some(host), true) => Some(format!("https://{host}:{}", s.jellyfin.https_port)),
-                _ => public_host.as_ref().map(|h| format!("http://{h}:{}", s.jellyfin.http_port)),
+                _ => public_host
+                    .as_ref()
+                    .map(|h| format!("http://{h}:{}", s.jellyfin.http_port)),
             };
         }
 
@@ -381,15 +428,31 @@ impl App {
 
     fn jellyfin_api(&self) -> Result<JellyfinApi, String> {
         let port = self.jellyfin_port()?;
-        let token = self.jellyfin_token.read().clone().ok_or("Sign in to Jellyfin first")?;
-        Ok(JellyfinApi::new(port, &self.settings.read().jellyfin.device_id, Some(token)))
+        let token = self
+            .jellyfin_token
+            .read()
+            .clone()
+            .ok_or("Sign in to Jellyfin first")?;
+        Ok(JellyfinApi::new(
+            port,
+            &self.settings.read().jellyfin.device_id,
+            Some(token),
+        ))
     }
 
-    fn store_session(&self, port: u16, session: crate::jellyfin::api::Session) -> Result<(), String> {
+    fn store_session(
+        &self,
+        port: u16,
+        session: crate::jellyfin::api::Session,
+    ) -> Result<(), String> {
         self.secrets.set(secrets::JELLYFIN_TOKEN, &session.token)?;
         *self.jellyfin_token.write() = Some(session.token.clone());
         let device_id = self.settings.read().jellyfin.device_id.clone();
-        self.jellyfin.set_api(Some(JellyfinApi::new(port, &device_id, Some(session.token))));
+        self.jellyfin.set_api(Some(JellyfinApi::new(
+            port,
+            &device_id,
+            Some(session.token),
+        )));
         self.modify_settings(|s| {
             s.jellyfin.setup_complete = true;
             s.jellyfin.admin_user = Some(session.user_name);
@@ -397,7 +460,12 @@ impl App {
         })
     }
 
-    pub async fn jellyfin_setup(&self, server_name: String, user: String, password: String) -> Result<Snapshot, String> {
+    pub async fn jellyfin_setup(
+        &self,
+        server_name: String,
+        user: String,
+        password: String,
+    ) -> Result<Snapshot, String> {
         let user = user.trim().to_string();
         if user.is_empty() {
             return Err("Choose an administrator username".into());
@@ -412,7 +480,11 @@ impl App {
         if info.startup_wizard_completed {
             return Err("This Jellyfin server is already set up. Sign in with its administrator account instead.".into());
         }
-        let name = if server_name.trim().is_empty() { "YarmiplayServerTV".to_string() } else { server_name.trim().to_string() };
+        let name = if server_name.trim().is_empty() {
+            "YarmiplayServerTV".to_string()
+        } else {
+            server_name.trim().to_string()
+        };
         api.run_startup(&name, &user, &password).await?;
         let session = api.authenticate(&user, &password).await?;
         let authed = JellyfinApi::new(port, &device_id, Some(session.token.clone()));
@@ -428,7 +500,9 @@ impl App {
     pub async fn jellyfin_login(&self, user: String, password: String) -> Result<Snapshot, String> {
         let port = self.jellyfin_port()?;
         let device_id = self.settings.read().jellyfin.device_id.clone();
-        let session = JellyfinApi::new(port, &device_id, None).authenticate(user.trim(), &password).await?;
+        let session = JellyfinApi::new(port, &device_id, None)
+            .authenticate(user.trim(), &password)
+            .await?;
         self.store_session(port, session)?;
         self.jellyfin.refresh_info(port).await;
         Ok(self.snapshot())
@@ -462,12 +536,21 @@ impl App {
         self.with_auth(api.libraries().await).await
     }
 
-    pub async fn jellyfin_add_library(&self, name: String, collection_type: String, path: String) -> Result<(), String> {
+    pub async fn jellyfin_add_library(
+        &self,
+        name: String,
+        collection_type: String,
+        path: String,
+    ) -> Result<(), String> {
         if name.trim().is_empty() || path.trim().is_empty() {
             return Err("A library needs a name and a folder".into());
         }
         let api = self.jellyfin_api()?;
-        self.with_auth(api.add_library(name.trim(), &collection_type, path.trim()).await).await
+        self.with_auth(
+            api.add_library(name.trim(), &collection_type, path.trim())
+                .await,
+        )
+        .await
     }
 
     pub async fn jellyfin_remove_library(&self, name: String) -> Result<(), String> {
@@ -477,7 +560,8 @@ impl App {
 
     pub async fn jellyfin_add_path(&self, library: String, path: String) -> Result<(), String> {
         let api = self.jellyfin_api()?;
-        self.with_auth(api.add_path(&library, path.trim()).await).await
+        self.with_auth(api.add_path(&library, path.trim()).await)
+            .await
     }
 
     pub async fn jellyfin_remove_path(&self, library: String, path: String) -> Result<(), String> {

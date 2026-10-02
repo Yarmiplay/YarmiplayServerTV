@@ -104,7 +104,10 @@ impl TlsManager {
         Arc::new(Self {
             acme_dir,
             store: Arc::default(),
-            status: RwLock::new(TlsStatus { phase: "off", ..Default::default() }),
+            status: RwLock::new(TlsStatus {
+                phase: "off",
+                ..Default::default()
+            }),
             running: Mutex::new(None),
         })
     }
@@ -123,7 +126,13 @@ impl TlsManager {
 
     /// Start, restart or stop the certificate task so it matches `request`.
     /// `incomplete` marks TLS as switched on but missing a domain or token.
-    pub fn apply(self: &Arc<Self>, request: Option<TlsRequest>, incomplete: Option<String>, ip: IpSource, notify: Notify) {
+    pub fn apply(
+        self: &Arc<Self>,
+        request: Option<TlsRequest>,
+        incomplete: Option<String>,
+        ip: IpSource,
+        notify: Notify,
+    ) {
         let mut running = self.running.lock();
         if let (Some(req), Some(r)) = (&request, running.as_ref()) {
             if &r.request == req {
@@ -136,8 +145,15 @@ impl TlsManager {
         let Some(request) = request else {
             let had_cert = self.store.write().take().is_some();
             let status = match incomplete {
-                Some(msg) => TlsStatus { phase: "incomplete", error: Some(msg), ..Default::default() },
-                None => TlsStatus { phase: "off", ..Default::default() },
+                Some(msg) => TlsStatus {
+                    phase: "incomplete",
+                    error: Some(msg),
+                    ..Default::default()
+                },
+                None => TlsStatus {
+                    phase: "off",
+                    ..Default::default()
+                },
             };
             let changed = *self.status.read() != status;
             *self.status.write() = status;
@@ -166,7 +182,9 @@ impl TlsManager {
         // started in the same reconcile already use it.
         if self.store.read().is_none() {
             if let Some(cached) = acme::load_cached(&self.options(&request)) {
-                if acme::unix_now() < cached.not_after && self.install(&cached, request.staging).is_ok() {
+                if acme::unix_now() < cached.not_after
+                    && self.install(&cached, request.staging).is_ok()
+                {
                     self.set_status(|s| s.phase = "ready");
                 }
             }
@@ -175,12 +193,19 @@ impl TlsManager {
         let me = self.clone();
         let req = request.clone();
         let task = tokio::spawn(async move { me.run(req, rx, ip, notify).await });
-        *running = Some(Running { request, task, renew: tx });
+        *running = Some(Running {
+            request,
+            task,
+            renew: tx,
+        });
     }
 
     pub fn renew_now(&self) -> Result<(), String> {
         match self.running.lock().as_ref() {
-            Some(r) => r.renew.send(()).map_err(|_| "certificate task stopped".into()),
+            Some(r) => r
+                .renew
+                .send(())
+                .map_err(|_| "certificate task stopped".into()),
             None => Err("TLS is not enabled".into()),
         }
     }
@@ -198,7 +223,12 @@ impl TlsManager {
 
     fn install(&self, cert: &IssuedCert, staging: bool) -> Result<bool, String> {
         let next = bundle(cert, staging)?;
-        let changed = self.store.read().as_ref().map(|b| b.fingerprint != next.fingerprint).unwrap_or(true);
+        let changed = self
+            .store
+            .read()
+            .as_ref()
+            .map(|b| b.fingerprint != next.fingerprint)
+            .unwrap_or(true);
         if changed {
             *self.store.write() = Some(Arc::new(next));
         }
@@ -216,7 +246,13 @@ impl TlsManager {
         }
     }
 
-    async fn run(self: Arc<Self>, req: TlsRequest, mut renew: mpsc::UnboundedReceiver<()>, ip: IpSource, notify: Notify) {
+    async fn run(
+        self: Arc<Self>,
+        req: TlsRequest,
+        mut renew: mpsc::UnboundedReceiver<()>,
+        ip: IpSource,
+        notify: Notify,
+    ) {
         let opts = self.options(&req);
         let host = req.duckdns.fqdn();
         if let Some(b) = self.current() {
@@ -236,7 +272,9 @@ impl TlsManager {
             let now = acme::unix_now();
             let due = force
                 || (now >= retry_at
-                    && self.current().map_or(true, |b| acme::needs_renewal(b.not_before, b.not_after, now)));
+                    && self.current().map_or(true, |b| {
+                        acme::needs_renewal(b.not_before, b.not_after, now)
+                    }));
             if due {
                 self.set_status(|s| {
                     s.phase = "issuing";
@@ -244,28 +282,26 @@ impl TlsManager {
                 });
                 notify();
                 match acme::load_or_issue(&opts, force).await {
-                    Ok(cert) => {
-                        match self.install(&cert, req.staging) {
-                            Ok(changed) => {
-                                if changed {
-                                    info!(%host, not_after = cert.not_after, "certificate active");
-                                }
-                                failed = false;
-                                self.set_status(|s| {
-                                    s.phase = "ready";
-                                    s.error = None;
-                                });
+                    Ok(cert) => match self.install(&cert, req.staging) {
+                        Ok(changed) => {
+                            if changed {
+                                info!(%host, not_after = cert.not_after, "certificate active");
                             }
-                            Err(e) => {
-                                warn!(error = %e, "certificate could not be loaded");
-                                failed = true;
-                                self.set_status(|s| {
-                                    s.phase = "error";
-                                    s.error = Some(e);
-                                });
-                            }
+                            failed = false;
+                            self.set_status(|s| {
+                                s.phase = "ready";
+                                s.error = None;
+                            });
                         }
-                    }
+                        Err(e) => {
+                            warn!(error = %e, "certificate could not be loaded");
+                            failed = true;
+                            self.set_status(|s| {
+                                s.phase = "error";
+                                s.error = Some(e);
+                            });
+                        }
+                    },
                     Err(e) => {
                         warn!(error = %e, "certificate issuance failed");
                         failed = true;
@@ -277,13 +313,23 @@ impl TlsManager {
                     }
                 }
                 force = false;
-                retry_at = if failed { acme::unix_now() + acme::RETRY_AFTER_FAILURE.as_secs() as i64 } else { 0 };
+                retry_at = if failed {
+                    acme::unix_now() + acme::RETRY_AFTER_FAILURE.as_secs() as i64
+                } else {
+                    0
+                };
                 notify();
             }
 
             let delay = match self.current() {
                 Some(b) => acme::next_check_delay(
-                    &IssuedCert { host: String::new(), cert_pem: String::new(), key_pem: String::new(), not_before: b.not_before, not_after: b.not_after },
+                    &IssuedCert {
+                        host: String::new(),
+                        cert_pem: String::new(),
+                        key_pem: String::new(),
+                        not_before: b.not_before,
+                        not_after: b.not_after,
+                    },
                     acme::unix_now(),
                     failed,
                 ),

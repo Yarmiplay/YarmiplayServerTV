@@ -33,11 +33,21 @@ struct Shared {
 }
 
 impl SyncplayServer {
-    pub async fn start(port: u16, opts: SyncplayOptions, tls: CertStore, notify: ChangeNotify) -> std::io::Result<Self> {
+    pub async fn start(
+        port: u16,
+        opts: SyncplayOptions,
+        tls: CertStore,
+        notify: ChangeNotify,
+    ) -> std::io::Result<Self> {
         let listener = TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], port))).await?;
         let port = listener.local_addr()?.port();
         let state = Arc::new(Mutex::new(ServerState::new(opts)));
-        let shared = Arc::new(Shared { state: state.clone(), tls, next_id: AtomicU64::new(1), notify: notify.clone() });
+        let shared = Arc::new(Shared {
+            state: state.clone(),
+            tls,
+            next_id: AtomicU64::new(1),
+            notify: notify.clone(),
+        });
 
         let accept = {
             let shared = shared.clone();
@@ -72,7 +82,12 @@ impl SyncplayServer {
         };
 
         info!(port, "Syncplay server listening");
-        Ok(Self { port, state, accept, heartbeat })
+        Ok(Self {
+            port,
+            state,
+            accept,
+            heartbeat,
+        })
     }
 
     pub fn set_options(&self, opts: SyncplayOptions) {
@@ -103,7 +118,10 @@ impl Drop for SyncplayServer {
 }
 
 /// Read one `\n`-terminated line (cancel-safe accumulation into `buf`).
-async fn read_line<R: AsyncRead + Unpin>(reader: &mut BufReader<R>, buf: &mut Vec<u8>) -> std::io::Result<Option<Value>> {
+async fn read_line<R: AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<Option<Value>> {
     loop {
         buf.clear();
         let n = reader.read_until(b'\n', buf).await?;
@@ -111,7 +129,10 @@ async fn read_line<R: AsyncRead + Unpin>(reader: &mut BufReader<R>, buf: &mut Ve
             return Ok(None);
         }
         if buf.len() > MAX_LINE_LENGTH {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "line too long"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "line too long",
+            ));
         }
         let text = String::from_utf8_lossy(buf);
         let text = text.trim();
@@ -120,7 +141,10 @@ async fn read_line<R: AsyncRead + Unpin>(reader: &mut BufReader<R>, buf: &mut Ve
         }
         return match serde_json::from_str::<Value>(text) {
             Ok(v) if v.is_object() => Ok(Some(v)),
-            _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "not a JSON object")),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "not a JSON object",
+            )),
         };
     }
 }
@@ -139,12 +163,22 @@ async fn serve_conn(stream: TcpStream, peer: SocketAddr, shared: Arc<Shared>) {
     if first.get("TLS").is_some() {
         let bundle = shared.tls.read().clone();
         let Some(bundle) = bundle else {
-            if reader.get_mut().write_all(line(&json!({ "TLS": { "startTLS": "false" } })).as_bytes()).await.is_err() {
+            if reader
+                .get_mut()
+                .write_all(line(&json!({ "TLS": { "startTLS": "false" } })).as_bytes())
+                .await
+                .is_err()
+            {
                 return;
             }
             return run_session(reader, None, id, peer, false, shared).await;
         };
-        if reader.get_mut().write_all(line(&json!({ "TLS": { "startTLS": "true" } })).as_bytes()).await.is_err() {
+        if reader
+            .get_mut()
+            .write_all(line(&json!({ "TLS": { "startTLS": "true" } })).as_bytes())
+            .await
+            .is_err()
+        {
             return;
         }
         if !reader.buffer().is_empty() {
@@ -214,7 +248,9 @@ async fn run_session<S>(
                 }
             },
         };
-        let Some(obj) = message.as_object() else { continue };
+        let Some(obj) = message.as_object() else {
+            continue;
+        };
 
         if !logged {
             if obj.contains_key("TLS") {
@@ -225,14 +261,23 @@ async fn run_session<S>(
                 drop_with_error("You must be known to server before sending this command");
                 break;
             };
-            let result = shared.state.lock().handle_hello(id, hello, tx.clone(), now_secs());
+            let result = shared
+                .state
+                .lock()
+                .handle_hello(id, hello, tx.clone(), now_secs());
             match result {
                 Ok(()) => {
                     logged = true;
                     debug!(%peer, tls, "Syncplay client logged in");
                     (shared.notify)();
-                    let rest: Map<String, Value> = obj.iter().filter(|(k, _)| k.as_str() != "Hello").map(|(k, v)| (k.clone(), v.clone())).collect();
-                    if !rest.is_empty() && !shared.state.lock().handle_message(id, &rest, now_secs()) {
+                    let rest: Map<String, Value> = obj
+                        .iter()
+                        .filter(|(k, _)| k.as_str() != "Hello")
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    if !rest.is_empty()
+                        && !shared.state.lock().handle_message(id, &rest, now_secs())
+                    {
                         break;
                     }
                 }
@@ -295,27 +340,50 @@ mod tests {
     }
 
     fn hello(name: &str) -> String {
-        line(&json!({ "Hello": { "username": name, "room": { "name": "lobby" }, "version": "1.2.255", "realversion": "1.7.4" } }))
+        line(
+            &json!({ "Hello": { "username": name, "room": { "name": "lobby" }, "version": "1.2.255", "realversion": "1.7.4" } }),
+        )
     }
 
     #[tokio::test]
     async fn two_clients_over_tcp() {
-        let server = SyncplayServer::start(0, SyncplayOptions::default(), Arc::default(), Arc::new(|| {})).await.unwrap();
+        let server = SyncplayServer::start(
+            0,
+            SyncplayOptions::default(),
+            Arc::default(),
+            Arc::new(|| {}),
+        )
+        .await
+        .unwrap();
         let port = server.port;
 
         let mut a = BufReader::new(TcpStream::connect(("127.0.0.1", port)).await.unwrap());
-        a.get_mut().write_all(hello("alice").as_bytes()).await.unwrap();
-        assert_eq!(read_until_key(&mut a, "Hello").await["Hello"]["username"], "alice");
+        a.get_mut()
+            .write_all(hello("alice").as_bytes())
+            .await
+            .unwrap();
+        assert_eq!(
+            read_until_key(&mut a, "Hello").await["Hello"]["username"],
+            "alice"
+        );
 
         let mut b = BufReader::new(TcpStream::connect(("127.0.0.1", port)).await.unwrap());
-        b.get_mut().write_all(hello("bob").as_bytes()).await.unwrap();
+        b.get_mut()
+            .write_all(hello("bob").as_bytes())
+            .await
+            .unwrap();
         read_until_key(&mut b, "Hello").await;
 
         let joined = read_until_key(&mut a, "Set").await;
-        assert!(joined["Set"]["user"]["bob"]["event"]["joined"].as_bool().unwrap());
+        assert!(joined["Set"]["user"]["bob"]["event"]["joined"]
+            .as_bool()
+            .unwrap());
         assert_eq!(server.user_count(), 2);
 
-        b.get_mut().write_all(line(&json!({ "Chat": "hi" })).as_bytes()).await.unwrap();
+        b.get_mut()
+            .write_all(line(&json!({ "Chat": "hi" })).as_bytes())
+            .await
+            .unwrap();
         let chat = read_until_key(&mut a, "Chat").await;
         assert_eq!(chat["Chat"]["username"], "bob");
 
@@ -336,11 +404,28 @@ mod tests {
 
     #[tokio::test]
     async fn starttls_refused_without_certificate_then_plain_works() {
-        let server = SyncplayServer::start(0, SyncplayOptions::default(), Arc::default(), Arc::new(|| {})).await.unwrap();
-        let mut a = BufReader::new(TcpStream::connect(("127.0.0.1", server.port)).await.unwrap());
-        a.get_mut().write_all(line(&json!({ "TLS": { "startTLS": "send" } })).as_bytes()).await.unwrap();
+        let server = SyncplayServer::start(
+            0,
+            SyncplayOptions::default(),
+            Arc::default(),
+            Arc::new(|| {}),
+        )
+        .await
+        .unwrap();
+        let mut a = BufReader::new(
+            TcpStream::connect(("127.0.0.1", server.port))
+                .await
+                .unwrap(),
+        );
+        a.get_mut()
+            .write_all(line(&json!({ "TLS": { "startTLS": "send" } })).as_bytes())
+            .await
+            .unwrap();
         assert_eq!(read_msg(&mut a).await["TLS"]["startTLS"], "false");
-        a.get_mut().write_all(hello("alice").as_bytes()).await.unwrap();
+        a.get_mut()
+            .write_all(hello("alice").as_bytes())
+            .await
+            .unwrap();
         read_until_key(&mut a, "Hello").await;
         server.stop();
     }
@@ -352,20 +437,28 @@ mod tests {
         let key = rcgen::KeyPair::generate().unwrap();
         let cert = params.self_signed(&key).unwrap();
         let config = crate::tls::server_config(&cert.pem(), &key.serialize_pem()).unwrap();
-        let store: CertStore = Arc::new(parking_lot::RwLock::new(Some(Arc::new(crate::tls::CertBundle {
-            host: "localhost".into(),
-            cert_pem: cert.pem(),
-            key_pem: key.serialize_pem(),
-            not_before: 0,
-            not_after: i64::MAX,
-            staging: true,
-            fingerprint: String::new(),
-            config,
-        }))));
-        let server = SyncplayServer::start(0, SyncplayOptions::default(), store, Arc::new(|| {})).await.unwrap();
+        let store: CertStore = Arc::new(parking_lot::RwLock::new(Some(Arc::new(
+            crate::tls::CertBundle {
+                host: "localhost".into(),
+                cert_pem: cert.pem(),
+                key_pem: key.serialize_pem(),
+                not_before: 0,
+                not_after: i64::MAX,
+                staging: true,
+                fingerprint: String::new(),
+                config,
+            },
+        ))));
+        let server = SyncplayServer::start(0, SyncplayOptions::default(), store, Arc::new(|| {}))
+            .await
+            .unwrap();
 
-        let mut tcp = TcpStream::connect(("127.0.0.1", server.port)).await.unwrap();
-        tcp.write_all(line(&json!({ "TLS": { "startTLS": "send" } })).as_bytes()).await.unwrap();
+        let mut tcp = TcpStream::connect(("127.0.0.1", server.port))
+            .await
+            .unwrap();
+        tcp.write_all(line(&json!({ "TLS": { "startTLS": "send" } })).as_bytes())
+            .await
+            .unwrap();
         let mut reply = Vec::new();
         loop {
             let mut byte = [0u8; 1];
@@ -379,24 +472,52 @@ mod tests {
 
         let mut roots = rustls::RootCertStore::empty();
         roots.add(cert.der().clone()).unwrap();
-        let client = rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+        let client = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
         let connector = tokio_rustls::TlsConnector::from(Arc::new(client));
         let tls = connector
-            .connect(rustls::pki_types::ServerName::try_from("localhost").unwrap(), tcp)
+            .connect(
+                rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+                tcp,
+            )
             .await
             .expect("TLS handshake");
         let mut tls = BufReader::new(tls);
-        tls.get_mut().write_all(hello("secure").as_bytes()).await.unwrap();
-        assert_eq!(read_until_key(&mut tls, "Hello").await["Hello"]["username"], "secure");
+        tls.get_mut()
+            .write_all(hello("secure").as_bytes())
+            .await
+            .unwrap();
+        assert_eq!(
+            read_until_key(&mut tls, "Hello").await["Hello"]["username"],
+            "secure"
+        );
         server.stop();
     }
 
     #[tokio::test]
     async fn non_hello_before_login_is_rejected() {
-        let server = SyncplayServer::start(0, SyncplayOptions::default(), Arc::default(), Arc::new(|| {})).await.unwrap();
-        let mut a = BufReader::new(TcpStream::connect(("127.0.0.1", server.port)).await.unwrap());
-        a.get_mut().write_all(line(&json!({ "List": null })).as_bytes()).await.unwrap();
-        assert!(read_msg(&mut a).await["Error"]["message"].as_str().unwrap().contains("known"));
+        let server = SyncplayServer::start(
+            0,
+            SyncplayOptions::default(),
+            Arc::default(),
+            Arc::new(|| {}),
+        )
+        .await
+        .unwrap();
+        let mut a = BufReader::new(
+            TcpStream::connect(("127.0.0.1", server.port))
+                .await
+                .unwrap(),
+        );
+        a.get_mut()
+            .write_all(line(&json!({ "List": null })).as_bytes())
+            .await
+            .unwrap();
+        assert!(read_msg(&mut a).await["Error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("known"));
         server.stop();
     }
 }

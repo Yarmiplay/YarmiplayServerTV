@@ -6,7 +6,9 @@
 //! Pure and synchronous: callers pass the current time, and outgoing lines go
 //! to each connection's channel.
 
-use super::protocol::{self, line, truncate, PingService, MAX_FILENAME_LENGTH, MAX_ROOM_NAME_LENGTH};
+use super::protocol::{
+    self, line, truncate, PingService, MAX_FILENAME_LENGTH, MAX_ROOM_NAME_LENGTH,
+};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -74,7 +76,11 @@ impl Watcher {
     /// Position extrapolated while the room plays.
     fn position_at(&self, now: f64, room_paused: bool) -> Option<f64> {
         let p = self.position?;
-        Some(if room_paused { p } else { p + (now - self.last_updated) })
+        Some(if room_paused {
+            p
+        } else {
+            p + (now - self.last_updated)
+        })
     }
 
     /// Syncplay's `Watcher.__lt__` usability: needs a position and a file.
@@ -82,8 +88,20 @@ impl Watcher {
         self.position.is_some() && self.file.is_some()
     }
 
-    fn send_state(&mut self, position: Option<f64>, paused: bool, do_seek: bool, set_by: Option<&str>, forced: bool, now: f64) {
-        let processing = if self.client_latency_arrival > 0.0 { now - self.client_latency_arrival } else { 0.0 };
+    fn send_state(
+        &mut self,
+        position: Option<f64>,
+        paused: bool,
+        do_seek: bool,
+        set_by: Option<&str>,
+        forced: bool,
+        now: f64,
+    ) {
+        let processing = if self.client_latency_arrival > 0.0 {
+            now - self.client_latency_arrival
+        } else {
+            0.0
+        };
         let mut ping = json!({ "latencyCalculation": now, "serverRtt": self.ping.rtt() });
         if self.client_latency_calc != 0.0 {
             ping["clientLatencyCalculation"] = json!(self.client_latency_calc + processing);
@@ -157,7 +175,12 @@ pub struct ServerState {
 
 impl ServerState {
     pub fn new(opts: SyncplayOptions) -> Self {
-        let mut s = Self { opts: SyncplayOptions::default(), password_md5: None, watchers: HashMap::new(), rooms: HashMap::new() };
+        let mut s = Self {
+            opts: SyncplayOptions::default(),
+            password_md5: None,
+            watchers: HashMap::new(),
+            rooms: HashMap::new(),
+        };
         s.set_options(opts);
         s
     }
@@ -181,7 +204,12 @@ impl ServerState {
             .iter()
             .map(|(name, room)| RoomInfo {
                 name: name.clone(),
-                users: room.members.iter().filter_map(|id| self.watchers.get(id)).map(|w| w.name.clone()).collect(),
+                users: room
+                    .members
+                    .iter()
+                    .filter_map(|id| self.watchers.get(id))
+                    .map(|w| w.name.clone())
+                    .collect(),
                 paused: room.paused,
             })
             .collect();
@@ -249,7 +277,11 @@ impl ServerState {
 
     fn free_username(&self, wanted: &str) -> String {
         let mut name = truncate(wanted, self.opts.max_username_length);
-        let taken: Vec<String> = self.watchers.values().map(|w| w.name.to_lowercase()).collect();
+        let taken: Vec<String> = self
+            .watchers
+            .values()
+            .map(|w| w.name.to_lowercase())
+            .collect();
         while taken.contains(&name.to_lowercase()) {
             name.push('_');
         }
@@ -258,8 +290,18 @@ impl ServerState {
 
     /// Validate a Hello and log the client in. On error the caller sends
     /// `{"Error": {"message": ...}}` and closes the connection.
-    pub fn handle_hello(&mut self, id: ConnId, hello: &Value, tx: UnboundedSender<Out>, now: f64) -> Result<(), String> {
-        let username = hello.get("username").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+    pub fn handle_hello(
+        &mut self,
+        id: ConnId,
+        hello: &Value,
+        tx: UnboundedSender<Out>,
+        now: f64,
+    ) -> Result<(), String> {
+        let username = hello
+            .get("username")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         let room = hello
             .get("room")
             .and_then(|r| r.get("name"))
@@ -274,14 +316,24 @@ impl ServerState {
             return Err("Not enough Hello arguments".into());
         };
         if let Some(expected) = &self.password_md5 {
-            match hello.get("password").and_then(Value::as_str).filter(|p| !p.is_empty()) {
+            match hello
+                .get("password")
+                .and_then(Value::as_str)
+                .filter(|p| !p.is_empty())
+            {
                 None => return Err("Password required".into()),
-                Some(p) if !p.eq_ignore_ascii_case(expected) => return Err("Wrong password supplied".into()),
+                Some(p) if !p.eq_ignore_ascii_case(expected) => {
+                    return Err("Wrong password supplied".into())
+                }
                 Some(_) => {}
             }
         }
         let name = self.free_username(username);
-        let features = hello.get("features").cloned().filter(Value::is_object).unwrap_or_else(|| json!({}));
+        let features = hello
+            .get("features")
+            .cloned()
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}));
         self.watchers.insert(
             id,
             Watcher {
@@ -322,11 +374,18 @@ impl ServerState {
         let old_room = self.watchers[&id].room.clone();
         if self.opts.isolate_rooms && !old_room.is_empty() {
             let event = self.user_setting(id, None, Some(json!({ "left": true })));
-            let others: Vec<ConnId> = self.room_members(id).into_iter().filter(|m| *m != id).collect();
+            let others: Vec<ConnId> = self
+                .room_members(id)
+                .into_iter()
+                .filter(|m| *m != id)
+                .collect();
             self.send_to(&others, &event);
         }
         self.detach(id);
-        let room = self.rooms.entry(room_name.to_string()).or_insert_with(|| Room::new(now));
+        let room = self
+            .rooms
+            .entry(room_name.to_string())
+            .or_insert_with(|| Room::new(now));
         let had_members = !room.members.is_empty();
         room.members.push(id);
         self.watchers.get_mut(&id).unwrap().room = room_name.to_string();
@@ -337,7 +396,9 @@ impl ServerState {
     }
 
     fn detach(&mut self, id: ConnId) {
-        let Some(old) = self.watchers.get(&id).map(|w| w.room.clone()) else { return };
+        let Some(old) = self.watchers.get(&id).map(|w| w.room.clone()) else {
+            return;
+        };
         if let Some(room) = self.rooms.get_mut(&old) {
             room.members.retain(|m| *m != id);
             if room.members.is_empty() {
@@ -365,7 +426,9 @@ impl ServerState {
         let room = &self.rooms[&room_name];
         let w = &self.watchers[&id];
         w.send_set(json!({ "playlistChange": { "user": room.set_by, "files": room.playlist } }));
-        w.send_set(json!({ "playlistIndex": { "user": room.set_by, "index": room.playlist_index } }));
+        w.send_set(
+            json!({ "playlistIndex": { "user": room.set_by, "index": room.playlist_index } }),
+        );
     }
 
     /// Room position, re-anchored on the furthest-behind watcher at most once per second.
@@ -376,14 +439,21 @@ impl ServerState {
             let paused = room.paused;
             let mut best: Option<ConnId> = None;
             for id in &room.members {
-                let Some(w) = self.watchers.get(id) else { continue };
+                let Some(w) = self.watchers.get(id) else {
+                    continue;
+                };
                 best = match best {
                     None => Some(*id),
                     Some(b) => {
                         let bw = &self.watchers[&b];
                         let less = w.comparable()
-                            && (!bw.comparable() || w.position_at(now, paused) < bw.position_at(now, paused));
-                        if less { Some(*id) } else { Some(b) }
+                            && (!bw.comparable()
+                                || w.position_at(now, paused) < bw.position_at(now, paused));
+                        if less {
+                            Some(*id)
+                        } else {
+                            Some(b)
+                        }
                     }
                 };
             }
@@ -398,12 +468,15 @@ impl ServerState {
             room.last_update = now;
             pos
         } else {
-            room.position.map(|p| p + if room.paused { 0.0 } else { age })
+            room.position
+                .map(|p| p + if room.paused { 0.0 } else { age })
         }
     }
 
     fn set_room_position(&mut self, room_name: &str, position: Option<f64>, set_by: &str) {
-        let Some(room) = self.rooms.get_mut(room_name) else { return };
+        let Some(room) = self.rooms.get_mut(room_name) else {
+            return;
+        };
         room.position = position;
         if !room.members.is_empty() {
             room.set_by = Some(set_by.to_string());
@@ -438,18 +511,28 @@ impl ServerState {
     }
 
     fn handle_set(&mut self, id: ConnId, settings: &Value, now: f64) {
-        let Some(settings) = settings.as_object() else { return };
+        let Some(settings) = settings.as_object() else {
+            return;
+        };
         for (command, value) in settings {
             match command.as_str() {
                 "room" => {
-                    if let Some(name) = value.get("name").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+                    if let Some(name) = value
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
                         self.set_watcher_room(id, name, false, now);
                     }
                 }
                 "file" => self.set_file(id, value.clone()),
                 "ready" => {
                     let is_ready = value.get("isReady").and_then(Value::as_bool);
-                    let manually = value.get("manuallyInitiated").and_then(Value::as_bool).unwrap_or(false);
+                    let manually = value
+                        .get("manuallyInitiated")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
                     let other = value.get("username").and_then(Value::as_str);
                     let own_name = self.watchers[&id].name.clone();
                     if other.is_some_and(|u| u != own_name) {
@@ -461,7 +544,11 @@ impl ServerState {
                     self.send_to(&self.room_members(id), &msg);
                 }
                 "playlistChange" => {
-                    let files = value.get("files").and_then(Value::as_array).cloned().unwrap_or_default();
+                    let files = value
+                        .get("files")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
                     self.set_playlist(id, files);
                 }
                 "playlistIndex" => {
@@ -475,7 +562,11 @@ impl ServerState {
                 }
                 "controllerAuth" => {
                     let w = &self.watchers[&id];
-                    let room = value.get("room").and_then(Value::as_str).unwrap_or(&w.room).to_string();
+                    let room = value
+                        .get("room")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&w.room)
+                        .to_string();
                     w.send_set(json!({ "controllerAuth": { "user": w.name, "room": room, "success": false } }));
                 }
                 _ => {}
@@ -496,7 +587,11 @@ impl ServerState {
     }
 
     fn set_playlist(&mut self, id: ConnId, files: Vec<Value>) {
-        let total: usize = files.iter().filter_map(Value::as_str).map(|f| f.chars().count()).sum();
+        let total: usize = files
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|f| f.chars().count())
+            .sum();
         let valid = files.len() <= protocol::PLAYLIST_MAX_ITEMS
             && total <= protocol::PLAYLIST_MAX_CHARACTERS
             && files.iter().all(Value::is_string);
@@ -514,7 +609,9 @@ impl ServerState {
         } else if let Some(room) = self.rooms.get(&room_name) {
             let w = &self.watchers[&id];
             w.send_set(json!({ "playlistChange": { "user": room_name, "files": room.playlist } }));
-            w.send_set(json!({ "playlistIndex": { "user": room_name, "index": room.playlist_index } }));
+            w.send_set(
+                json!({ "playlistIndex": { "user": room_name, "index": room.playlist_index } }),
+            );
         }
     }
 
@@ -542,10 +639,16 @@ impl ServerState {
     }
 
     fn send_list(&self, id: ConnId) {
-        let ids: Vec<ConnId> = if self.opts.isolate_rooms { self.room_members(id) } else { self.audience(id) };
+        let ids: Vec<ConnId> = if self.opts.isolate_rooms {
+            self.room_members(id)
+        } else {
+            self.audience(id)
+        };
         let mut list = Map::new();
         for wid in ids {
-            let Some(w) = self.watchers.get(&wid) else { continue };
+            let Some(w) = self.watchers.get(&wid) else {
+                continue;
+            };
             let room = list.entry(w.room.clone()).or_insert_with(|| json!({}));
             room[w.name.clone()] = json!({
                 "file": w.file.clone().unwrap_or_else(|| json!({})),
@@ -579,9 +682,15 @@ impl ServerState {
                 do_seek = ps.get("doSeek").and_then(Value::as_bool);
             }
             if let Some(ping) = state.get("ping") {
-                let latency = ping.get("latencyCalculation").and_then(Value::as_f64).unwrap_or(0.0);
+                let latency = ping
+                    .get("latencyCalculation")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
                 let client_rtt = ping.get("clientRtt").and_then(Value::as_f64).unwrap_or(0.0);
-                w.client_latency_calc = ping.get("clientLatencyCalculation").and_then(Value::as_f64).unwrap_or(0.0);
+                w.client_latency_calc = ping
+                    .get("clientLatencyCalculation")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
                 w.client_latency_arrival = now;
                 w.ping.receive(latency, client_rtt, now);
             }
@@ -592,9 +701,18 @@ impl ServerState {
         self.update_state(id, position, paused, do_seek, now);
     }
 
-    fn update_state(&mut self, id: ConnId, position: Option<f64>, paused: Option<bool>, do_seek: Option<bool>, now: f64) {
+    fn update_state(
+        &mut self,
+        id: ConnId,
+        position: Option<f64>,
+        paused: Option<bool>,
+        do_seek: Option<bool>,
+        now: f64,
+    ) {
         let room_name = self.watchers[&id].room.clone();
-        let Some(room_paused) = self.rooms.get(&room_name).map(|r| r.paused) else { return };
+        let Some(room_paused) = self.rooms.get(&room_name).map(|r| r.paused) else {
+            return;
+        };
         let pause_changed = paused.is_some_and(|p| p != room_paused);
         let (name, message_age) = {
             let w = self.watchers.get_mut(&id).unwrap();
@@ -622,7 +740,9 @@ impl ServerState {
             let w = &self.watchers[&id];
             (w.room.clone(), w.name.clone())
         };
-        let Some(paused) = self.rooms.get(&room_name).map(|r| r.paused) else { return };
+        let Some(paused) = self.rooms.get(&room_name).map(|r| r.paused) else {
+            return;
+        };
         let position = self.watchers[&id].position_at(now, paused);
         self.set_room_position(&room_name, position, &name);
         for member in self.room_members(id) {
@@ -641,7 +761,13 @@ impl ServerState {
         for id in ids {
             let room_name = self.watchers[&id].room.clone();
             let position = self.room_position(&room_name, now);
-            let Some((paused, set_by)) = self.rooms.get(&room_name).map(|r| (r.paused, r.set_by.clone())) else { continue };
+            let Some((paused, set_by)) = self
+                .rooms
+                .get(&room_name)
+                .map(|r| (r.paused, r.set_by.clone()))
+            else {
+                continue;
+            };
             let w = self.watchers.get_mut(&id).unwrap();
             w.send_state(position, paused, false, set_by.as_deref(), false, now);
             if now - w.last_updated > protocol::PROTOCOL_TIMEOUT {
@@ -699,7 +825,13 @@ mod tests {
         json!({ "Hello": { "username": name, "room": { "name": room }, "version": "1.2.255", "realversion": "1.7.4", "features": { "sharedPlaylists": true, "chat": true } } })["Hello"].clone()
     }
 
-    fn join(s: &mut ServerState, id: ConnId, name: &str, room: &str, now: f64) -> UnboundedReceiver<Out> {
+    fn join(
+        s: &mut ServerState,
+        id: ConnId,
+        name: &str,
+        room: &str,
+        now: f64,
+    ) -> UnboundedReceiver<Out> {
         let (tx, rx) = unbounded_channel();
         s.handle_hello(id, &hello(name, room), tx, now).unwrap();
         rx
@@ -711,13 +843,19 @@ mod tests {
 
     #[test]
     fn hello_reply_matches_official_order_and_fields() {
-        let mut s = ServerState::new(SyncplayOptions { motd: "Welcome".into(), ..Default::default() });
+        let mut s = ServerState::new(SyncplayOptions {
+            motd: "Welcome".into(),
+            ..Default::default()
+        });
         let mut a = join(&mut s, 1, "alice", "movie", 100.0);
         let out = drain(&mut a);
         // Ready, playlistChange, playlistIndex come before the Hello reply, as in syncplay/server.py.
         assert!(out[0]["Set"]["ready"].is_object());
         assert_eq!(out[0]["Set"]["ready"]["username"], "alice");
-        assert!(out[1]["Set"]["playlistChange"]["files"].as_array().unwrap().is_empty());
+        assert!(out[1]["Set"]["playlistChange"]["files"]
+            .as_array()
+            .unwrap()
+            .is_empty());
         assert!(out[2]["Set"]["playlistIndex"].is_object());
         let h = &out[3]["Hello"];
         assert_eq!(h["username"], "alice");
@@ -736,23 +874,36 @@ mod tests {
         drain(&mut a);
         let mut b = join(&mut s, 2, "Alice", "movie", 0.0);
         let to_a = drain(&mut a);
-        assert!(to_a[0]["Set"]["user"]["Alice_"]["event"]["joined"].as_bool().unwrap());
+        assert!(to_a[0]["Set"]["user"]["Alice_"]["event"]["joined"]
+            .as_bool()
+            .unwrap());
         assert_eq!(to_a[1]["Set"]["ready"]["username"], "Alice_");
         assert_eq!(drain(&mut b).last().unwrap()["Hello"]["username"], "Alice_");
     }
 
     #[test]
     fn password_is_checked_as_md5() {
-        let mut s = ServerState::new(SyncplayOptions { password: "secret".into(), ..Default::default() });
+        let mut s = ServerState::new(SyncplayOptions {
+            password: "secret".into(),
+            ..Default::default()
+        });
         let (tx, _rx) = unbounded_channel();
         let mut h = hello("a", "r");
-        assert_eq!(s.handle_hello(1, &h, tx.clone(), 0.0).unwrap_err(), "Password required");
+        assert_eq!(
+            s.handle_hello(1, &h, tx.clone(), 0.0).unwrap_err(),
+            "Password required"
+        );
         h["password"] = json!(protocol::md5_hex("nope"));
-        assert_eq!(s.handle_hello(1, &h, tx.clone(), 0.0).unwrap_err(), "Wrong password supplied");
+        assert_eq!(
+            s.handle_hello(1, &h, tx.clone(), 0.0).unwrap_err(),
+            "Wrong password supplied"
+        );
         h["password"] = json!(protocol::md5_hex("secret"));
         assert!(s.handle_hello(1, &h, tx, 0.0).is_ok());
         let (tx2, _) = unbounded_channel();
-        assert!(s.handle_hello(2, &json!({ "username": "x" }), tx2, 0.0).is_err());
+        assert!(s
+            .handle_hello(2, &json!({ "username": "x" }), tx2, 0.0)
+            .is_err());
     }
 
     #[test]
@@ -776,8 +927,14 @@ mod tests {
         assert!(drain(&mut c).is_empty(), "other rooms are not told");
 
         // Until Bob acknowledges, his own state reports are ignored.
-        s.handle_message(2, &msg(json!({ "State": { "playstate": { "position": 3.0, "paused": true } } })), 1.5);
-        assert!(drain(&mut a).iter().all(|m| m["State"]["playstate"]["paused"] == false));
+        s.handle_message(
+            2,
+            &msg(json!({ "State": { "playstate": { "position": 3.0, "paused": true } } })),
+            1.5,
+        );
+        assert!(drain(&mut a)
+            .iter()
+            .all(|m| m["State"]["playstate"]["paused"] == false));
         s.handle_message(2, &msg(json!({ "State": { "ignoringOnTheFly": { "server": 1 }, "playstate": { "position": 10.5, "paused": false } } })), 1.6);
 
         // Bob seeks to 100.
@@ -793,14 +950,25 @@ mod tests {
         let mut s = ServerState::new(SyncplayOptions::default());
         let mut a = join(&mut s, 1, "alice", "movie", 0.0);
         drain(&mut a);
-        s.handle_message(1, &msg(json!({ "Set": { "file": { "name": "a.mkv", "duration": 100.0, "size": 1 } } })), 0.0);
-        s.handle_message(1, &msg(json!({ "State": { "playstate": { "position": 5.0, "paused": false } } })), 0.0);
+        s.handle_message(
+            1,
+            &msg(json!({ "Set": { "file": { "name": "a.mkv", "duration": 100.0, "size": 1 } } })),
+            0.0,
+        );
+        s.handle_message(
+            1,
+            &msg(json!({ "State": { "playstate": { "position": 5.0, "paused": false } } })),
+            0.0,
+        );
         drain(&mut a);
         // Acknowledge the forced update so the next reports count.
         s.handle_message(1, &msg(json!({ "State": { "ignoringOnTheFly": { "server": 1 }, "playstate": { "position": 5.0, "paused": false } } })), 0.0);
         assert!(s.tick(3.0).is_empty());
         let st = drain(&mut a).last().unwrap()["State"].clone();
-        assert!((st["playstate"]["position"].as_f64().unwrap() - 8.0).abs() < 0.05, "{st}");
+        assert!(
+            (st["playstate"]["position"].as_f64().unwrap() - 8.0).abs() < 0.05,
+            "{st}"
+        );
         assert!(st["ping"]["latencyCalculation"].as_f64().unwrap() > 0.0);
         assert_eq!(s.tick(20.0), vec![1]);
         assert_eq!(s.user_count(), 0);
@@ -808,14 +976,28 @@ mod tests {
 
     #[test]
     fn playlist_chat_list_and_leave() {
-        let mut s = ServerState::new(SyncplayOptions { max_chat_message_length: 5, ..Default::default() });
+        let mut s = ServerState::new(SyncplayOptions {
+            max_chat_message_length: 5,
+            ..Default::default()
+        });
         let mut a = join(&mut s, 1, "alice", "movie", 0.0);
         let mut b = join(&mut s, 2, "bob", "movie", 0.0);
         drain(&mut a);
         drain(&mut b);
-        s.handle_message(1, &msg(json!({ "Set": { "playlistChange": { "files": ["a.mkv", "b.mkv"] } } })), 0.0);
-        assert_eq!(drain(&mut b)[0]["Set"]["playlistChange"]["files"][1], "b.mkv");
-        s.handle_message(1, &msg(json!({ "Set": { "playlistIndex": { "index": 1 } } })), 0.0);
+        s.handle_message(
+            1,
+            &msg(json!({ "Set": { "playlistChange": { "files": ["a.mkv", "b.mkv"] } } })),
+            0.0,
+        );
+        assert_eq!(
+            drain(&mut b)[0]["Set"]["playlistChange"]["files"][1],
+            "b.mkv"
+        );
+        s.handle_message(
+            1,
+            &msg(json!({ "Set": { "playlistIndex": { "index": 1 } } })),
+            0.0,
+        );
         assert_eq!(drain(&mut b)[0]["Set"]["playlistIndex"]["index"], 1);
 
         // A late joiner receives the room's playlist.
@@ -827,20 +1009,28 @@ mod tests {
         drain(&mut b);
 
         s.handle_message(2, &msg(json!({ "Chat": "hello world" })), 0.0);
-        assert_eq!(drain(&mut a)[0]["Chat"], json!({ "message": "hello", "username": "bob" }));
+        assert_eq!(
+            drain(&mut a)[0]["Chat"],
+            json!({ "message": "hello", "username": "bob" })
+        );
 
         s.handle_message(1, &msg(json!({ "List": null })), 0.0);
         let list = &drain(&mut a)[0]["List"]["movie"];
         assert!(list["bob"].is_object() && list["carol"].is_object());
 
         s.remove(2);
-        assert!(drain(&mut a)[0]["Set"]["user"]["bob"]["event"]["left"].as_bool().unwrap());
+        assert!(drain(&mut a)[0]["Set"]["user"]["bob"]["event"]["left"]
+            .as_bool()
+            .unwrap());
         assert_eq!(s.rooms()[0].users, vec!["alice", "carol"]);
     }
 
     #[test]
     fn isolated_rooms_hide_other_rooms() {
-        let mut s = ServerState::new(SyncplayOptions { isolate_rooms: true, ..Default::default() });
+        let mut s = ServerState::new(SyncplayOptions {
+            isolate_rooms: true,
+            ..Default::default()
+        });
         let mut a = join(&mut s, 1, "alice", "one", 0.0);
         drain(&mut a);
         let _b = join(&mut s, 2, "bob", "two", 0.0);

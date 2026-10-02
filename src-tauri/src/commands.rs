@@ -22,7 +22,10 @@ pub async fn update_settings(app: AppState<'_>, settings: Settings) -> Result<Sn
 }
 
 #[tauri::command]
-pub async fn set_duckdns_token(app: AppState<'_>, token: Option<String>) -> Result<Snapshot, String> {
+pub async fn set_duckdns_token(
+    app: AppState<'_>,
+    token: Option<String>,
+) -> Result<Snapshot, String> {
     app.inner().set_duckdns_token(token).await
 }
 
@@ -37,12 +40,21 @@ pub fn jellyfin_retry(app: AppState<'_>) {
 }
 
 #[tauri::command]
-pub async fn jellyfin_setup(app: AppState<'_>, server_name: String, username: String, password: String) -> Result<Snapshot, String> {
+pub async fn jellyfin_setup(
+    app: AppState<'_>,
+    server_name: String,
+    username: String,
+    password: String,
+) -> Result<Snapshot, String> {
     app.jellyfin_setup(server_name, username, password).await
 }
 
 #[tauri::command]
-pub async fn jellyfin_login(app: AppState<'_>, username: String, password: String) -> Result<Snapshot, String> {
+pub async fn jellyfin_login(
+    app: AppState<'_>,
+    username: String,
+    password: String,
+) -> Result<Snapshot, String> {
     app.jellyfin_login(username, password).await
 }
 
@@ -57,7 +69,12 @@ pub async fn jellyfin_libraries(app: AppState<'_>) -> Result<Vec<Library>, Strin
 }
 
 #[tauri::command]
-pub async fn jellyfin_add_library(app: AppState<'_>, name: String, collection_type: String, path: String) -> Result<(), String> {
+pub async fn jellyfin_add_library(
+    app: AppState<'_>,
+    name: String,
+    collection_type: String,
+    path: String,
+) -> Result<(), String> {
     app.jellyfin_add_library(name, collection_type, path).await
 }
 
@@ -67,12 +84,20 @@ pub async fn jellyfin_remove_library(app: AppState<'_>, name: String) -> Result<
 }
 
 #[tauri::command]
-pub async fn jellyfin_add_path(app: AppState<'_>, library: String, path: String) -> Result<(), String> {
+pub async fn jellyfin_add_path(
+    app: AppState<'_>,
+    library: String,
+    path: String,
+) -> Result<(), String> {
     app.jellyfin_add_path(library, path).await
 }
 
 #[tauri::command]
-pub async fn jellyfin_remove_path(app: AppState<'_>, library: String, path: String) -> Result<(), String> {
+pub async fn jellyfin_remove_path(
+    app: AppState<'_>,
+    library: String,
+    path: String,
+) -> Result<(), String> {
     app.jellyfin_remove_path(library, path).await
 }
 
@@ -96,7 +121,10 @@ pub fn open_url(handle: AppHandle, url: String) -> Result<(), String> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err("only web links can be opened".into());
     }
-    handle.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+    handle
+        .opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -107,7 +135,10 @@ pub fn open_folder(handle: AppHandle, app: AppState<'_>, which: String) -> Resul
         _ => return Err("unknown folder".into()),
     };
     std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
-    handle.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+    handle
+        .opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -99,7 +99,8 @@ pub fn pem_to_pfx(cert_pem: &str, key_pem: &str, password: &str) -> Result<Vec<u
         rustls::pki_types::PrivateKeyDer::Pkcs8(k) => k.secret_pkcs8_der().to_vec(),
         _ => return Err("expected a PKCS#8 private key".into()),
     };
-    let key = p12_keystore::PrivateKey::from_der(&key_der).map_err(|e| format!("private key: {e}"))?;
+    let key =
+        p12_keystore::PrivateKey::from_der(&key_der).map_err(|e| format!("private key: {e}"))?;
     let chain = certs
         .iter()
         .map(|c| p12_keystore::Certificate::from_der(c.as_ref()))
@@ -108,8 +109,14 @@ pub fn pem_to_pfx(cert_pem: &str, key_pem: &str, password: &str) -> Result<Vec<u
     let local_key_id: Vec<u8> = vec![1];
     let chain = p12_keystore::PrivateKeyChain::new(local_key_id, key, chain);
     let mut store = p12_keystore::KeyStore::new();
-    store.add_entry("jellyfin", p12_keystore::KeyStoreEntry::PrivateKeyChain(chain));
-    store.writer(password).write().map_err(|e| format!("PKCS#12: {e}"))
+    store.add_entry(
+        "jellyfin",
+        p12_keystore::KeyStoreEntry::PrivateKeyChain(chain),
+    );
+    store
+        .writer(password)
+        .write()
+        .map_err(|e| format!("PKCS#12: {e}"))
 }
 
 #[cfg(test)]
@@ -128,7 +135,11 @@ mod tests {
 
     #[test]
     fn patch_keeps_unknown_elements_and_sets_ours() {
-        let s = NetworkSettings { http_port: 9096, https_port: 9920, https: Some(("C:\\a&b\\cert.pfx".into(), "pw".into())) };
+        let s = NetworkSettings {
+            http_port: 9096,
+            https_port: 9920,
+            https: Some(("C:\\a&b\\cert.pfx".into(), "pw".into())),
+        };
         let out = patch_network_xml(Some(EXISTING), &s);
         assert!(out.contains("<BaseUrl />"));
         assert!(out.contains("<string>10.0.0.2</string>"));
@@ -143,7 +154,11 @@ mod tests {
 
     #[test]
     fn fresh_document_when_missing_or_garbage() {
-        let s = NetworkSettings { http_port: 8096, https_port: 8920, https: None };
+        let s = NetworkSettings {
+            http_port: 8096,
+            https_port: 8920,
+            https: None,
+        };
         for existing in [None, Some("not xml")] {
             let out = patch_network_xml(existing, &s);
             assert!(out.contains("<EnableHttps>false</EnableHttps>"));
@@ -157,7 +172,12 @@ mod tests {
         let key = rcgen::KeyPair::generate().unwrap();
         let cert = params.self_signed(&key).unwrap();
         let pfx = pem_to_pfx(&cert.pem(), &key.serialize_pem(), "secret").unwrap();
-        let store = p12_keystore::KeyStore::from_pkcs12(&pfx, "secret", p12_keystore::Pkcs12ImportPolicy::Strict).unwrap();
+        let store = p12_keystore::KeyStore::from_pkcs12(
+            &pfx,
+            "secret",
+            p12_keystore::Pkcs12ImportPolicy::Strict,
+        )
+        .unwrap();
         let (_, chain) = store.private_key_chain().unwrap();
         assert_eq!(chain.certs().len(), 1);
     }

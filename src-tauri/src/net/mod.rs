@@ -10,3 +10,9 @@ pub mod testutil;
 pub fn install_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
+
+/// Every reqwest client starts here so the crypto provider is always present.
+pub fn client_builder() -> reqwest::ClientBuilder {
+    install_crypto_provider();
+    reqwest::Client::builder()
+}

@@ -51,7 +51,11 @@ pub struct ProgressStatus {
 
 impl From<Progress> for ProgressStatus {
     fn from(p: Progress) -> Self {
-        Self { downloaded: p.downloaded, total: p.total, stage: p.stage }
+        Self {
+            downloaded: p.downloaded,
+            total: p.total,
+            stage: p.stage,
+        }
     }
 }
 
@@ -141,7 +145,11 @@ impl JellyfinManager {
     pub async fn shutdown(&self) {
         self.apply(None);
         let mut rx = self.phase_tx.subscribe();
-        let _ = tokio::time::timeout(Duration::from_secs(20), rx.wait_for(|p| *p == "off" || *p == "error")).await;
+        let _ = tokio::time::timeout(
+            Duration::from_secs(20),
+            rx.wait_for(|p| *p == "off" || *p == "error"),
+        )
+        .await;
     }
 
     fn set(&self, f: impl FnOnce(&mut JellyfinStatus)) {
@@ -170,7 +178,11 @@ impl JellyfinManager {
     async fn stop_process(&self, proc: JellyfinProcess) {
         self.set(|s| s.phase = "stopping");
         let api = self.api.lock().clone();
-        let mut grace = if cfg!(windows) { Duration::ZERO } else { Duration::from_secs(15) };
+        let mut grace = if cfg!(windows) {
+            Duration::ZERO
+        } else {
+            Duration::from_secs(15)
+        };
         if let Some(api) = api {
             if api.shutdown().await.is_ok() {
                 grace = Duration::from_secs(15);
@@ -253,7 +265,11 @@ impl JellyfinManager {
                 }
                 continue;
             }
-            let net = NetworkSettings { http_port: d.http_port, https_port: d.https_port, https: d.https.clone() };
+            let net = NetworkSettings {
+                http_port: d.http_port,
+                https_port: d.https_port,
+                https: d.https.clone(),
+            };
             if let Err(e) = netconfig::write_network_xml(&dirs.config, &net) {
                 self.fail(format!("Jellyfin network settings: {e}"));
                 if rx.changed().await.is_err() {
@@ -297,7 +313,11 @@ impl JellyfinManager {
                     continue;
                 }
                 Some(Ok(())) => {
-                    info!(port = d.http_port, https = d.https.is_some(), "Jellyfin is ready");
+                    info!(
+                        port = d.http_port,
+                        https = d.https.is_some(),
+                        "Jellyfin is ready"
+                    );
                     self.set(|s| s.phase = "running");
                     self.refresh_info(d.http_port).await;
                 }
@@ -324,7 +344,13 @@ impl JellyfinManager {
 
     /// Show the error and wait before restarting. Returns false when the
     /// manager is being dropped.
-    async fn backoff(&self, rx: &mut watch::Receiver<Option<JellyfinDesired>>, d: &JellyfinDesired, failures: u32, error: String) -> bool {
+    async fn backoff(
+        &self,
+        rx: &mut watch::Receiver<Option<JellyfinDesired>>,
+        d: &JellyfinDesired,
+        failures: u32,
+        error: String,
+    ) -> bool {
         let delay = Duration::from_secs((1u64 << failures.min(6)).min(60));
         self.fail(format!("{error}; retrying in {}s", delay.as_secs()));
         tokio::select! {
@@ -336,7 +362,10 @@ impl JellyfinManager {
 
 /// Resolves when the desired config differs from `current` (true) or the
 /// sender is gone (false).
-async fn wait_for_change(rx: &mut watch::Receiver<Option<JellyfinDesired>>, current: &JellyfinDesired) -> bool {
+async fn wait_for_change(
+    rx: &mut watch::Receiver<Option<JellyfinDesired>>,
+    current: &JellyfinDesired,
+) -> bool {
     loop {
         if rx.changed().await.is_err() {
             return false;

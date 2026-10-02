@@ -30,12 +30,40 @@ pub fn show_main(app: &AppHandle) {
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "status", "Starting…", false, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open Control Panel", true, None::<&str>)?;
-    let syncplay = CheckMenuItem::with_id(app, "syncplay", "Syncplay server", true, false, None::<&str>)?;
-    let jellyfin = CheckMenuItem::with_id(app, "jellyfin", "Jellyfin server", true, false, None::<&str>)?;
-    let copy_syncplay = MenuItem::with_id(app, "copy-syncplay", "Copy Syncplay address", false, None::<&str>)?;
-    let open_jellyfin = MenuItem::with_id(app, "open-jellyfin", "Open Jellyfin", false, None::<&str>)?;
+    let syncplay = CheckMenuItem::with_id(
+        app,
+        "syncplay",
+        "Syncplay server",
+        true,
+        false,
+        None::<&str>,
+    )?;
+    let jellyfin = CheckMenuItem::with_id(
+        app,
+        "jellyfin",
+        "Jellyfin server",
+        true,
+        false,
+        None::<&str>,
+    )?;
+    let copy_syncplay = MenuItem::with_id(
+        app,
+        "copy-syncplay",
+        "Copy Syncplay address",
+        false,
+        None::<&str>,
+    )?;
+    let open_jellyfin =
+        MenuItem::with_id(app, "open-jellyfin", "Open Jellyfin", false, None::<&str>)?;
     let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
-    let autostart = CheckMenuItem::with_id(app, "autostart", "Start with system", true, autostart_on, None::<&str>)?;
+    let autostart = CheckMenuItem::with_id(
+        app,
+        "autostart",
+        "Start with system",
+        true,
+        autostart_on,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let sep = || PredefinedMenuItem::separator(app);
     let menu = Menu::with_items(
@@ -64,13 +92,25 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| on_menu(app, event.id().as_ref()))
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
                 show_main(tray.app_handle());
             }
         })
         .build(app)?;
 
-    app.manage(TrayItems { status, syncplay, jellyfin, copy_syncplay, open_jellyfin, autostart });
+    app.manage(TrayItems {
+        status,
+        syncplay,
+        jellyfin,
+        copy_syncplay,
+        open_jellyfin,
+        autostart,
+    });
     Ok(())
 }
 
@@ -94,7 +134,11 @@ fn on_menu(app: &AppHandle, id: &str) {
         }
         "copy-syncplay" => {
             let snap = state.snapshot();
-            if let Some(addr) = snap.addresses.syncplay_public.or(snap.addresses.syncplay_lan) {
+            if let Some(addr) = snap
+                .addresses
+                .syncplay_public
+                .or(snap.addresses.syncplay_lan)
+            {
                 let _ = app.clipboard().write_text(addr);
             }
         }
@@ -106,12 +150,18 @@ fn on_menu(app: &AppHandle, id: &str) {
         "autostart" => {
             let launcher = app.autolaunch();
             let on = launcher.is_enabled().unwrap_or(false);
-            let result = if on { launcher.disable() } else { launcher.enable() };
+            let result = if on {
+                launcher.disable()
+            } else {
+                launcher.enable()
+            };
             if let Err(e) = result {
                 warn!(error = %e, "could not change start-with-system");
             }
             if let Some(items) = app.try_state::<TrayItems>() {
-                let _ = items.autostart.set_checked(launcher.is_enabled().unwrap_or(false));
+                let _ = items
+                    .autostart
+                    .set_checked(launcher.is_enabled().unwrap_or(false));
             }
         }
         "quit" => crate::request_quit(app),
@@ -143,14 +193,20 @@ fn status_line(snap: &Snapshot) -> String {
 }
 
 pub fn update(app: &AppHandle, snap: &Snapshot) {
-    let Some(items) = app.try_state::<TrayItems>() else { return };
+    let Some(items) = app.try_state::<TrayItems>() else {
+        return;
+    };
     let line = status_line(snap);
     let _ = items.status.set_text(&line);
     let _ = items.syncplay.set_checked(snap.settings.syncplay.enabled);
     let _ = items.jellyfin.set_checked(snap.settings.jellyfin.enabled);
     let _ = items.copy_syncplay.set_enabled(snap.syncplay.running);
-    let _ = items.open_jellyfin.set_enabled(snap.jellyfin.phase == "running");
-    let _ = items.autostart.set_checked(app.autolaunch().is_enabled().unwrap_or(false));
+    let _ = items
+        .open_jellyfin
+        .set_enabled(snap.jellyfin.phase == "running");
+    let _ = items
+        .autostart
+        .set_checked(app.autolaunch().is_enabled().unwrap_or(false));
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_tooltip(Some(format!("YarmiplayServerTV — {line}")));
     }

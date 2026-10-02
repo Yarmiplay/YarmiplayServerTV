@@ -50,7 +50,8 @@ impl PingService {
         if self.avr_rtt == 0.0 {
             self.avr_rtt = self.rtt;
         }
-        self.avr_rtt = self.avr_rtt * PING_MOVING_AVERAGE_WEIGHT + self.rtt * (1.0 - PING_MOVING_AVERAGE_WEIGHT);
+        self.avr_rtt = self.avr_rtt * PING_MOVING_AVERAGE_WEIGHT
+            + self.rtt * (1.0 - PING_MOVING_AVERAGE_WEIGHT);
         self.fd = if sender_rtt < self.rtt {
             self.avr_rtt / 2.0 + (self.rtt - sender_rtt)
         } else {

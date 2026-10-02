@@ -2,7 +2,7 @@
 """
 Builds the YarmiplayServerTV download page: one card per desktop OS, each with its downloads and install steps.
 
-  python scripts/download_site.py --dist dist --out _site [--version 0.1.0] [--commit abc1234]
+  python scripts/download_site.py --dist dist --out _site [--version 0.1.0]
 
 Files in --dist are sorted onto platforms by extension (.msi/.exe: Windows, .dmg: macOS, .deb/.AppImage: Linux)
 and copied under stable names such as YarmiplayServerTV.msi, so links keep working across builds. Platforms
@@ -86,7 +86,7 @@ def fmt_size(n):
     return f"{n / 1e6:.1f} MB"
 
 
-def render_page(downloads, version, built, commit=None):
+def render_page(downloads, version, built):
     """downloads: {platform key: [Download]}. Returns the page as a str."""
     cards = []
     for p in PLATFORMS:
@@ -106,8 +106,6 @@ def render_page(downloads, version, built, commit=None):
                      f'<h2>{p.title}</h2><p class="blurb">{p.blurb}</p>{body}</section>')
 
     meta = f"Version {html.escape(version)} &middot; built {html.escape(built)}"
-    if commit:
-        meta += f' &middot; <a href="{REPO_URL}/commit/{html.escape(commit)}">{html.escape(commit[:7])}</a>'
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -189,7 +187,7 @@ def render_page(downloads, version, built, commit=None):
 """
 
 
-def build(dist, out, version, commit):
+def build(dist, out, version):
     found = {}
     for name in sorted(os.listdir(dist)) if os.path.isdir(dist) else []:
         path = os.path.join(dist, name)
@@ -218,7 +216,7 @@ def build(dist, out, version, commit):
     shutil.copyfile(os.path.join(ROOT, "assets", "logo.svg"), os.path.join(out, "logo.svg"))
     built = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     with open(os.path.join(out, "index.html"), "w", encoding="utf-8") as f:
-        f.write(render_page(downloads, version, built, commit))
+        f.write(render_page(downloads, version, built))
     open(os.path.join(out, ".nojekyll"), "w").close()
     print(f"wrote {out} ({sum(len(v) for v in downloads.values())} downloads)")
 
@@ -233,9 +231,8 @@ def main():
     ap.add_argument("--dist", required=True, help="folder with the built installers")
     ap.add_argument("--out", required=True, help="site folder to (re)create")
     ap.add_argument("--version", default=None, help="defaults to the version in tauri.conf.json")
-    ap.add_argument("--commit", default=None)
     a = ap.parse_args()
-    build(a.dist, a.out, a.version or app_version(), a.commit)
+    build(a.dist, a.out, a.version or app_version())
 
 
 if __name__ == "__main__":

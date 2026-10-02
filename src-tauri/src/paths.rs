@@ -16,11 +16,17 @@ impl AppPaths {
     pub fn resolve() -> Self {
         if let Ok(root) = std::env::var("YARMIPLAYSERVERTV_HOME") {
             let root = PathBuf::from(root);
-            return Self { config: root.join("config"), data: root.join("data") };
+            return Self {
+                config: root.join("config"),
+                data: root.join("data"),
+            };
         }
         let dirs = directories::ProjectDirs::from("com", "Yarmiplay", "YarmiplayServerTV")
             .expect("no home directory");
-        Self { config: dirs.config_dir().to_path_buf(), data: dirs.data_local_dir().to_path_buf() }
+        Self {
+            config: dirs.config_dir().to_path_buf(),
+            data: dirs.data_local_dir().to_path_buf(),
+        }
     }
 
     pub fn settings_file(&self) -> PathBuf {

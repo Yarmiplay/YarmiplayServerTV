@@ -39,7 +39,9 @@ pub async fn serve(handler: Handler) -> String {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         loop {
-            let Ok((mut stream, _)) = listener.accept().await else { return };
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
             let handler = handler.clone();
             tokio::spawn(async move {
                 let mut buf = Vec::new();
@@ -64,7 +66,10 @@ pub async fn serve(handler: Handler) -> String {
                     .filter_map(|l| l.split_once(':'))
                     .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
                     .collect();
-                let len: usize = headers.get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+                let len: usize = headers
+                    .get("content-length")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
                 let mut body = buf[head_end + 4..].to_vec();
                 while body.len() < len {
                     let n = stream.read(&mut chunk).await.unwrap_or(0);

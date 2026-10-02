@@ -18,7 +18,9 @@ pub struct Secrets {
 
 impl Secrets {
     pub fn new(config_dir: PathBuf) -> Self {
-        let s = Self { fallback_file: config_dir.join("secrets.json") };
+        let s = Self {
+            fallback_file: config_dir.join("secrets.json"),
+        };
         for key in [DUCKDNS_TOKEN, JELLYFIN_TOKEN] {
             if let Some(v) = s.get(key) {
                 logs::register_secret(&v);
@@ -67,7 +69,10 @@ impl Secrets {
             }
             return Ok(());
         }
-        tracing::warn!(key, "OS credential store unavailable, storing secret in an owner-only file");
+        tracing::warn!(
+            key,
+            "OS credential store unavailable, storing secret in an owner-only file"
+        );
         map.insert(key.to_string(), value.to_string());
         self.write_fallback(&map)
     }

@@ -45,16 +45,26 @@ fn quote(v: &str) -> String {
 
 impl JellyfinApi {
     pub fn new(port: u16, device_id: &str, token: Option<String>) -> Self {
-        let client = reqwest::Client::builder()
+        let client = crate::net::client_builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("reqwest client");
-        Self { base: format!("http://127.0.0.1:{port}"), client, device_id: device_id.to_string(), token }
+        Self {
+            base: format!("http://127.0.0.1:{port}"),
+            client,
+            device_id: device_id.to_string(),
+            token,
+        }
     }
 
     #[cfg(test)]
     pub fn with_base(base: &str, token: Option<String>) -> Self {
-        Self { base: base.trim_end_matches('/').to_string(), client: reqwest::Client::new(), device_id: "test".into(), token }
+        Self {
+            base: base.trim_end_matches('/').to_string(),
+            client: crate::net::client_builder().build().unwrap(),
+            device_id: "test".into(),
+            token,
+        }
     }
 
     fn auth_header(&self) -> String {
@@ -77,14 +87,21 @@ impl JellyfinApi {
     }
 
     async fn send(rb: reqwest::RequestBuilder, what: &str) -> Result<reqwest::Response, String> {
-        let resp = rb.send().await.map_err(|e| format!("{what}: Jellyfin is not reachable ({e})"))?;
+        let resp = rb
+            .send()
+            .await
+            .map_err(|e| format!("{what}: Jellyfin is not reachable ({e})"))?;
         let status = resp.status();
         if status.is_success() {
             return Ok(resp);
         }
         let body = resp.text().await.unwrap_or_default();
         let detail = body.trim();
-        let detail = if detail.is_empty() || detail.len() > 300 { status.to_string() } else { format!("{status}: {detail}") };
+        let detail = if detail.is_empty() || detail.len() > 300 {
+            status.to_string()
+        } else {
+            format!("{status}: {detail}")
+        };
         Err(match status.as_u16() {
             401 => format!("{what}: not signed in to Jellyfin (401)"),
             403 => format!("{what}: not allowed (403)"),
@@ -93,27 +110,38 @@ impl JellyfinApi {
     }
 
     pub async fn public_info(&self) -> Result<PublicInfo, String> {
-        let r = Self::send(self.req(reqwest::Method::GET, "/System/Info/Public"), "server info").await?;
+        let r = Self::send(
+            self.req(reqwest::Method::GET, "/System/Info/Public"),
+            "server info",
+        )
+        .await?;
         r.json().await.map_err(|e| e.to_string())
     }
 
     /// The startup endpoints only work until the wizard has been completed.
-    pub async fn run_startup(&self, server_name: &str, user: &str, password: &str) -> Result<(), String> {
+    pub async fn run_startup(
+        &self,
+        server_name: &str,
+        user: &str,
+        password: &str,
+    ) -> Result<(), String> {
         use reqwest::Method;
         Self::send(
-            self.req(Method::POST, "/Startup/Configuration").json(&json!({
-                "ServerName": server_name,
-                "UICulture": "en-US",
-                "MetadataCountryCode": "US",
-                "PreferredMetadataLanguage": "en",
-            })),
+            self.req(Method::POST, "/Startup/Configuration")
+                .json(&json!({
+                    "ServerName": server_name,
+                    "UICulture": "en-US",
+                    "MetadataCountryCode": "US",
+                    "PreferredMetadataLanguage": "en",
+                })),
             "startup configuration",
         )
         .await?;
         // Jellyfin creates the initial user lazily when it is first read.
         Self::send(self.req(Method::GET, "/Startup/User"), "startup user").await?;
         Self::send(
-            self.req(Method::POST, "/Startup/User").json(&json!({ "Name": user, "Password": password })),
+            self.req(Method::POST, "/Startup/User")
+                .json(&json!({ "Name": user, "Password": password })),
             "create administrator",
         )
         .await?;
@@ -129,20 +157,38 @@ impl JellyfinApi {
 
     pub async fn authenticate(&self, user: &str, password: &str) -> Result<Session, String> {
         let r = Self::send(
-            self.req(reqwest::Method::POST, "/Users/AuthenticateByName").json(&json!({ "Username": user, "Pw": password })),
+            self.req(reqwest::Method::POST, "/Users/AuthenticateByName")
+                .json(&json!({ "Username": user, "Pw": password })),
             "sign in",
         )
         .await
-        .map_err(|e| if e.contains("401") { "Wrong Jellyfin username or password".to_string() } else { e })?;
+        .map_err(|e| {
+            if e.contains("401") {
+                "Wrong Jellyfin username or password".to_string()
+            } else {
+                e
+            }
+        })?;
         let v: Value = r.json().await.map_err(|e| e.to_string())?;
-        let token = v["AccessToken"].as_str().ok_or("sign in: no access token in reply")?.to_string();
+        let token = v["AccessToken"]
+            .as_str()
+            .ok_or("sign in: no access token in reply")?
+            .to_string();
         let user_id = v["User"]["Id"].as_str().unwrap_or_default().to_string();
         let user_name = v["User"]["Name"].as_str().unwrap_or(user).to_string();
-        Ok(Session { token, user_id, user_name })
+        Ok(Session {
+            token,
+            user_id,
+            user_name,
+        })
     }
 
     pub async fn libraries(&self) -> Result<Vec<Library>, String> {
-        let r = Self::send(self.req(reqwest::Method::GET, "/Library/VirtualFolders"), "libraries").await?;
+        let r = Self::send(
+            self.req(reqwest::Method::GET, "/Library/VirtualFolders"),
+            "libraries",
+        )
+        .await?;
         let v: Vec<Value> = r.json().await.map_err(|e| e.to_string())?;
         Ok(v.into_iter()
             .map(|f| Library {
@@ -150,20 +196,35 @@ impl JellyfinApi {
                 collection_type: f["CollectionType"].as_str().map(str::to_string),
                 locations: f["Locations"]
                     .as_array()
-                    .map(|a| a.iter().filter_map(|l| l.as_str().map(str::to_string)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|l| l.as_str().map(str::to_string))
+                            .collect()
+                    })
                     .unwrap_or_default(),
                 item_id: f["ItemId"].as_str().map(str::to_string),
             })
             .collect())
     }
 
-    pub async fn add_library(&self, name: &str, collection_type: &str, path: &str) -> Result<(), String> {
-        let mut query = vec![("name", name.to_string()), ("refreshLibrary", "true".into()), ("paths", path.to_string())];
+    pub async fn add_library(
+        &self,
+        name: &str,
+        collection_type: &str,
+        path: &str,
+    ) -> Result<(), String> {
+        let mut query = vec![
+            ("name", name.to_string()),
+            ("refreshLibrary", "true".into()),
+            ("paths", path.to_string()),
+        ];
         if !collection_type.is_empty() && collection_type != "mixed" {
             query.push(("collectionType", collection_type.to_string()));
         }
         Self::send(
-            self.req(reqwest::Method::POST, "/Library/VirtualFolders").query(&query).json(&json!({ "LibraryOptions": {} })),
+            self.req(reqwest::Method::POST, "/Library/VirtualFolders")
+                .query(&query)
+                .json(&json!({ "LibraryOptions": {} })),
             "add library",
         )
         .await
@@ -172,7 +233,8 @@ impl JellyfinApi {
 
     pub async fn remove_library(&self, name: &str) -> Result<(), String> {
         Self::send(
-            self.req(reqwest::Method::DELETE, "/Library/VirtualFolders").query(&[("name", name), ("refreshLibrary", "true")]),
+            self.req(reqwest::Method::DELETE, "/Library/VirtualFolders")
+                .query(&[("name", name), ("refreshLibrary", "true")]),
             "remove library",
         )
         .await
@@ -193,7 +255,11 @@ impl JellyfinApi {
     pub async fn remove_path(&self, library: &str, path: &str) -> Result<(), String> {
         Self::send(
             self.req(reqwest::Method::DELETE, "/Library/VirtualFolders/Paths")
-                .query(&[("name", library), ("path", path), ("refreshLibrary", "true")]),
+                .query(&[
+                    ("name", library),
+                    ("path", path),
+                    ("refreshLibrary", "true"),
+                ]),
             "remove folder",
         )
         .await
@@ -201,23 +267,41 @@ impl JellyfinApi {
     }
 
     pub async fn rescan(&self) -> Result<(), String> {
-        Self::send(self.req(reqwest::Method::POST, "/Library/Refresh"), "rescan").await.map(|_| ())
+        Self::send(
+            self.req(reqwest::Method::POST, "/Library/Refresh"),
+            "rescan",
+        )
+        .await
+        .map(|_| ())
     }
 
     pub async fn enable_quick_connect(&self) -> Result<(), String> {
-        let r = Self::send(self.req(reqwest::Method::GET, "/System/Configuration"), "server configuration").await?;
+        let r = Self::send(
+            self.req(reqwest::Method::GET, "/System/Configuration"),
+            "server configuration",
+        )
+        .await?;
         let mut cfg: Value = r.json().await.map_err(|e| e.to_string())?;
         if cfg["QuickConnectAvailable"].as_bool() == Some(true) {
             return Ok(());
         }
         cfg["QuickConnectAvailable"] = Value::Bool(true);
-        Self::send(self.req(reqwest::Method::POST, "/System/Configuration").json(&cfg), "enable Quick Connect")
-            .await
-            .map(|_| ())
+        Self::send(
+            self.req(reqwest::Method::POST, "/System/Configuration")
+                .json(&cfg),
+            "enable Quick Connect",
+        )
+        .await
+        .map(|_| ())
     }
 
     pub async fn shutdown(&self) -> Result<(), String> {
-        Self::send(self.req(reqwest::Method::POST, "/System/Shutdown"), "shutdown").await.map(|_| ())
+        Self::send(
+            self.req(reqwest::Method::POST, "/System/Shutdown"),
+            "shutdown",
+        )
+        .await
+        .map(|_| ())
     }
 }
 
@@ -240,8 +324,14 @@ mod tests {
         let seen: Arc<Mutex<Vec<String>>> = Arc::default();
         let seen2 = seen.clone();
         let base = serve(Arc::new(move |req: Request| {
-            seen2.lock().unwrap().push(format!("{} {}", req.method, req.path));
-            assert!(req.headers.get("authorization").is_some_and(|h| h.contains("Client=\"YarmiplayServerTV\"")));
+            seen2
+                .lock()
+                .unwrap()
+                .push(format!("{} {}", req.method, req.path));
+            assert!(req
+                .headers
+                .get("authorization")
+                .is_some_and(|h| h.contains("Client=\"YarmiplayServerTV\"")));
             (200, "{}".into())
         }))
         .await;
@@ -278,7 +368,12 @@ mod tests {
         }))
         .await;
         let api = JellyfinApi::with_base(&base, None);
-        assert!(api.authenticate("admin", "bad").await.err().unwrap().contains("Wrong"));
+        assert!(api
+            .authenticate("admin", "bad")
+            .await
+            .err()
+            .unwrap()
+            .contains("Wrong"));
         let s = api.authenticate("admin", "good").await.unwrap();
         assert_eq!(s.token, "tok123");
         let api = JellyfinApi::with_base(&base, Some(s.token));
