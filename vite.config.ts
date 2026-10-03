@@ -9,6 +9,10 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     host: "127.0.0.1",
+    // Browser access in dev: the app's control panel server (web::PORT in src-tauri/src/web.rs).
+    proxy: {
+      "/api": { target: "http://127.0.0.1:8097", changeOrigin: true },
+    },
   },
   build: {
     outDir: "../dist",

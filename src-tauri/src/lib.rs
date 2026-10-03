@@ -13,6 +13,7 @@ pub mod secrets;
 pub mod syncplay;
 pub mod tls;
 pub mod tray;
+pub mod web;
 
 use orchestrator::App;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -79,6 +80,7 @@ pub fn run() {
             let log_handle = handle.clone();
             logs::set_sink(Box::new(move |line| {
                 let _ = log_handle.emit("log", line);
+                web::publish("log", line);
             }));
 
             tray::create(&handle)?;
@@ -92,11 +94,13 @@ pub fn run() {
                     status_state.after_change().await;
                     let snap = status_state.snapshot();
                     let _ = status_handle.emit("status", &snap);
+                    web::publish("status", &snap);
                     tray::update(&status_handle, &snap);
                 }
             });
 
             state.start();
+            web::apply(&handle, state.settings().browser.enabled);
             if !minimized {
                 tray::show_main(&handle);
             }
@@ -127,6 +131,10 @@ pub fn run() {
             commands::clear_logs,
             commands::open_url,
             commands::open_folder,
+            commands::pick_folder,
+            commands::get_autostart,
+            commands::set_autostart,
+            commands::open_in_browser,
             commands::quit_app,
         ])
         .build(tauri::generate_context!())

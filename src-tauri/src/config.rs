@@ -11,6 +11,20 @@ pub struct Settings {
     pub syncplay: SyncplaySettings,
     pub jellyfin: JellyfinSettings,
     pub tls: TlsSettings,
+    pub browser: BrowserSettings,
+}
+
+/// Access to the control panel from a web browser on this PC (see `crate::web`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BrowserSettings {
+    pub enabled: bool,
+}
+
+impl Default for BrowserSettings {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -146,6 +160,7 @@ mod tests {
         assert_eq!(s.syncplay.port, 9000);
         assert_eq!(s.jellyfin.http_port, 8096);
         assert_eq!(s.syncplay.max_chat_message_length, 150);
+        assert!(s.browser.enabled);
     }
 
     #[test]

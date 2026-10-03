@@ -56,6 +56,9 @@
   </aside>
 
   <main>
+    {#if store.connection && !loadError}
+      <div class="notice warn">{store.connection}</div>
+    {/if}
     {#if loadError}
       <div class="notice err">Could not load the app state: {loadError}</div>
     {:else if !store.snap}

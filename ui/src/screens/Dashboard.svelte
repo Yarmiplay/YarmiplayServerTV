@@ -1,8 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
   import type { Snapshot } from "../lib/api";
-  import { api, formatDate } from "../lib/api";
+  import { api, formatDate, inApp } from "../lib/api";
   import { store } from "../lib/store.svelte";
   import { jellyfinPill, syncplayPill, tlsPill, upnpPill } from "../lib/status";
   import Toggle from "../lib/Toggle.svelte";
@@ -13,14 +12,12 @@
 
   let autostart = $state(false);
   onMount(async () => {
-    autostart = await isEnabled().catch(() => false);
+    autostart = await api.getAutostart().catch(() => false);
   });
 
   async function setAutostart(v: boolean) {
     await store.run(async () => {
-      if (v) await enable();
-      else await disable();
-      autostart = await isEnabled();
+      autostart = await api.setAutostart(v);
     });
   }
 
@@ -108,8 +105,19 @@
       <h2>App</h2>
       <p class="sub">Closing the window keeps the servers running in the tray.</p>
       <Toggle label="Start with system" hint="Starts minimized to the tray" checked={autostart} onchange={setAutostart} />
+      <Toggle
+        label="Browser access"
+        hint={inApp
+          ? "Open this control panel in a web browser on this PC"
+          : "Turning this off disconnects this browser tab"}
+        checked={snap.settings.browser.enabled}
+        onchange={(v) => store.save((s) => (s.browser.enabled = v))}
+      />
       <div class="actions">
         <button onclick={() => api.openFolder("data")}>Open data folder</button>
+        {#if inApp && snap.settings.browser.enabled}
+          <button onclick={() => store.run(api.openInBrowser)}>Open in browser</button>
+        {/if}
         <button onclick={() => api.openUrl("https://github.com/Yarmiplay/YarmiplayServerTV")}>Project page</button>
       </div>
     </section>

@@ -1,5 +1,4 @@
-import { listen } from "@tauri-apps/api/event";
-import { api, clone, errorText, type LogLine, type Settings, type Snapshot } from "./api";
+import { api, BROWSER_OFF, clone, errorText, subscribe, type LogLine, type Settings, type Snapshot } from "./api";
 
 const MAX_LOGS = 2000;
 
@@ -7,15 +6,26 @@ class AppStore {
   snap = $state<Snapshot | null>(null);
   logs = $state<LogLine[]>([]);
   toast = $state<{ text: string; kind: "ok" | "err" } | null>(null);
+  /** Set while a browser tab can't get live updates from the app. */
+  connection = $state<string | null>(null);
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
 
   async init() {
-    await listen<Snapshot>("status", (e) => (this.snap = e.payload));
-    await listen<LogLine>("log", (e) => {
-      const next = this.logs.length >= MAX_LOGS ? this.logs.slice(-MAX_LOGS + 1) : this.logs.slice();
-      next.push(e.payload);
-      this.logs = next;
+    await subscribe({
+      status: (snap) => (this.snap = snap),
+      log: (line) => {
+        const next = this.logs.length >= MAX_LOGS ? this.logs.slice(-MAX_LOGS + 1) : this.logs.slice();
+        next.push(line);
+        this.logs = next;
+      },
+      resync: () => void this.reload().catch(() => {}),
+      connection: (problem) =>
+        (this.connection = problem && this.snap?.settings.browser.enabled === false ? BROWSER_OFF : problem),
     });
+    await this.reload();
+  }
+
+  async reload() {
     this.snap = await api.getState();
     this.logs = await api.getLogs();
   }

@@ -1,4 +1,67 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+
+/** False when the UI is opened in a regular browser (served by the app on 127.0.0.1). */
+export const inApp = isTauri();
+
+const NOT_SIGNED_IN =
+  "This browser isn't signed in to YarmiplayServerTV. Use \"Open in Browser\" in the tray icon menu to open the control panel.";
+const UNREACHABLE = "Could not reach YarmiplayServerTV. Make sure the app is running.";
+export const BROWSER_OFF =
+  "Browser access was turned off. To use the control panel here again, turn it back on from the Dashboard in the YarmiplayServerTV window, then choose \"Open in Browser\" in the tray icon menu.";
+
+async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (inApp) return tauriInvoke<T>(command, args);
+  let res: Response;
+  try {
+    res = await fetch(`/api/invoke/${command}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-YSTV": "1" },
+      body: JSON.stringify(args ?? {}),
+    });
+  } catch {
+    throw UNREACHABLE;
+  }
+  if (res.status === 401) throw NOT_SIGNED_IN;
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw typeof body === "string" ? body : `Request failed (HTTP ${res.status})`;
+  return body as T;
+}
+
+export interface EventHandlers {
+  status: (snap: Snapshot) => void;
+  log: (line: LogLine) => void;
+  /** Events may have been missed; reload the full state. */
+  resync: () => void;
+  connection: (problem: string | null) => void;
+}
+
+export async function subscribe(on: EventHandlers): Promise<void> {
+  if (inApp) {
+    await listen<Snapshot>("status", (e) => on.status(e.payload));
+    await listen<LogLine>("log", (e) => on.log(e.payload));
+    return;
+  }
+  const events = new EventSource("/api/events");
+  let opened = false;
+  events.addEventListener("status", (e) => on.status(JSON.parse(e.data)));
+  events.addEventListener("log", (e) => on.log(JSON.parse(e.data)));
+  events.addEventListener("resync", () => on.resync());
+  events.onopen = () => {
+    on.connection(null);
+    if (opened) on.resync();
+    opened = true;
+  };
+  events.onerror = () => {
+    if (events.readyState === EventSource.CLOSED) on.connection(NOT_SIGNED_IN);
+    else on.connection("Lost the connection to YarmiplayServerTV. Reconnecting…");
+  };
+}
+
+export function copyText(text: string): Promise<void> {
+  return inApp ? writeText(text) : navigator.clipboard.writeText(text);
+}
 
 export interface SyncplaySettings {
   enabled: boolean;
@@ -31,10 +94,15 @@ export interface TlsSettings {
   staging: boolean;
 }
 
+export interface BrowserSettings {
+  enabled: boolean;
+}
+
 export interface Settings {
   syncplay: SyncplaySettings;
   jellyfin: JellyfinSettings;
   tls: TlsSettings;
+  browser: BrowserSettings;
 }
 
 export interface RoomInfo {
@@ -147,8 +215,15 @@ export const api = {
   jellyfinRescan: () => invoke<void>("jellyfin_rescan"),
   getLogs: () => invoke<LogLine[]>("get_logs"),
   clearLogs: () => invoke<void>("clear_logs"),
-  openUrl: (url: string) => invoke<void>("open_url", { url }),
+  openUrl: async (url: string) => {
+    if (inApp) return invoke<void>("open_url", { url });
+    window.open(url, "_blank", "noopener,noreferrer");
+  },
   openFolder: (which: "data" | "jellyfin-logs") => invoke<void>("open_folder", { which }),
+  pickFolder: () => invoke<string | null>("pick_folder"),
+  getAutostart: () => invoke<boolean>("get_autostart"),
+  setAutostart: (enabled: boolean) => invoke<boolean>("set_autostart", { enabled }),
+  openInBrowser: () => invoke<void>("open_in_browser"),
   quit: () => invoke<void>("quit_app"),
 };
 

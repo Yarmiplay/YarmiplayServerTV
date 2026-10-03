@@ -1,12 +1,14 @@
-//! IPC commands for the control panel. The UI is only reachable through the
-//! app's own webview; there is no HTTP control port.
+//! Commands for the control panel. The app's webview calls them over IPC; a
+//! browser on this PC reaches the same functions through `web`.
 
 use crate::config::Settings;
 use crate::jellyfin::api::Library;
 use crate::logs::{self, LogLine};
 use crate::orchestrator::{App, Snapshot};
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_autostart::ManagerExt as _;
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 type AppState<'a> = State<'a, Arc<App>>;
@@ -17,8 +19,18 @@ pub fn get_state(app: AppState<'_>) -> Snapshot {
 }
 
 #[tauri::command]
-pub async fn update_settings(app: AppState<'_>, settings: Settings) -> Result<Snapshot, String> {
-    app.inner().update_settings(settings).await
+pub async fn update_settings(
+    handle: AppHandle,
+    app: AppState<'_>,
+    settings: Settings,
+) -> Result<Snapshot, String> {
+    let snap = app.inner().update_settings(settings).await?;
+    if !snap.settings.browser.enabled {
+        // Open browser tabs learn why they are about to be disconnected.
+        crate::web::publish("status", &snap);
+    }
+    crate::web::apply(&handle, snap.settings.browser.enabled);
+    Ok(snap)
 }
 
 #[tauri::command]
@@ -139,6 +151,44 @@ pub fn open_folder(handle: AppHandle, app: AppState<'_>, which: String) -> Resul
         .opener()
         .open_path(path.to_string_lossy(), None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn pick_folder(handle: AppHandle) -> Option<String> {
+    let mut dialog = handle.dialog().file();
+    if let Some(w) = handle.get_webview_window("main") {
+        if w.is_visible().unwrap_or(false) {
+            dialog = dialog.set_parent(&w);
+        }
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    dialog.pick_folder(move |dir| {
+        let _ = tx.send(dir);
+    });
+    let dir = rx.await.ok()??;
+    Some(dir.into_path().ok()?.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn get_autostart(handle: AppHandle) -> bool {
+    handle.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+pub fn set_autostart(handle: AppHandle, enabled: bool) -> Result<bool, String> {
+    let launcher = handle.autolaunch();
+    let result = if enabled {
+        launcher.enable()
+    } else {
+        launcher.disable()
+    };
+    result.map_err(|e| e.to_string())?;
+    Ok(launcher.is_enabled().unwrap_or(false))
+}
+
+#[tauri::command]
+pub fn open_in_browser(handle: AppHandle) -> Result<(), String> {
+    crate::web::open_in_browser(&handle)
 }
 
 #[tauri::command]

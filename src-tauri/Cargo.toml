@@ -51,6 +51,9 @@ rcgen = "0.14"
 p12-keystore = "0.3"
 futures-util = "0.3"
 
+# Browser access to the control panel (127.0.0.1 only)
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
+
 # Jellyfin download / extraction
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tar = "0.4"

@@ -15,8 +15,10 @@ gives your friends a room to watch in sync and a media library to stream from.
   Let's Encrypt certificate that is renewed automatically.
 - You choose the ports. Every server can be switched on and off from the control panel or the tray menu.
 
-The control panel is only reachable from the app window on your own computer. There is no web control
-port, so nobody else on the network or internet can change your settings.
+The control panel is only reachable from your own computer: in the app window, or in a browser through
+**Open in Browser** in the tray menu. Browser access listens on `127.0.0.1:8097` only, needs the one-time
+sign-in link that menu item opens, and can be switched off on the Dashboard, so nobody else on the network
+or internet can change your settings.
 
 ## Getting started
 

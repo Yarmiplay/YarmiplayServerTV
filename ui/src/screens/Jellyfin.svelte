@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { open } from "@tauri-apps/plugin-dialog";
   import type { Library, Snapshot } from "../lib/api";
   import { api, errorText, formatBytes } from "../lib/api";
   import { store } from "../lib/store.svelte";
@@ -82,9 +81,8 @@
     if (signedIn && libraries === null) loadLibraries();
   });
 
-  async function pickFolder(): Promise<string | null> {
-    const dir = await open({ directory: true, multiple: false });
-    return typeof dir === "string" ? dir : null;
+  function pickFolder(): Promise<string | null> {
+    return api.pickFolder();
   }
 
   async function addLibrary() {

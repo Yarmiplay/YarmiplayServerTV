@@ -1,7 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-  import { api, type LogLine } from "../lib/api";
+  import { api, copyText, type LogLine } from "../lib/api";
   import { store } from "../lib/store.svelte";
 
   const ranks: Record<LogLine["level"], number> = { error: 0, warn: 1, info: 2, debug: 3, trace: 4 };
@@ -43,7 +42,7 @@
       </select>
       <input placeholder="Filter" bind:value={filter} />
       <label class="row follow"><input type="checkbox" bind:checked={follow} /> Follow</label>
-      <button class="small" onclick={() => store.run(() => writeText(text()), "Copied")}>Copy</button>
+      <button class="small" onclick={() => store.run(() => copyText(text()), "Copied")}>Copy</button>
       <button class="small" onclick={clear}>Clear</button>
     </div>
   </header>

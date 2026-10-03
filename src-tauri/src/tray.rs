@@ -12,6 +12,7 @@ use tracing::warn;
 
 pub struct TrayItems {
     status: MenuItem<Wry>,
+    open_browser: MenuItem<Wry>,
     syncplay: CheckMenuItem<Wry>,
     jellyfin: CheckMenuItem<Wry>,
     copy_syncplay: MenuItem<Wry>,
@@ -30,6 +31,14 @@ pub fn show_main(app: &AppHandle) {
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "status", "Starting…", false, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open Control Panel", true, None::<&str>)?;
+    let browser_on = app.state::<Arc<App>>().settings().browser.enabled;
+    let open_browser = MenuItem::with_id(
+        app,
+        "open-browser",
+        "Open in Browser",
+        browser_on,
+        None::<&str>,
+    )?;
     let syncplay = CheckMenuItem::with_id(
         app,
         "syncplay",
@@ -72,6 +81,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
             &status,
             &sep()?,
             &open,
+            &open_browser,
             &sep()?,
             &syncplay,
             &jellyfin,
@@ -105,6 +115,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
 
     app.manage(TrayItems {
         status,
+        open_browser,
         syncplay,
         jellyfin,
         copy_syncplay,
@@ -118,6 +129,11 @@ fn on_menu(app: &AppHandle, id: &str) {
     let state = app.state::<Arc<App>>().inner().clone();
     match id {
         "open" => show_main(app),
+        "open-browser" => {
+            if let Err(e) = crate::web::open_in_browser(app) {
+                warn!(error = %e, "could not open the control panel in a browser");
+            }
+        }
         "syncplay" | "jellyfin" => {
             let which = id.to_string();
             tauri::async_runtime::spawn(async move {
@@ -198,6 +214,9 @@ pub fn update(app: &AppHandle, snap: &Snapshot) {
     };
     let line = status_line(snap);
     let _ = items.status.set_text(&line);
+    let _ = items
+        .open_browser
+        .set_enabled(snap.settings.browser.enabled);
     let _ = items.syncplay.set_checked(snap.settings.syncplay.enabled);
     let _ = items.jellyfin.set_checked(snap.settings.jellyfin.enabled);
     let _ = items.copy_syncplay.set_enabled(snap.syncplay.running);

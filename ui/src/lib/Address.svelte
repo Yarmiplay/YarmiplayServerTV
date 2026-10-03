@@ -1,13 +1,12 @@
 <script lang="ts">
-  import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-  import { api } from "./api";
+  import { api, copyText } from "./api";
   import { store } from "./store.svelte";
 
   let { label, value, link = false }: { label: string; value: string | null; link?: boolean } = $props();
 
   async function copy() {
     if (!value) return;
-    await store.run(() => writeText(value!), "Copied");
+    await store.run(() => copyText(value!), "Copied");
   }
 </script>
 
