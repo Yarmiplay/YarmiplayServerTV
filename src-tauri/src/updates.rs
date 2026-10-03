@@ -41,8 +41,10 @@ pub struct UpdateStatus {
     pub last_check: Option<i64>,
     /// Whether this kind of install can update without an administrator prompt.
     pub unattended: bool,
-    /// False in development builds.
+    /// False in development builds and the Microsoft Store package.
     pub supported: bool,
+    /// Installed from the Microsoft Store, which updates it.
+    pub store: bool,
 }
 
 pub struct Updates {
@@ -66,7 +68,8 @@ impl Updates {
                 error: None,
                 last_check: None,
                 unattended: unattended(),
-                supported: !tauri::is_dev(),
+                supported: supported(),
+                store: crate::paths::package_family().is_some(),
             }),
             ready: Mutex::new(None),
             busy: tokio::sync::Mutex::new(()),
@@ -85,6 +88,11 @@ impl Updates {
     }
 }
 
+/// The Store package mustn't update itself outside the Store.
+pub fn supported() -> bool {
+    !tauri::is_dev() && crate::paths::package_family().is_none()
+}
+
 fn unattended() -> bool {
     !matches!(
         tauri::utils::platform::bundle_type(),
@@ -100,9 +108,9 @@ fn unix_now() -> i64 {
 }
 
 /// Scheduled checks while automatic updates are on; nothing runs in
-/// development builds.
+/// development builds or the Store package.
 pub fn start(handle: AppHandle) {
-    if tauri::is_dev() {
+    if !supported() {
         return;
     }
     tauri::async_runtime::spawn(async move {
@@ -125,7 +133,7 @@ pub fn start(handle: AppHandle) {
 /// Called when the user turns automatic updates on, so they needn't wait
 /// for the next scheduled round.
 pub fn turned_on(handle: &AppHandle) {
-    if tauri::is_dev() {
+    if !supported() {
         return;
     }
     let handle = handle.clone();
@@ -151,6 +159,9 @@ async fn auto_install(handle: &AppHandle) {
 
 /// Look for a newer release and download it. Errors also land in the status.
 pub async fn check(handle: &AppHandle) -> Result<(), String> {
+    if crate::paths::package_family().is_some() {
+        return Err("This copy is updated by the Microsoft Store".into());
+    }
     let app = handle.state::<Arc<App>>().inner().clone();
     let updates = app.updates.clone();
     let Ok(_busy) = updates.busy.try_lock() else {
@@ -250,6 +261,9 @@ pub async fn check(handle: &AppHandle) -> Result<(), String> {
 pub async fn install(handle: &AppHandle) -> Result<(), String> {
     if tauri::is_dev() {
         return Err("Updates can't be installed over a development build".into());
+    }
+    if crate::paths::package_family().is_some() {
+        return Err("This copy is updated by the Microsoft Store".into());
     }
     let app = handle.state::<Arc<App>>().inner().clone();
     let updates = app.updates.clone();

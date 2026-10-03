@@ -2,10 +2,9 @@
 
 use crate::orchestrator::{App, Snapshot};
 use std::sync::Arc;
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, Wry};
-use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_clipboard_manager::ClipboardExt as _;
 use tauri_plugin_opener::OpenerExt as _;
 use tracing::warn;
@@ -65,43 +64,44 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     )?;
     let open_jellyfin =
         MenuItem::with_id(app, "open-jellyfin", "Open Jellyfin", false, None::<&str>)?;
-    let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
     let autostart = CheckMenuItem::with_id(
         app,
         "autostart",
         "Start with system",
         true,
-        autostart_on,
+        false,
         None::<&str>,
     )?;
     let update = MenuItem::with_id(
         app,
         "update",
         "Check for updates",
-        !tauri::is_dev(),
+        crate::updates::supported(),
         None::<&str>,
     )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let sep = || PredefinedMenuItem::separator(app);
-    let menu = Menu::with_items(
-        app,
-        &[
-            &status,
-            &sep()?,
-            &open,
-            &open_browser,
-            &sep()?,
-            &syncplay,
-            &jellyfin,
-            &sep()?,
-            &copy_syncplay,
-            &open_jellyfin,
-            &sep()?,
-            &autostart,
-            &update,
-            &quit,
-        ],
-    )?;
+    let (sep1, sep2, sep3, sep4) = (sep()?, sep()?, sep()?, sep()?);
+    let mut items: Vec<&dyn IsMenuItem<Wry>> = vec![
+        &status,
+        &sep1,
+        &open,
+        &open_browser,
+        &sep2,
+        &syncplay,
+        &jellyfin,
+        &sep3,
+        &copy_syncplay,
+        &open_jellyfin,
+        &sep4,
+        &autostart,
+    ];
+    // The Store updates its copy.
+    if crate::paths::package_family().is_none() {
+        items.push(&update);
+    }
+    items.push(&quit);
+    let menu = Menu::with_items(app, &items)?;
 
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
     TrayIconBuilder::with_id("main")
@@ -132,7 +132,17 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         autostart,
         update,
     });
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || set_autostart_checked(&app));
     Ok(())
+}
+
+/// Ticks "Start with system" to match the system; blocks briefly.
+pub fn set_autostart_checked(app: &AppHandle) {
+    let on = crate::autostart::is_enabled(app);
+    if let Some(items) = app.try_state::<TrayItems>() {
+        let _ = items.autostart.set_checked(on);
+    }
 }
 
 fn on_menu(app: &AppHandle, id: &str) {
@@ -174,21 +184,14 @@ fn on_menu(app: &AppHandle, id: &str) {
             }
         }
         "autostart" => {
-            let launcher = app.autolaunch();
-            let on = launcher.is_enabled().unwrap_or(false);
-            let result = if on {
-                launcher.disable()
-            } else {
-                launcher.enable()
-            };
-            if let Err(e) = result {
-                warn!(error = %e, "could not change start-with-system");
-            }
-            if let Some(items) = app.try_state::<TrayItems>() {
-                let _ = items
-                    .autostart
-                    .set_checked(launcher.is_enabled().unwrap_or(false));
-            }
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let on = crate::autostart::is_enabled(&app);
+                if let Err(e) = crate::autostart::set(&app, !on) {
+                    warn!(error = %e, "could not change start-with-system");
+                }
+                set_autostart_checked(&app);
+            });
         }
         "update" => {
             let app = app.clone();
@@ -247,9 +250,6 @@ pub fn update(app: &AppHandle, snap: &Snapshot) {
     let _ = items
         .open_jellyfin
         .set_enabled(snap.jellyfin.phase == "running");
-    let _ = items
-        .autostart
-        .set_checked(app.autolaunch().is_enabled().unwrap_or(false));
     let (text, enabled) = match (snap.update.phase, &snap.update.version) {
         ("ready", Some(v)) => (format!("Install update {v}"), true),
         ("downloading", _) => ("Downloading update…".to_string(), false),

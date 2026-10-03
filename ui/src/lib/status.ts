@@ -63,6 +63,7 @@ export function upnpPill(s: Snapshot): Pill {
 
 export function updatePill(s: Snapshot): Pill {
   const u = s.update;
+  if (u.store) return { kind: "", text: "Microsoft Store" };
   if (!u.supported) return { kind: "", text: "Development build" };
   switch (u.phase) {
     case "checking":

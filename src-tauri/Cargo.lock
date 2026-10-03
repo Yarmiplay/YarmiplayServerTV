@@ -7046,6 +7046,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "windows",
  "windows-sys 0.59.0",
  "x509-parser",
  "zip 2.4.2",

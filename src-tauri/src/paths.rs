@@ -21,6 +21,21 @@ impl AppPaths {
                 data: root.join("data"),
             };
         }
+        // A packaged app's new AppData files land in a hidden per-package copy
+        // that Explorer doesn't see, so the Store copy keeps everything in its
+        // own LocalState folder, which Windows removes on uninstall.
+        if let Some(family) = package_family() {
+            let base = directories::BaseDirs::new().expect("no home directory");
+            let root = base
+                .data_local_dir()
+                .join("Packages")
+                .join(family)
+                .join("LocalState");
+            return Self {
+                config: root.join("config"),
+                data: root.join("data"),
+            };
+        }
         let dirs = directories::ProjectDirs::from("com", "Yarmiplay", "YarmiplayServerTV")
             .expect("no home directory");
         Self {
@@ -52,6 +67,36 @@ impl AppPaths {
         restrict_dir(&self.data);
         Ok(())
     }
+}
+
+/// The package family name when running from the Microsoft Store package
+/// (MSIX), None for every other install.
+pub fn package_family() -> Option<&'static str> {
+    static FAMILY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    FAMILY.get_or_init(read_package_family).as_deref()
+}
+
+#[cfg(windows)]
+fn read_package_family() -> Option<String> {
+    use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
+    use windows_sys::Win32::Storage::Packaging::Appx::GetCurrentPackageFamilyName;
+    let mut len = 0u32;
+    // APPMODEL_ERROR_NO_PACKAGE when not packaged.
+    let probe = unsafe { GetCurrentPackageFamilyName(&mut len, std::ptr::null_mut()) };
+    if probe != ERROR_INSUFFICIENT_BUFFER || len == 0 {
+        return None;
+    }
+    let mut buf = vec![0u16; len as usize];
+    if unsafe { GetCurrentPackageFamilyName(&mut len, buf.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    buf.truncate(len.saturating_sub(1) as usize);
+    Some(String::from_utf16_lossy(&buf))
+}
+
+#[cfg(not(windows))]
+fn read_package_family() -> Option<String> {
+    None
 }
 
 /// Owner-only permissions where the OS supports it (Windows app-data is already per-user).

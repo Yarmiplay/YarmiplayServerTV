@@ -6,7 +6,8 @@ Builds the YarmiplayServerTV download page: one card per desktop OS, each with i
 
 Files in --dist are sorted onto platforms by extension (.msi/.exe: Windows, .dmg: macOS, .deb/.AppImage: Linux)
 and copied under stable names such as YarmiplayServerTV.msi, so links keep working across builds. Platforms
-without a file show how to build from source. The Pages workflow publishes the result. Standard library only.
+without a file or store listing show how to build from source. <site>/privacy/ is docs/privacy.md (the Microsoft
+Store privacy policy). The Pages workflow publishes the result. Standard library only.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import hashlib
 import html
 import json
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass
@@ -25,8 +27,13 @@ REPO_URL = "https://github.com/Yarmiplay/YarmiplayServerTV"
 CLIENT_URL = "https://yarmiplay.github.io/YarmiplayTV/"
 CLIENT_REPO = "https://github.com/Yarmiplay/YarmiplayTV"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Store listings: the platform's main button, with its files as smaller links below.
+STORE_LINKS = {
+    "windows": ("Microsoft Store", "https://apps.microsoft.com/detail/9P6B9C1KXFFQ"),
+}
 
-# Lower-case extension -> platform and button label.
+# Lower-case extension -> platform and button label. Without a store listing the first file is the platform's
+# main button.
 EXTENSIONS = {
     ".msi": ("windows", "Installer (.msi)"),
     ".exe": ("windows", "Setup (.exe)"),
@@ -55,9 +62,11 @@ class Platform:
 
 BUILD_FROM_SOURCE = "git clone {repo}\ncd YarmiplayServerTV\nnpm install\nnpx tauri build".format(repo=REPO_URL)
 
-WINDOWS_UNSIGNED = ("Run the installer. This build isn't code-signed, so Windows SmartScreen may warn you: "
-                    "choose <b>More info</b>, then <b>Run anyway</b>.")
-WINDOWS_SIGNED = "Run the installer (code-signed by SignPath Foundation)."
+WINDOWS_UNSIGNED = ("Get it from the Microsoft Store (Jellyfin built in, updated by the Store), or run the "
+                    "installer. The installer isn't code-signed, so Windows SmartScreen may warn you: choose "
+                    "<b>More info</b>, then <b>Run anyway</b>.")
+WINDOWS_SIGNED = ("Get it from the Microsoft Store (Jellyfin built in, updated by the Store), or run the "
+                  "installer (code-signed by SignPath Foundation).")
 
 PLATFORMS = [
     Platform("windows", "Windows", "Windows 10 or 11, 64-bit.", [
@@ -90,21 +99,28 @@ def fmt_size(n):
     return f"{n / 1e6:.1f} MB"
 
 
-def render_page(downloads, version, built, windows_signed=False):
+def render_page(downloads, version, built, windows_signed=False, privacy=False):
     """downloads: {platform key: [Download]}. Returns the page as a str."""
     cards = []
     for p in PLATFORMS:
         files = downloads.get(p.key, [])
-        if files:
-            buttons = "".join(
-                f'<a class="btn" href="{html.escape(d.href)}" download>{html.escape(d.label)}'
-                f'<small>{fmt_size(d.size)}</small></a>' for d in files)
+        store = STORE_LINKS.get(p.key)
+        if files or store:
+            links = [(html.escape(store[1]), "", html.escape(store[0]), "Updates automatically")] if store else []
+            links += [(html.escape(d.href), " download", html.escape(d.label), fmt_size(d.size)) for d in files]
+            (href, attr, label, note), rest = links[0], links[1:]
+            buttons = f'<a class="btn" href="{href}"{attr}>{label}<small>{note}</small></a>'
+            if rest:
+                buttons += '<p class="more">' + " &middot; ".join(
+                    f'<span><a href="{href}"{attr}>{label}</a> <small>{note}</small></span>'
+                    for href, attr, label, note in rest) + "</p>"
             steps = "".join(f"<li>{WINDOWS_SIGNED if windows_signed and s == WINDOWS_UNSIGNED else s}</li>"
                             for s in p.steps)
             sums = "".join(f"<div>{html.escape(d.href)}<br><code>{d.sha256}</code></div>" for d in files if d.sha256)
             body = (f'<div class="dl">{buttons}</div><ol>{steps}</ol>'
                     f'<p class="uninstall"><b>Uninstall:</b> {p.uninstall} Settings and Jellyfin data stay in your '
-                    f'<a href="{REPO_URL}#uninstalling">app-data folder</a>.</p>'
+                    f'<a href="{REPO_URL}#uninstalling">app-data folder</a>'
+                    + (f' (the {html.escape(store[0])} copy removes them with the app)' if store else '') + '.</p>'
                     + (f"<details><summary>SHA-256</summary>{sums}</details>" if sums else ""))
         else:
             body = (f'<p class="none">No package for this platform yet. Build it from source '
@@ -125,8 +141,9 @@ def render_page(downloads, version, built, windows_signed=False):
  body {{ margin:0; background:var(--bg); color:var(--text); font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }}
  main {{ max-width:1100px; margin:0 auto; padding:6vh 4vw 4vh; }}
  header {{ text-align:center; margin-bottom:2.5em; }}
- header img {{ width:96px; height:96px; }}
- h1 {{ font-size:clamp(2.2em,6vw,3.4em); margin:.1em 0 0; letter-spacing:-.02em; }}
+ .brand {{ display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:.25em .4em; }}
+ .brand img {{ width:clamp(56px,10vw,88px); height:auto; }}
+ h1 {{ font-size:clamp(2.2em,6vw,3.4em); margin:0; letter-spacing:-.02em; }}
  h1 span {{ color:var(--accent); }}
  header p {{ color:var(--muted); font-size:1.15em; margin:.4em auto; max-width:46em; }}
  .meta {{ font-size:.95em; }}
@@ -143,7 +160,10 @@ def render_page(downloads, version, built, windows_signed=False):
  .blurb, ol, details, .none, .uninstall {{ color:var(--muted); }}
  .uninstall {{ font-size:.85em; margin:.6em 0 0; }}
  .blurb {{ margin:0 0 1em; }}
- .dl {{ display:flex; flex-wrap:wrap; gap:.6em; margin-bottom:.8em; }}
+ .dl {{ display:flex; flex-direction:column; align-items:flex-start; gap:.6em; margin-bottom:.8em; }}
+ .more {{ margin:0; color:var(--muted); font-size:.95em; }}
+ .more a {{ font-weight:600; text-decoration:none; }} .more a:hover {{ text-decoration:underline; }}
+ .more span {{ white-space:nowrap; }} .more small {{ font-size:.85em; }}
  .btn {{ display:inline-flex; flex-direction:column; padding:.6em 1.2em; border-radius:10px; background:var(--accent);
         color:var(--on-accent); text-decoration:none; font-weight:700; font-size:1.05em; }}
  .btn small {{ font-weight:500; opacity:.8; font-size:.8em; }}
@@ -163,8 +183,7 @@ def render_page(downloads, version, built, windows_signed=False):
 </style></head>
 <body><main>
 <header>
- <img src="logo.svg" alt="">
- <h1>Yarmiplay<span>ServerTV</span></h1>
+ <div class="brand"><img src="logo.svg" alt=""><h1>Yarmiplay<span>ServerTV</span></h1></div>
  <p>Host your own Syncplay server and Jellyfin server from the system tray, for YarmiplayTV and any Syncplay client.</p>
  <ul class="features"><li>Syncplay 1.7 server</li><li>Jellyfin, installed for you</li><li>Optional UPnP port forwarding</li><li>Free HTTPS with DuckDNS + Let's Encrypt</li></ul>
  <p class="meta">{meta}</p>
@@ -177,7 +196,7 @@ def render_page(downloads, version, built, windows_signed=False):
  <p><a href="{CLIENT_URL}">Get YarmiplayTV</a> for Google TV, Android and desktop, then connect it to this server.</p>
 </section>
 <footer><a href="{REPO_URL}">Source</a> &middot; <a href="{REPO_URL}#readme">Setup guide</a> &middot; <a href="{CLIENT_REPO}">YarmiplayTV</a>
- &middot; <a href="{REPO_URL}#code-signing-policy">Code signing policy</a></footer>
+ &middot; <a href="{REPO_URL}#code-signing-policy">Code signing policy</a>{' &middot; <a href="privacy/">Privacy</a>' if privacy else ''}</footer>
 </main>
 <script>
 (function () {{
@@ -193,6 +212,73 @@ def render_page(downloads, version, built, windows_signed=False):
 }})();
 </script>
 </body></html>
+"""
+
+
+def inline_markdown(text):
+    """`code`, **bold** and [text](url) in already-escaped text."""
+    text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    return re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", r'<a href="\2">\1</a>', text)
+
+
+def markdown_to_html(md):
+    """The Markdown docs/privacy.md uses: # headings, paragraphs and "- " lists, lines wrapped freely."""
+    blocks, para, items = [], [], []
+
+    def flush():
+        if para:
+            blocks.append(f"<p>{inline_markdown(html.escape(' '.join(para), quote=False))}</p>")
+            para.clear()
+        if items:
+            lis = "".join(f"<li>{inline_markdown(html.escape(i, quote=False))}</li>" for i in items)
+            blocks.append(f"<ul>{lis}</ul>")
+            items.clear()
+
+    for line in md.splitlines():
+        stripped = line.strip()
+        heading = re.match(r"(#{1,3}) (.+)", stripped)
+        if not stripped:
+            flush()
+        elif heading:
+            flush()
+            level = len(heading.group(1))
+            blocks.append(f"<h{level}>{inline_markdown(html.escape(heading.group(2), quote=False))}</h{level}>")
+        elif stripped.startswith("- "):
+            if para:
+                flush()
+            items.append(stripped[2:])
+        elif items and line.startswith(" "):
+            items[-1] += " " + stripped
+        else:
+            if items:
+                flush()
+            para.append(stripped)
+    flush()
+    return "\n".join(blocks)
+
+
+def render_doc(md):
+    """A Markdown document as a page in the download page's style."""
+    title = next((l[2:].strip() for l in md.splitlines() if l.startswith("# ")), NAME)
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{html.escape(title)}</title>
+<link rel="icon" href="../logo.svg" type="image/svg+xml">
+<style>
+ body {{ margin:0; background:#0E1116; color:#E8ECF2; font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }}
+ main {{ max-width:760px; margin:0 auto; padding:6vh 5vw; }}
+ h1 {{ font-size:2.2em; letter-spacing:-.02em; margin:0 0 .6em; }}
+ h2 {{ font-size:1.3em; margin:1.6em 0 .4em; }}
+ p, li {{ color:#C4C7CC; }}
+ a {{ color:#3DA5F4; }}
+ code {{ font-family:ui-monospace,Consolas,monospace; font-size:.9em; background:#171B22; padding:.1em .35em; border-radius:4px; }}
+</style></head>
+<body><main>
+{markdown_to_html(md)}
+<p><a href="../">{NAME} downloads</a></p>
+</main></body></html>
 """
 
 
@@ -223,9 +309,15 @@ def build(dist, out, version, windows_signed=False):
         print(f"  {name} -> {target}")
 
     shutil.copyfile(os.path.join(ROOT, "assets", "logo.svg"), os.path.join(out, "logo.svg"))
+    privacy = os.path.join(ROOT, "docs", "privacy.md")
+    if os.path.isfile(privacy):
+        os.makedirs(os.path.join(out, "privacy"))
+        with open(privacy, encoding="utf-8") as src, \
+                open(os.path.join(out, "privacy", "index.html"), "w", encoding="utf-8") as f:
+            f.write(render_doc(src.read()))
     built = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     with open(os.path.join(out, "index.html"), "w", encoding="utf-8") as f:
-        f.write(render_page(downloads, version, built, windows_signed))
+        f.write(render_page(downloads, version, built, windows_signed, os.path.isfile(privacy)))
     open(os.path.join(out, ".nojekyll"), "w").close()
     print(f"wrote {out} ({sum(len(v) for v in downloads.values())} downloads)")
 

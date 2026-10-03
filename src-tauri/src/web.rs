@@ -339,8 +339,8 @@ async fn dispatch(h: &AppHandle, command: &str, a: &Value) -> Result<Value, Stri
         }
         "open_folder" => ok(cmd::open_folder(h.clone(), app(), arg(a, "which")?)?),
         "pick_folder" => ok(cmd::pick_folder(h.clone()).await),
-        "get_autostart" => ok(cmd::get_autostart(h.clone())),
-        "set_autostart" => ok(cmd::set_autostart(h.clone(), arg(a, "enabled")?)?),
+        "get_autostart" => ok(cmd::get_autostart(h.clone()).await),
+        "set_autostart" => ok(cmd::set_autostart(h.clone(), arg(a, "enabled")?).await?),
         "check_for_update" => ok(cmd::check_for_update(h.clone()).await?),
         "install_update" => ok(cmd::install_update(h.clone()).await?),
         "quit_app" => {

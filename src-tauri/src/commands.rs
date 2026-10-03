@@ -7,7 +7,6 @@ use crate::logs::{self, LogLine};
 use crate::orchestrator::{App, Snapshot};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
-use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -174,20 +173,22 @@ pub async fn pick_folder(handle: AppHandle) -> Option<String> {
 }
 
 #[tauri::command]
-pub fn get_autostart(handle: AppHandle) -> bool {
-    handle.autolaunch().is_enabled().unwrap_or(false)
+pub async fn get_autostart(handle: AppHandle) -> bool {
+    tokio::task::spawn_blocking(move || crate::autostart::is_enabled(&handle))
+        .await
+        .unwrap_or(false)
 }
 
 #[tauri::command]
-pub fn set_autostart(handle: AppHandle, enabled: bool) -> Result<bool, String> {
-    let launcher = handle.autolaunch();
-    let result = if enabled {
-        launcher.enable()
-    } else {
-        launcher.disable()
-    };
-    result.map_err(|e| e.to_string())?;
-    Ok(launcher.is_enabled().unwrap_or(false))
+pub async fn set_autostart(handle: AppHandle, enabled: bool) -> Result<bool, String> {
+    let on = tokio::task::spawn_blocking(move || {
+        let on = crate::autostart::set(&handle, enabled);
+        crate::tray::set_autostart_checked(&handle);
+        on
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(on)
 }
 
 #[tauri::command]

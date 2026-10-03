@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Microsoft Store package of the app; scripts/make-msix.ps1 fills in {VERSION}. Identity Name and Publisher
+  and PublisherDisplayName are the values Partner Center shows under Product management > Product identity; the
+  Store rejects a package with any other. The startup task's TaskId is the one src-tauri/src/autostart.rs asks
+  Windows for.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap desktop rescap">
+
+  <Identity Name="Yarmiplay.YarmiplayServerTV" Publisher="CN=0A2DDF62-27E6-4FED-9AD9-3EE32072AD56" Version="{VERSION}.0" ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>YarmiplayServerTV</DisplayName>
+    <PublisherDisplayName>Yarmiplay</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>Syncplay + Jellyfin server for YarmiplayTV</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="YarmiplayServerTV" Executable="yarmiplayservertv.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="YarmiplayServerTV"
+        Description="Syncplay + Jellyfin server for YarmiplayTV"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <desktop:Extension Category="windows.startupTask" Executable="yarmiplayservertv.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="YarmiplayServerTV" Enabled="false" DisplayName="YarmiplayServerTV" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

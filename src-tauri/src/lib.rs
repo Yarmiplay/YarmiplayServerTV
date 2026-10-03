@@ -2,6 +2,7 @@
 //! server, with optional UPnP forwarding and Let's Encrypt certificates for a
 //! DuckDNS name.
 
+pub mod autostart;
 pub mod commands;
 pub mod config;
 pub mod jellyfin;
@@ -66,7 +67,7 @@ pub fn run() {
     tauri::async_runtime::set(runtime.handle().clone());
     let _guard = runtime.enter();
 
-    let minimized = std::env::args().any(|a| a == "--minimized");
+    let minimized = autostart::launched_at_login();
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {

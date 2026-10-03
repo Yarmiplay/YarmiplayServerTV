@@ -120,7 +120,9 @@
         <span class="pill {upd.kind}">{upd.text}</span>
       </div>
       {#if snap.update.error}<div class="notice err">{snap.update.error}</div>{/if}
-      {#if snap.update.supported}
+      {#if snap.update.store}
+        <p class="sub">Updates come from the Microsoft Store.</p>
+      {:else if snap.update.supported}
         <Toggle
           label="Automatic updates"
           hint={snap.update.unattended

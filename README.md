@@ -4,7 +4,8 @@ Host your own **Syncplay server** and **Jellyfin server** from the system tray o
 It's the companion to [YarmiplayTV](https://github.com/Yarmiplay/YarmiplayTV): one app on your computer
 gives your friends a room to watch in sync and a media library to stream from.
 
-**[Download YarmiplayServerTV](https://yarmiplay.github.io/YarmiplayServerTV/)**
+**[Download YarmiplayServerTV](https://yarmiplay.github.io/YarmiplayServerTV/)**, or on Windows get it from the
+[Microsoft Store](https://apps.microsoft.com/detail/9P6B9C1KXFFQ) (Jellyfin built in, updated by the Store).
 
 - A Syncplay 1.7-compatible server built in: rooms, passwords, chat, readiness, shared playlists, and
   encrypted connections (TLS) when a certificate is available.
@@ -22,7 +23,8 @@ or internet can change your settings.
 
 ## Getting started
 
-1. Install YarmiplayServerTV from the [download page](https://yarmiplay.github.io/YarmiplayServerTV/) and start it.
+1. Install YarmiplayServerTV from the [download page](https://yarmiplay.github.io/YarmiplayServerTV/) (on Windows,
+   the [Microsoft Store](https://apps.microsoft.com/detail/9P6B9C1KXFFQ) works too) and start it.
    It lives in the system tray; closing the window keeps the servers running. Use **Quit** in the tray
    menu to stop everything.
 2. On the **Dashboard**, switch on the Syncplay server, the Jellyfin server, or both.
@@ -32,6 +34,8 @@ or internet can change your settings.
 **Start with system** (Dashboard, or the tray menu) starts the app minimized to the tray when you log in.
 
 ### Updates
+
+The Microsoft Store copy is updated by the Store and doesn't show these controls.
 
 **Check for updates** (Dashboard, or the tray menu) looks for a newer release here on GitHub and downloads
 it; **Install** then restarts the app into the new version. Switch on **Automatic updates** on the Dashboard to
@@ -104,6 +108,9 @@ Settings, the ACME account, certificates and Jellyfin (program, database, cache 
 per-user app-data folder; **Open data folder** on the dashboard opens it.
 
 - Windows: `%APPDATA%\Yarmiplay\YarmiplayServerTV` (settings) and `%LOCALAPPDATA%\Yarmiplay\YarmiplayServerTV` (data)
+- Windows, Microsoft Store copy: `%LOCALAPPDATA%\Packages\Yarmiplay.YarmiplayServerTV_<id>\LocalState`, which
+  Windows deletes when you uninstall it. It doesn't share settings with a copy from the download page; don't run
+  both at once, since they would want the same ports.
 - macOS: `~/Library/Application Support/com.Yarmiplay.YarmiplayServerTV`
 - Linux: `~/.config/yarmiplayservertv` and `~/.local/share/yarmiplayservertv`
 
@@ -119,7 +126,8 @@ warnings.
    - macOS: move YarmiplayServerTV from Applications to the Trash.
    - Linux: `sudo apt remove yarmiplay-server-tv`, or delete the AppImage.
 4. To remove your settings, certificates and Jellyfin (with its library database) too, delete the folders
-   listed in [Where things are stored](#where-things-are-stored). The DuckDNS token and Jellyfin sign-in are
+   listed in [Where things are stored](#where-things-are-stored) (the Microsoft Store copy's folder is deleted
+   with the app). The DuckDNS token and Jellyfin sign-in are
    kept in the system credential store under `YarmiplayServerTV`; **Remove** next to the DuckDNS token on the
    Network page and
    **Sign out** on the Jellyfin page delete them, or remove them in Windows Credential Manager, Keychain Access
@@ -188,6 +196,14 @@ artifact configuration. Without the variable the release gets the unsigned insta
 keeps offering the ones from `main`. SmartScreen may still warn about a newly signed release until it has been
 downloaded enough.
 
+The app is [YarmiplayServerTV on the Microsoft Store](https://apps.microsoft.com/detail/9P6B9C1KXFFQ) (Store ID
+`9P6B9C1KXFFQ`). The same run builds the Store package (`scripts/make-msix.ps1`, an unsigned `.msix` that the
+Store signs, with Jellyfin built in) as the `windows-store-msix-<version>` artifact. Upload it in Partner Center as described in
+[docs/store/README.md](docs/store/README.md), which also has the listing text. The app notices when it runs
+from that package: it leaves updates to the Store, keeps its data in the package's `LocalState` folder and uses
+the package's startup task for **Start with system**. `./scripts/make-msix.ps1 -Register` installs the package
+locally for a test (needs Developer Mode).
+
 ## Code signing policy
 
 Free code signing provided by [SignPath.io](https://signpath.io), certificate by
@@ -216,6 +232,9 @@ server and network feature is off until you switch it on, and each one only talk
   and [Cloudflare DNS](https://developers.cloudflare.com/1.1.1.1/privacy/public-dns-resolver/).
 - **Syncplay server:** people you give the address to connect to it. File names, playback and chat are
   passed between them and not stored; the app's log on your computer notes who joined and left which room.
+
+The full privacy policy is [docs/privacy.md](docs/privacy.md), published at
+<https://yarmiplay.github.io/YarmiplayServerTV/privacy/>.
 
 ## License
 

@@ -7,6 +7,8 @@ name: Release
 # SIGNPATH_API_TOKEN, and without the variable the unsigned installers are released instead.
 # Updates are signed with the updater key in the secrets TAURI_SIGNING_PRIVATE_KEY and
 # TAURI_SIGNING_PRIVATE_KEY_PASSWORD; its public half is in tauri.conf.json (plugins > updater > pubkey).
+# The Microsoft Store package (.msix, unsigned: the Store signs it) is attached to the run for uploading in
+# Partner Center; see docs/store/README.md.
 on:
   push:
     tags: ["v*"]
@@ -63,6 +65,18 @@ jobs:
           path: windows/
           if-no-files-found: error
           retention-days: 7
+
+      # Kept out of the SignPath artifact: the Store signs the package itself when it is uploaded. It wraps the
+      # same yarmiplayservertv.exe the installers contain.
+      - name: Store package
+        run: pwsh -NoProfile -File scripts/make-msix.ps1 -NoBuild
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-store-msix-${{ steps.version.outputs.version }}
+          path: src-tauri/target/msix/*.msix
+          if-no-files-found: error
+          retention-days: 90
 
   # Waits on a Linux runner while the signing request awaits manual approval in SignPath.
   sign-windows:

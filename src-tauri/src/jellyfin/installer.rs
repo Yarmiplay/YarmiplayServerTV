@@ -1,6 +1,7 @@
 //! Downloads the pinned Jellyfin server (and jellyfin-ffmpeg where the server
 //! archive doesn't bundle it), verifies the SHA-256 from the embedded
-//! manifest, and extracts it into the app-data folder.
+//! manifest, and extracts it into the app-data folder. The Microsoft Store
+//! package has it built in instead.
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -75,6 +76,9 @@ fn installed_file(root: &Path) -> PathBuf {
 
 /// The current install, if it matches the pinned version and still exists.
 pub fn current(root: &Path) -> Option<Installed> {
+    if crate::paths::package_family().is_some() {
+        return bundled().clone();
+    }
     let raw = std::fs::read_to_string(installed_file(root)).ok()?;
     let installed: Installed = serde_json::from_str(&raw).ok()?;
     let m = manifest();
@@ -82,9 +86,30 @@ pub fn current(root: &Path) -> Option<Installed> {
         .then_some(installed)
 }
 
+/// The Microsoft Store package ships the pinned Jellyfin in its `jellyfin`
+/// folder next to the app (scripts/make-msix.ps1 puts it there), read-only.
+fn bundled() -> &'static Option<Installed> {
+    static BUNDLED: std::sync::OnceLock<Option<Installed>> = std::sync::OnceLock::new();
+    BUNDLED.get_or_init(|| {
+        let dir = std::env::current_exe().ok()?.parent()?.join("jellyfin");
+        let m = manifest();
+        let bundled_ffmpeg = m.platforms.get(&platform_key())?.bundled_ffmpeg.clone();
+        Some(Installed {
+            version: m.jellyfin,
+            ffmpeg_version: m.ffmpeg,
+            exe: find_file(&dir, &[exe_name("jellyfin")])?,
+            web: find_dir_with(&dir, "jellyfin-web", "index.html")?,
+            ffmpeg: bundled_ffmpeg.and_then(|name| find_file(&dir, &[name])),
+        })
+    })
+}
+
 pub async fn ensure(root: &Path, progress: ProgressFn) -> Result<Installed, String> {
     if let Some(i) = current(root) {
         return Ok(i);
+    }
+    if crate::paths::package_family().is_some() {
+        return Err("Jellyfin is missing from the app package; reinstall YarmiplayServerTV".into());
     }
     let m = manifest();
     let key = platform_key();
