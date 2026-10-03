@@ -14,34 +14,46 @@
 <div class="addr">
   <span class="label">{label}</span>
   {#if value}
-    <code class="value">{value}</code>
-    <span class="actions">
-      <button class="small" onclick={copy}>Copy</button>
-      {#if link}<button class="small" onclick={() => api.openUrl(value!)}>Open</button>{/if}
-    </span>
+    <div class="line">
+      <code class="value" title={value}>{value}</code>
+      <span class="actions">
+        <button class="small" onclick={copy}>Copy</button>
+        {#if link}<button class="small" onclick={() => api.openUrl(value!)}>Open</button>{/if}
+      </span>
+    </div>
   {:else}
-    <span class="muted value">–</span>
+    <span class="muted">–</span>
   {/if}
 </div>
 
 <style>
   .addr {
-    display: grid;
-    grid-template-columns: 120px 1fr auto;
-    align-items: center;
-    gap: 10px;
-    padding: 4px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 5px 0;
   }
   .label {
     color: var(--muted);
-    font-size: 0.9em;
+    font-size: 0.85em;
+  }
+  .line {
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
   .value {
-    overflow-wrap: anywhere;
-    justify-self: start;
+    flex: 0 1 auto;
+    min-width: 0;
+    padding: 0.3em 0.6em;
+    font-size: 0.85em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .actions {
     display: flex;
     gap: 6px;
+    margin-left: auto;
   }
 </style>
