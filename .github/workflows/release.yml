@@ -1,10 +1,12 @@
 name: Release
 
 # For a version tag (v1.0.1, v1.1.0), which has to match the version in src-tauri/tauri.conf.json: builds the
-# Windows installers, has them code signed through SignPath (certificate by SignPath Foundation) once an
-# approver accepts the signing request, and attaches them to the tag's GitHub release, where the download page
-# takes them from. Signing needs the variable SIGNPATH_ORGANIZATION_ID and the secret SIGNPATH_API_TOKEN;
-# without the variable the unsigned installers are released instead (the download page keeps using main's).
+# installers for every OS and attaches them to the tag's GitHub release, with latest.json for the app's updater.
+# The Windows installers are code signed through SignPath (certificate by SignPath Foundation) once an approver
+# accepts the signing request; that needs the variable SIGNPATH_ORGANIZATION_ID and the secret
+# SIGNPATH_API_TOKEN, and without the variable the unsigned installers are released instead.
+# Updates are signed with the updater key in the secrets TAURI_SIGNING_PRIVATE_KEY and
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD; its public half is in tauri.conf.json (plugins > updater > pubkey).
 on:
   push:
     tags: ["v*"]
@@ -89,12 +91,80 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Checks the signatures the way Windows does (including the app inside the .msi) and attaches the
-  # installers to the tag's release. Without SignPath it releases the unsigned installers.
-  publish-windows:
-    needs: [windows-installers, sign-windows]
+  # The macOS .dmg plus the .app.tar.gz the updater installs, and the Linux .deb and .AppImage, each signed
+  # with the updater key.
+  other-installers:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macos
+          - os: ubuntu-22.04
+            name: linux
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libdbus-1-dev libxdo-dev libssl-dev build-essential file patchelf
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - run: npm ci
+
+      - name: Installers
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          mkdir out
+          if [ "${{ matrix.name }}" = macos ]; then
+            npx tauri build --target universal-apple-darwin --bundles app,dmg \
+              --config '{"bundle":{"createUpdaterArtifacts":true}}'
+            b=src-tauri/target/universal-apple-darwin/release/bundle
+            cp "$b"/dmg/*.dmg out/
+            cp "$b"/macos/*.app.tar.gz "out/YarmiplayServerTV_${version}_universal.app.tar.gz"
+          else
+            npx tauri build --bundles deb,appimage
+            b=src-tauri/target/release/bundle
+            cp "$b"/deb/*.deb "$b"/appimage/*.AppImage out/
+          fi
+          for f in out/*.app.tar.gz out/*.deb out/*.AppImage; do
+            if [ -f "$f" ]; then npx tauri signer sign "$f"; fi
+          done
+          ls -l out
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: installers-${{ matrix.name }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Checks the Windows signatures the way Windows does (including the app inside the .msi), signs the final
+  # Windows installers with the updater key (after SignPath, which changes the files), writes latest.json and
+  # attaches everything to the tag's release. Without SignPath it releases the unsigned Windows installers.
+  publish:
+    needs: [windows-installers, sign-windows, other-installers]
     if: >-
-      always() && needs.windows-installers.result == 'success' &&
+      always() && needs.windows-installers.result == 'success' && needs.other-installers.result == 'success' &&
       (needs.sign-windows.result == 'success' || needs.sign-windows.result == 'skipped')
     runs-on: windows-latest
     timeout-minutes: 15
@@ -102,11 +172,22 @@ jobs:
       contents: write
     env:
       SIGNED: ${{ needs.sign-windows.result == 'success' }}
+      VERSION: ${{ needs.windows-installers.outputs.version }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts
+
       - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.sign-windows.result == 'success' && 'windows-installers-signed' || 'windows-installers-unsigned' }}
           path: signed
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: installers-*
+          path: release
+          merge-multiple: true
 
       - name: Verify the signatures
         if: env.SIGNED == 'true'
@@ -122,25 +203,37 @@ jobs:
             if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) { throw "$($file.Name) isn't validly signed and timestamped" }
           }
 
+      - name: Updater signatures and latest.json
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          cp signed/* release/
+          for f in release/*.msi release/*.exe; do npx --yes @tauri-apps/cli@2 signer sign "$f"; done
+          python scripts/updater_manifest.py --dir release --version "$VERSION" --tag "v$VERSION" --repo "$GITHUB_REPOSITORY"
+          rm release/*.sig
+          ls -l release
+          cat release/latest.json
+
       - name: Attach the installers to the release
         if: github.ref_type == 'tag'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.windows-installers.outputs.version }}
         run: |
           if [ "$SIGNED" = true ]; then
             signing="Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org)."
           else
-            signing="These installers aren't code signed yet, so Windows SmartScreen may warn: choose More info, then Run anyway."
+            signing="The Windows installers aren't code signed yet, so Windows SmartScreen may warn: choose More info, then Run anyway."
           fi
-          notes="Windows installers for YarmiplayServerTV $VERSION. Other platforms: https://yarmiplay.github.io/YarmiplayServerTV/
+          notes="YarmiplayServerTV $VERSION for Windows (.msi or -setup.exe), macOS (.dmg) and Linux (.deb or .AppImage). Installed copies update themselves from here. Download page: https://yarmiplay.github.io/YarmiplayServerTV/
 
           $signing See the [code signing policy](https://github.com/$GITHUB_REPOSITORY#code-signing-policy)."
           if gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" signed/* -R "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$GITHUB_REF_NAME" release/* -R "$GITHUB_REPOSITORY" --clobber
             gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --notes "$notes"
           else
-            gh release create "$GITHUB_REF_NAME" signed/* -R "$GITHUB_REPOSITORY" --verify-tag \
+            gh release create "$GITHUB_REF_NAME" release/* -R "$GITHUB_REPOSITORY" --verify-tag \
               --title "YarmiplayServerTV $GITHUB_REF_NAME" --notes "$notes"
           fi

@@ -24,7 +24,11 @@ pub async fn update_settings(
     app: AppState<'_>,
     settings: Settings,
 ) -> Result<Snapshot, String> {
+    let auto_before = app.settings().updates.auto;
     let snap = app.inner().update_settings(settings).await?;
+    if snap.settings.updates.auto && !auto_before {
+        crate::updates::turned_on(&handle);
+    }
     if !snap.settings.browser.enabled {
         // Open browser tabs learn why they are about to be disconnected.
         crate::web::publish("status", &snap);
@@ -189,6 +193,16 @@ pub fn set_autostart(handle: AppHandle, enabled: bool) -> Result<bool, String> {
 #[tauri::command]
 pub fn open_in_browser(handle: AppHandle) -> Result<(), String> {
     crate::web::open_in_browser(&handle)
+}
+
+#[tauri::command]
+pub async fn check_for_update(handle: AppHandle) -> Result<(), String> {
+    crate::updates::check(&handle).await
+}
+
+#[tauri::command]
+pub async fn install_update(handle: AppHandle) -> Result<(), String> {
+    crate::updates::install(&handle).await
 }
 
 #[tauri::command]

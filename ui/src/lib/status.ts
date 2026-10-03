@@ -60,3 +60,24 @@ export function upnpPill(s: Snapshot): Pill {
   if (u.doubleNat) return { kind: "warn", text: "Double NAT" };
   return { kind: "ok", text: "Forwarded" };
 }
+
+export function updatePill(s: Snapshot): Pill {
+  const u = s.update;
+  if (!u.supported) return { kind: "", text: "Development build" };
+  switch (u.phase) {
+    case "checking":
+      return { kind: "busy", text: "Checking" };
+    case "downloading":
+      return { kind: "busy", text: u.total ? `Downloading ${Math.floor((u.downloaded / u.total) * 100)}%` : "Downloading" };
+    case "ready":
+      return { kind: "warn", text: `Update ${u.version} ready` };
+    case "installing":
+      return { kind: "busy", text: "Installing" };
+    case "upToDate":
+      return { kind: "ok", text: "Up to date" };
+    case "error":
+      return { kind: "err", text: "Update failed" };
+    default:
+      return { kind: "", text: "Not checked yet" };
+  }
+}

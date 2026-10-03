@@ -18,6 +18,7 @@ pub struct TrayItems {
     copy_syncplay: MenuItem<Wry>,
     open_jellyfin: MenuItem<Wry>,
     autostart: CheckMenuItem<Wry>,
+    update: MenuItem<Wry>,
 }
 
 pub fn show_main(app: &AppHandle) {
@@ -73,6 +74,13 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         autostart_on,
         None::<&str>,
     )?;
+    let update = MenuItem::with_id(
+        app,
+        "update",
+        "Check for updates",
+        !tauri::is_dev(),
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let sep = || PredefinedMenuItem::separator(app);
     let menu = Menu::with_items(
@@ -90,6 +98,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
             &open_jellyfin,
             &sep()?,
             &autostart,
+            &update,
             &quit,
         ],
     )?;
@@ -121,6 +130,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         copy_syncplay,
         open_jellyfin,
         autostart,
+        update,
     });
     Ok(())
 }
@@ -180,6 +190,20 @@ fn on_menu(app: &AppHandle, id: &str) {
                     .set_checked(launcher.is_enabled().unwrap_or(false));
             }
         }
+        "update" => {
+            let app = app.clone();
+            let ready = state.snapshot().update.phase == "ready";
+            tauri::async_runtime::spawn(async move {
+                let result = if ready {
+                    crate::updates::install(&app).await
+                } else {
+                    crate::updates::check(&app).await
+                };
+                if let Err(e) = result {
+                    warn!(error = %e, "update from the tray failed");
+                }
+            });
+        }
         "quit" => crate::request_quit(app),
         _ => {}
     }
@@ -226,6 +250,15 @@ pub fn update(app: &AppHandle, snap: &Snapshot) {
     let _ = items
         .autostart
         .set_checked(app.autolaunch().is_enabled().unwrap_or(false));
+    let (text, enabled) = match (snap.update.phase, &snap.update.version) {
+        ("ready", Some(v)) => (format!("Install update {v}"), true),
+        ("downloading", _) => ("Downloading update…".to_string(), false),
+        ("checking", _) => ("Checking for updates…".to_string(), false),
+        ("installing", _) => ("Installing update…".to_string(), false),
+        _ => ("Check for updates".to_string(), snap.update.supported),
+    };
+    let _ = items.update.set_text(text);
+    let _ = items.update.set_enabled(enabled);
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_tooltip(Some(format!("YarmiplayServerTV — {line}")));
     }

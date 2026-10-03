@@ -98,11 +98,29 @@ export interface BrowserSettings {
   enabled: boolean;
 }
 
+export interface UpdateSettings {
+  auto: boolean;
+}
+
 export interface Settings {
   syncplay: SyncplaySettings;
   jellyfin: JellyfinSettings;
   tls: TlsSettings;
   browser: BrowserSettings;
+  updates: UpdateSettings;
+}
+
+export interface UpdateStatus {
+  phase: "idle" | "checking" | "upToDate" | "downloading" | "ready" | "installing" | "error";
+  version: string | null;
+  notes: string | null;
+  downloaded: number;
+  total: number | null;
+  error: string | null;
+  lastCheck: number | null;
+  /** False for .msi and .deb installs, which need an administrator prompt to update. */
+  unattended: boolean;
+  supported: boolean;
 }
 
 export interface RoomInfo {
@@ -179,6 +197,7 @@ export interface Snapshot {
   tls: TlsStatus;
   upnp: UpnpStatus;
   addresses: Addresses;
+  update: UpdateStatus;
 }
 
 export interface LogLine {
@@ -224,6 +243,8 @@ export const api = {
   getAutostart: () => invoke<boolean>("get_autostart"),
   setAutostart: (enabled: boolean) => invoke<boolean>("set_autostart", { enabled }),
   openInBrowser: () => invoke<void>("open_in_browser"),
+  checkForUpdate: () => invoke<void>("check_for_update"),
+  installUpdate: () => invoke<void>("install_update"),
   quit: () => invoke<void>("quit_app"),
 };
 

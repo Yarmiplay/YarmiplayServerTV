@@ -12,6 +12,16 @@ pub struct Settings {
     pub jellyfin: JellyfinSettings,
     pub tls: TlsSettings,
     pub browser: BrowserSettings,
+    pub updates: UpdateSettings,
+}
+
+/// Updates from the latest GitHub release (see `crate::updates`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct UpdateSettings {
+    /// Check GitHub on a schedule, download what's new and install it when
+    /// nobody is using Syncplay. Off until the user opts in.
+    pub auto: bool,
 }
 
 /// Access to the control panel from a web browser on this PC (see `crate::web`).
@@ -161,6 +171,7 @@ mod tests {
         assert_eq!(s.jellyfin.http_port, 8096);
         assert_eq!(s.syncplay.max_chat_message_length, 150);
         assert!(s.browser.enabled);
+        assert!(!s.updates.auto);
     }
 
     #[test]

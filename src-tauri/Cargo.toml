@@ -1,6 +1,6 @@
 [package]
 name = "yarmiplayservertv"
-version = "1.0.0"
+version = "1.1.0"
 description = "Host a Syncplay server and a Jellyfin server from your desktop"
 authors = ["Yarmiplay"]
 license = "GPL-3.0-or-later"
@@ -22,6 +22,7 @@ tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-clipboard-manager = "2"
+tauri-plugin-updater = "2"
 
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

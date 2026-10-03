@@ -13,6 +13,7 @@ pub mod secrets;
 pub mod syncplay;
 pub mod tls;
 pub mod tray;
+pub mod updates;
 pub mod web;
 
 use orchestrator::App;
@@ -23,6 +24,13 @@ use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 static QUITTING: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_DONE: AtomicBool = AtomicBool::new(false);
+static RESTART: AtomicBool = AtomicBool::new(false);
+
+/// Like [`request_quit`], but starts the app again afterwards.
+pub fn request_restart(app: &tauri::AppHandle) {
+    RESTART.store(true, Ordering::SeqCst);
+    request_quit(app);
+}
 
 /// Stop every service (and remove our UPnP mappings), then exit.
 pub fn request_quit(app: &tauri::AppHandle) {
@@ -38,7 +46,11 @@ pub fn request_quit(app: &tauri::AppHandle) {
             state.inner().clone().shutdown().await;
         }
         SHUTDOWN_DONE.store(true, Ordering::SeqCst);
-        app.exit(0);
+        if RESTART.load(Ordering::SeqCst) {
+            app.request_restart();
+        } else {
+            app.exit(0);
+        }
     });
 }
 
@@ -67,6 +79,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             let handle = app.handle().clone();
             let wake = Arc::new(tokio::sync::Notify::new());
@@ -101,6 +114,7 @@ pub fn run() {
 
             state.start();
             web::apply(&handle, state.settings().browser.enabled);
+            updates::start(handle.clone());
             if !minimized {
                 tray::show_main(&handle);
             }
@@ -135,6 +149,8 @@ pub fn run() {
             commands::get_autostart,
             commands::set_autostart,
             commands::open_in_browser,
+            commands::check_for_update,
+            commands::install_update,
             commands::quit_app,
         ])
         .build(tauri::generate_context!())

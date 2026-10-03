@@ -31,6 +31,15 @@ or internet can change your settings.
 
 **Start with system** (Dashboard, or the tray menu) starts the app minimized to the tray when you log in.
 
+### Updates
+
+**Check for updates** (Dashboard, or the tray menu) looks for a newer release here on GitHub and downloads
+it; **Install** then restarts the app into the new version. Switch on **Automatic updates** on the Dashboard to
+check every few hours and install new versions while nobody is using Syncplay. Copies installed with the
+`.msi` or `.deb` package need administrator permission to update, so for those the new version is downloaded
+and waits for you to click **Install**. Every update is checked against the app's update signing key before
+it installs. Versions before 1.1.0 can't update themselves; install 1.1.0 or later from the download page once.
+
 ### Syncplay
 
 The default port is 8999. On the **Syncplay** page you can set a server password, a message of the day,
@@ -162,10 +171,16 @@ push a matching tag:
 git tag v1.0.1 && git push origin v1.0.1
 ```
 
-`.github/workflows/release.yml` builds the Windows installers and submits them to [SignPath](https://signpath.io)
-for signing. An approver accepts the request in SignPath (the job waits up to 6 hours), then the signed `.msi`
-and `.exe` are verified and attached to the tag's GitHub release, and the download page is republished with
-them. Signing needs the repository variable `SIGNPATH_ORGANIZATION_ID` and the secret `SIGNPATH_API_TOKEN` (a
+`.github/workflows/release.yml` builds the installers for Windows, macOS and Linux and attaches them to the
+tag's GitHub release together with `latest.json`, which installed copies read to update themselves
+(`scripts/updater_manifest.py` writes it). Updates are signed with the updater key in the secrets
+`TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; its public half is
+`plugins.updater.pubkey` in `src-tauri/tauri.conf.json`. Keep a backup of that key: without it, installed
+copies can't receive updates anymore.
+
+The Windows installers are submitted to [SignPath](https://signpath.io) for code signing first. An approver
+accepts the request in SignPath (the job waits up to 6 hours), then the signed `.msi` and `.exe` are verified,
+signed for the updater and released, and the download page is republished with them. Signing needs the repository variable `SIGNPATH_ORGANIZATION_ID` and the secret `SIGNPATH_API_TOKEN` (a
 SignPath CI user with submitter rights), a SignPath project with the slug `YarmiplayServerTV` linked to the
 GitHub.com trusted build system, its `release-signing` policy, and
 [.github/signpath/artifact-configuration.xml](.github/signpath/artifact-configuration.xml) as its default
@@ -186,10 +201,12 @@ Only the Windows installers and the YarmiplayServerTV program in them are signed
 the app downloads unmodified Jellyfin releases, as their project publishes them, when you first switch it on.
 
 Privacy: this program will not transfer any information to other networked systems unless specifically
-requested by the user or the person installing or operating it. There is no telemetry, update check or
-account. Every server and network feature is off until you switch it on, and each one only talks to what it
-needs:
+requested by the user or the person installing or operating it. There is no telemetry or account. Every
+server and network feature is off until you switch it on, and each one only talks to what it needs:
 
+- **Updates:** only when you click **Check for updates** or switch on **Automatic updates**, the app downloads
+  `latest.json` and then the new installer from this project's GitHub releases. GitHub sees your IP address,
+  as with any download.
 - **Jellyfin:** downloads Jellyfin and ffmpeg from `repo.jellyfin.org` the first time you switch it on.
   Jellyfin then runs on your computer as its own program; see Jellyfin's documentation for what it does.
 - **UPnP:** asks your router on the local network to add and remove port forwards.

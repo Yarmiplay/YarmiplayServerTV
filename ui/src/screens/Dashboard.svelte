@@ -3,7 +3,7 @@
   import type { Snapshot } from "../lib/api";
   import { api, formatDate, inApp } from "../lib/api";
   import { store } from "../lib/store.svelte";
-  import { jellyfinPill, syncplayPill, tlsPill, upnpPill } from "../lib/status";
+  import { jellyfinPill, syncplayPill, tlsPill, updatePill, upnpPill } from "../lib/status";
   import Toggle from "../lib/Toggle.svelte";
   import Address from "../lib/Address.svelte";
 
@@ -25,6 +25,8 @@
   const jf = $derived(jellyfinPill(snap));
   const tls = $derived(tlsPill(snap));
   const upnp = $derived(upnpPill(snap));
+  const upd = $derived(updatePill(snap));
+  const updateBusy = $derived(["checking", "downloading", "installing"].includes(snap.update.phase));
   const needsJellyfinSetup = $derived(snap.jellyfin.phase === "running" && snap.jellyfin.wizardCompleted === false);
 </script>
 
@@ -113,6 +115,30 @@
         checked={snap.settings.browser.enabled}
         onchange={(v) => store.save((s) => (s.browser.enabled = v))}
       />
+      <div class="spread update">
+        <span>Version {snap.version}</span>
+        <span class="pill {upd.kind}">{upd.text}</span>
+      </div>
+      {#if snap.update.error}<div class="notice err">{snap.update.error}</div>{/if}
+      {#if snap.update.supported}
+        <Toggle
+          label="Automatic updates"
+          hint={snap.update.unattended
+            ? "Checks GitHub every few hours and installs new versions when nobody is using Syncplay"
+            : "Checks GitHub every few hours and downloads new versions. This copy was installed with an .msi or .deb package, which asks for administrator permission, so installing waits for you"}
+          checked={snap.settings.updates.auto}
+          onchange={(v) => store.save((s) => (s.updates.auto = v))}
+        />
+        <div class="actions">
+          {#if snap.update.phase === "ready"}
+            <button class="primary" onclick={() => store.run(api.installUpdate)}>
+              Install {snap.update.version} and restart
+            </button>
+          {:else}
+            <button disabled={updateBusy} onclick={() => store.run(api.checkForUpdate)}>Check for updates</button>
+          {/if}
+        </div>
+      {/if}
       <div class="actions">
         <button onclick={() => api.openFolder("data")}>Open data folder</button>
         {#if inApp && snap.settings.browser.enabled}
@@ -148,5 +174,10 @@
   }
   .notice {
     margin: 6px 0;
+  }
+  .update {
+    margin-top: 14px;
+    color: var(--muted);
+    font-size: 0.93em;
   }
 </style>

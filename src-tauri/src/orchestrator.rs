@@ -10,6 +10,7 @@ use crate::paths::AppPaths;
 use crate::secrets::{self, Secrets};
 use crate::syncplay::{RoomInfo, SyncplayOptions, SyncplayServer};
 use crate::tls::{IpSource, Notify, TlsManager, TlsRequest, TlsStatus};
+use crate::updates::{UpdateStatus, Updates};
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -55,6 +56,7 @@ pub struct Snapshot {
     pub tls: TlsStatus,
     pub upnp: UpnpStatus,
     pub addresses: Addresses,
+    pub update: UpdateStatus,
 }
 
 struct PfxState {
@@ -74,6 +76,7 @@ pub struct App {
     pub tls: Arc<TlsManager>,
     pub jellyfin: Arc<JellyfinManager>,
     pub upnp: Arc<UpnpManager>,
+    pub updates: Arc<Updates>,
     upnp_desired: Mutex<BTreeMap<u16, String>>,
     pfx: Mutex<Option<PfxState>>,
     applied_fingerprint: Mutex<Option<String>>,
@@ -98,6 +101,7 @@ impl App {
             tls: TlsManager::new(paths.acme_dir()),
             jellyfin,
             upnp: Arc::new(UpnpManager::default()),
+            updates: Updates::new(notify.clone()),
             paths,
             secrets,
             settings: RwLock::new(settings),
@@ -414,6 +418,7 @@ impl App {
             tls,
             upnp,
             addresses,
+            update: self.updates.status(),
         }
     }
 
