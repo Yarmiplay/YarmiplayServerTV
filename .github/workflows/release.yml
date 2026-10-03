@@ -7,8 +7,10 @@ name: Release
 # SIGNPATH_API_TOKEN, and without the variable the unsigned installers are released instead.
 # Updates are signed with the updater key in the secrets TAURI_SIGNING_PRIVATE_KEY and
 # TAURI_SIGNING_PRIVATE_KEY_PASSWORD; its public half is in tauri.conf.json (plugins > updater > pubkey).
-# The Microsoft Store package (.msix, unsigned: the Store signs it) is attached to the run for uploading in
-# Partner Center; see docs/store/README.md.
+# The Microsoft Store package (.msix, unsigned: the Store signs it) is attached to the run. With the variables
+# MSSTORE_TENANT_ID, MSSTORE_SELLER_ID and MSSTORE_CLIENT_ID and the secret MSSTORE_CLIENT_SECRET of the
+# microsoft-store environment (which only v* tags may use), the msstore job submits it to Partner Center for
+# certification once the release is published; see docs/store/README.md.
 on:
   push:
     tags: ["v*"]
@@ -77,6 +79,42 @@ jobs:
           path: src-tauri/target/msix/*.msix
           if-no-files-found: error
           retention-days: 90
+
+  # Replaces the package of the published submission (the listing stays) and commits it for certification,
+  # after the GitHub release so the Store never gets a version that failed elsewhere. A draft submission
+  # started in Partner Center is discarded; one still in certification makes the job fail.
+  msstore:
+    needs: [windows-installers, publish]
+    if: github.ref_type == 'tag' && vars.MSSTORE_CLIENT_ID != ''
+    runs-on: windows-latest
+    timeout-minutes: 30
+    environment: microsoft-store
+    permissions: {}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-store-msix-${{ needs.windows-installers.outputs.version }}
+          path: msix
+
+      # Pinned: this step installs the program that receives the client secret.
+      - uses: microsoft/setup-msstore-cli@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+        with:
+          version: v0.4.3
+
+      - name: Submit to the Microsoft Store
+        shell: pwsh
+        env:
+          TENANT_ID: ${{ vars.MSSTORE_TENANT_ID }}
+          SELLER_ID: ${{ vars.MSSTORE_SELLER_ID }}
+          CLIENT_ID: ${{ vars.MSSTORE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.MSSTORE_CLIENT_SECRET }}
+        run: |
+          if (-not $env:CLIENT_SECRET) { throw "The microsoft-store environment has no MSSTORE_CLIENT_SECRET secret" }
+          msstore reconfigure --tenantId $env:TENANT_ID --sellerId $env:SELLER_ID --clientId $env:CLIENT_ID --clientSecret $env:CLIENT_SECRET
+          if ($LASTEXITCODE -ne 0) { throw "msstore reconfigure failed" }
+          $msix = (Get-Item msix\*.msix).FullName
+          msstore publish msix --inputFile $msix --appId 9P6B9C1KXFFQ
+          if ($LASTEXITCODE -ne 0) { throw "msstore publish failed" }
 
   # Waits on a Linux runner while the signing request awaits manual approval in SignPath.
   sign-windows:

@@ -117,9 +117,31 @@ limited to invited friends" (server password). Everything else is No. The result
 
 1. Bump the version as usual (`src-tauri/tauri.conf.json`, `package.json`, `src-tauri/Cargo.toml`; the Store
    needs a higher package version than the last one) and push the version tag.
-2. Download the `windows-store-msix-<version>` artifact from the Release run.
-3. In Partner Center, open the app, choose **Update** on the published submission (it copies everything),
-   replace the package under Packages, add "What's new" to the listing if you like, and submit.
+2. With [automatic submission](#automatic-submission) set up, the Release run's `msstore` job submits the
+   package for certification once the GitHub release is published; otherwise download the
+   `windows-store-msix-<version>` artifact from the run.
+3. By hand: in Partner Center, open the app, choose **Update** on the published submission (it copies
+   everything), replace the package under Packages, add "What's new" to the listing if you like, and submit.
+   With automatic submission, edit the listing only after the job has run: it discards a draft submission,
+   and fails while an earlier submission is still in certification.
+
+## Automatic submission
+
+The `msstore` job of `.github/workflows/release.yml` uses the
+[Microsoft Store Developer CLI](https://learn.microsoft.com/windows/apps/publish/msstore-dev-cli/overview)
+(pinned, like the action that installs it). It only works once the first submission has been published from
+Partner Center. Set it up once:
+
+1. Partner Center > Account settings > **Tenants**: associate a Microsoft Entra ID tenant (or create one).
+2. Account settings > User management > **Microsoft Entra applications**: add an application with the
+   **Manager** role, then create a key for it. Keys expire after one or two years; renew the secret then.
+3. Repository variables `MSSTORE_TENANT_ID` and `MSSTORE_CLIENT_ID` (from the application's page) and
+   `MSSTORE_SELLER_ID` (Account settings > Legal info > Developer). They aren't secret; the job is skipped
+   while `MSSTORE_CLIENT_ID` is missing.
+4. The key goes only into the **microsoft-store** environment (Settings > Environments), never into the
+   repository's secrets or a file: `gh secret set MSSTORE_CLIENT_SECRET --env microsoft-store` asks for it
+   without echoing. The environment's deployment rule lets only `v*` tags use it, so no branch, pull request
+   or other workflow can read it.
 
 The Store copy doesn't check GitHub for updates; the Store updates it. It keeps its settings and data in its
 own `LocalState` folder, so it doesn't share them with a copy installed from the download page.
