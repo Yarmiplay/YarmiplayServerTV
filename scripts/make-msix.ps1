@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
   Builds the Microsoft Store package: wraps the app (npx tauri build --no-bundle) with
-  src-tauri/msix/AppxManifest.xml, the logos from src-tauri/icons and the pinned Jellyfin server from
+  src-tauri/msix/AppxManifest.xml, the logos from src-tauri/icons (with unplated taskbar sizes indexed in
+  resources.pri) and the pinned Jellyfin server from
   src-tauri/jellyfin-manifest.json (downloaded once into src-tauri/target/msix/cache and checked against its
   SHA-256) into an unsigned src-tauri/target/msix/YarmiplayServerTV-<version>.msix. The Store signs it when
   it is uploaded in Partner Center. The app notices it runs from the package: it runs the built-in Jellyfin
@@ -48,6 +49,23 @@ Copy-Item $exe $layout
 foreach ($logo in "StoreLogo", "Square44x44Logo", "Square150x150Logo") {
     Copy-Item "$tauri\icons\$logo.png" "$layout\Assets\"
 }
+# Without unplated variants the taskbar, Start and Settings draw the icon on an accent-coloured plate; light
+# taskbars look for lightunplated.
+Add-Type -AssemblyName System.Drawing
+$icon = [System.Drawing.Image]::FromFile("$tauri\icons\icon.png")
+foreach ($size in 16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256) {
+    $bmp = New-Object System.Drawing.Bitmap $size, $size
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+    $g.DrawImage($icon, 0, 0, $size, $size)
+    $g.Dispose()
+    foreach ($alt in "", "_altform-unplated", "_altform-lightunplated") {
+        $bmp.Save("$layout\Assets\Square44x44Logo.targetsize-$size$alt.png", [System.Drawing.Imaging.ImageFormat]::Png)
+    }
+    $bmp.Dispose()
+}
+$icon.Dispose()
 $jf = Get-Content "$tauri\jellyfin-manifest.json" -Raw | ConvertFrom-Json
 $server = $jf.platforms.'windows-x86_64'.server
 $zip = "$out\cache\jellyfin_$($jf.jellyfin)-amd64.zip"
@@ -80,6 +98,26 @@ https://github.com/jellyfin/jellyfin-ffmpeg/tree/v$($jf.ffmpeg)
 $manifest = (Get-Content "$tauri\msix\AppxManifest.xml" -Raw).Replace("{VERSION}", $version)
 [System.IO.File]::WriteAllText("$layout\AppxManifest.xml", $manifest, $utf8)
 
+function Find-SdkTool($name) {
+    $tool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\$name" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Directory.Parent.Name -match '^\d+(\.\d+)+$' } | Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
+    if (-not $tool) { throw "$name not found; install the Windows SDK." }
+    $tool.FullName
+}
+
+# Windows only finds the targetsize/altform-unplated logos through resources.pri. It is built from a copy
+# of just the Assets, so the index doesn't list every file of the app and Jellyfin.
+Write-Host "==> Indexing the logos" -ForegroundColor Cyan
+$makepri = Find-SdkTool "makepri.exe"
+$priRoot = "$out\pri"
+if (Test-Path $priRoot) { Remove-Item $priRoot -Recurse -Force }
+New-Item -ItemType Directory $priRoot | Out-Null
+Copy-Item "$layout\Assets" "$priRoot\Assets" -Recurse
+& $makepri createconfig /cf "$out\priconfig.xml" /dq en-US /pv 10.0.0 /o | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "makepri createconfig failed." }
+& $makepri new /pr $priRoot /cf "$out\priconfig.xml" /mn "$layout\AppxManifest.xml" /of "$layout\resources.pri" /o | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "makepri new failed." }
+
 if ($Register) {
     Write-Host "==> Registering the package" -ForegroundColor Cyan
     Add-AppxPackage -Register "$layout\AppxManifest.xml" -ForceApplicationShutdown
@@ -87,12 +125,10 @@ if ($Register) {
     return
 }
 
-$makeappx = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\makeappx.exe" -ErrorAction SilentlyContinue |
-    Where-Object { $_.Directory.Parent.Name -match '^\d+(\.\d+)+$' } | Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
-if (-not $makeappx) { throw "makeappx.exe not found; install the Windows SDK." }
+$makeappx = Find-SdkTool "makeappx.exe"
 
 $msix = "$out\YarmiplayServerTV-$version.msix"
 Write-Host "==> Packing $msix" -ForegroundColor Cyan
-& $makeappx.FullName pack /d $layout /p $msix /o
+& $makeappx pack /d $layout /p $msix /o
 if ($LASTEXITCODE -ne 0) { throw "makeappx failed." }
 $msix
