@@ -4,7 +4,7 @@ Host your own **Syncplay server** and **Jellyfin server** from the system tray o
 It's the companion to [YarmiplayTV](https://github.com/Yarmiplay/YarmiplayTV): one app on your computer
 gives your friends a room to watch in sync and a media library to stream from.
 
-**[Download YarmiplayServerTV](https://yarmiplay.github.io/YarmiplayServerTV/)**, or on Windows get it from the
+**[Download YarmiplayServerTV](https://servertv.yarmiplay.com/)**, or on Windows get it from the
 [Microsoft Store](https://apps.microsoft.com/detail/9P6B9C1KXFFQ) (Jellyfin built in, updated by the Store).
 
 - A Syncplay 1.7-compatible server built in: rooms, passwords, chat, readiness, shared playlists, and
@@ -23,7 +23,7 @@ or internet can change your settings.
 
 ## Getting started
 
-1. Install YarmiplayServerTV from the [download page](https://yarmiplay.github.io/YarmiplayServerTV/) (on Windows,
+1. Install YarmiplayServerTV from the [download page](https://servertv.yarmiplay.com/) (on Windows,
    the [Microsoft Store](https://apps.microsoft.com/detail/9P6B9C1KXFFQ) works too) and start it.
    It lives in the system tray; closing the window keeps the servers running. Use **Quit** in the tray
    menu to stop everything.
@@ -234,7 +234,7 @@ server and network feature is off until you switch it on, and each one only talk
   passed between them and not stored; the app's log on your computer notes who joined and left which room.
 
 The full privacy policy is [docs/privacy.md](docs/privacy.md), published at
-<https://yarmiplay.github.io/YarmiplayServerTV/privacy/>.
+<https://servertv.yarmiplay.com/privacy/>.
 
 ## License
 

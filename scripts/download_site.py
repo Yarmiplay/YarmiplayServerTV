@@ -2,12 +2,14 @@
 """
 Builds the YarmiplayServerTV download page: one card per desktop OS, each with its downloads and install steps.
 
-  python scripts/download_site.py --dist dist --out _site [--version 0.1.0]
+  python scripts/download_site.py --dist dist --out _site [--version 0.1.0] [--site-url URL]
 
 Files in --dist are sorted onto platforms by extension (.msi/.exe: Windows, .dmg: macOS, .deb/.AppImage: Linux)
 and copied under stable names such as YarmiplayServerTV.msi, so links keep working across builds. Platforms
 without a file or store listing show how to build from source. <site>/privacy/ is docs/privacy.md (the Microsoft
-Store privacy policy). The Pages workflow publishes the result. Standard library only.
+Store privacy policy). With --site-url the pages carry canonical URLs and link-preview tags, and the site a
+sitemap.xml and a robots.txt pointing to it for search engines. The Pages workflow publishes the result.
+Standard library only.
 """
 from __future__ import annotations
 
@@ -24,8 +26,11 @@ from dataclasses import dataclass
 
 NAME = "YarmiplayServerTV"
 REPO_URL = "https://github.com/Yarmiplay/YarmiplayServerTV"
-CLIENT_URL = "https://yarmiplay.github.io/YarmiplayTV/"
+CLIENT_URL = "https://tv.yarmiplay.com/"
 CLIENT_REPO = "https://github.com/Yarmiplay/YarmiplayTV"
+TITLE = f"{NAME}: host a Syncplay server and a Jellyfin server from your tray (Windows, macOS, Linux)"
+DESCRIPTION = ("Host a Syncplay server and a Jellyfin server for YarmiplayTV from your Windows, macOS or Linux "
+               "computer. Watch videos in sync with friends. Free and open source.")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Store listings: the platform's main button, with its files as smaller links below.
 STORE_LINKS = {
@@ -99,7 +104,43 @@ def fmt_size(n):
     return f"{n / 1e6:.1f} MB"
 
 
-def render_page(downloads, version, built, windows_signed=False, privacy=False):
+def page_url(site_url, path=""):
+    return site_url.rstrip("/") + "/" + path
+
+
+def search_head(title, description, site_url=None, path=""):
+    """Description, plus canonical URL and link-preview tags when the site's public URL is known."""
+    tags = [f'<meta name="description" content="{html.escape(description)}">']
+    if site_url:
+        url = html.escape(page_url(site_url, path))
+        tags += [f'<link rel="canonical" href="{url}">',
+                 '<meta property="og:type" content="website">',
+                 f'<meta property="og:site_name" content="{NAME}">',
+                 f'<meta property="og:title" content="{html.escape(title)}">',
+                 f'<meta property="og:description" content="{html.escape(description)}">',
+                 f'<meta property="og:url" content="{url}">',
+                 '<meta name="twitter:card" content="summary">']
+    return "\n".join(tags)
+
+
+def app_json_ld(version, site_url):
+    app = {"@context": "https://schema.org", "@type": "SoftwareApplication", "name": NAME,
+           "description": DESCRIPTION, "operatingSystem": "Windows, macOS, Linux",
+           "applicationCategory": "MultimediaApplication", "softwareVersion": version,
+           "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "sameAs": [REPO_URL]}
+    if site_url:
+        app["url"] = page_url(site_url)
+    return f'<script type="application/ld+json">{json.dumps(app)}</script>'
+
+
+def sitemap(site_url, paths, day):
+    urls = "".join(f"<url><loc>{html.escape(page_url(site_url, p))}</loc><lastmod>{day}</lastmod></url>\n"
+                   for p in paths)
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{urls}</urlset>\n')
+
+
+def render_page(downloads, version, built, windows_signed=False, privacy=False, site_url=None):
     """downloads: {platform key: [Download]}. Returns the page as a str."""
     cards = []
     for p in PLATFORMS:
@@ -132,8 +173,9 @@ def render_page(downloads, version, built, windows_signed=False, privacy=False):
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{NAME} downloads</title>
-<meta name="description" content="Host a Syncplay server and a Jellyfin server for YarmiplayTV from your Windows, macOS or Linux computer.">
+<title>{html.escape(TITLE)}</title>
+{search_head(TITLE, DESCRIPTION, site_url)}
+{app_json_ld(version, site_url)}
 <link rel="icon" href="logo.svg" type="image/svg+xml">
 <style>
  :root {{ --bg:#0E1116; --card:#171B22; --card-high:#212733; --line:#262C36; --text:#E8ECF2; --muted:#9AA4B2; --accent:#3DA5F4; --on-accent:#04121F; }}
@@ -258,13 +300,14 @@ def markdown_to_html(md):
     return "\n".join(blocks)
 
 
-def render_doc(md):
+def render_doc(md, description, site_url=None, path=""):
     """A Markdown document as a page in the download page's style."""
     title = next((l[2:].strip() for l in md.splitlines() if l.startswith("# ")), NAME)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(title)}</title>
+{search_head(title, description, site_url, path)}
 <link rel="icon" href="../logo.svg" type="image/svg+xml">
 <style>
  body {{ margin:0; background:#0E1116; color:#E8ECF2; font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }}
@@ -282,7 +325,7 @@ def render_doc(md):
 """
 
 
-def build(dist, out, version, windows_signed=False):
+def build(dist, out, version, windows_signed=False, site_url=None):
     found = {}
     for name in sorted(os.listdir(dist)) if os.path.isdir(dist) else []:
         path = os.path.join(dist, name)
@@ -309,15 +352,24 @@ def build(dist, out, version, windows_signed=False):
         print(f"  {name} -> {target}")
 
     shutil.copyfile(os.path.join(ROOT, "assets", "logo.svg"), os.path.join(out, "logo.svg"))
+    pages = [""]
     privacy = os.path.join(ROOT, "docs", "privacy.md")
     if os.path.isfile(privacy):
         os.makedirs(os.path.join(out, "privacy"))
         with open(privacy, encoding="utf-8") as src, \
                 open(os.path.join(out, "privacy", "index.html"), "w", encoding="utf-8") as f:
-            f.write(render_doc(src.read()))
-    built = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            f.write(render_doc(src.read(), f"Privacy policy of {NAME}: what the app stores and sends.",
+                               site_url, "privacy/"))
+        pages.append("privacy/")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    built = now.strftime("%Y-%m-%d %H:%M UTC")
     with open(os.path.join(out, "index.html"), "w", encoding="utf-8") as f:
-        f.write(render_page(downloads, version, built, windows_signed, os.path.isfile(privacy)))
+        f.write(render_page(downloads, version, built, windows_signed, os.path.isfile(privacy), site_url))
+    if site_url:
+        with open(os.path.join(out, "sitemap.xml"), "w", encoding="utf-8") as f:
+            f.write(sitemap(site_url, pages, now.strftime("%Y-%m-%d")))
+        with open(os.path.join(out, "robots.txt"), "w", encoding="utf-8") as f:
+            f.write(f"User-agent: *\nAllow: /\n\nSitemap: {page_url(site_url, 'sitemap.xml')}\n")
     open(os.path.join(out, ".nojekyll"), "w").close()
     print(f"wrote {out} ({sum(len(v) for v in downloads.values())} downloads)")
 
@@ -333,8 +385,9 @@ def main():
     ap.add_argument("--out", required=True, help="site folder to (re)create")
     ap.add_argument("--version", default=None, help="defaults to the version in tauri.conf.json")
     ap.add_argument("--windows-signed", action="store_true", help="the Windows installers are code-signed")
+    ap.add_argument("--site-url", default=None, help="public URL of the site: canonical URLs and sitemap.xml")
     a = ap.parse_args()
-    build(a.dist, a.out, a.version or app_version(), a.windows_signed)
+    build(a.dist, a.out, a.version or app_version(), a.windows_signed, a.site_url)
 
 
 if __name__ == "__main__":

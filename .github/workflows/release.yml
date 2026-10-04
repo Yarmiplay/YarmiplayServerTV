@@ -279,7 +279,7 @@ jobs:
           else
             signing="The Windows installers aren't code signed yet, so Windows SmartScreen may warn: choose More info, then Run anyway."
           fi
-          notes="YarmiplayServerTV $VERSION for Windows (.msi or -setup.exe), macOS (.dmg) and Linux (.deb or .AppImage). Installed copies update themselves from here. Download page: https://yarmiplay.github.io/YarmiplayServerTV/
+          notes="YarmiplayServerTV $VERSION for Windows (.msi or -setup.exe), macOS (.dmg) and Linux (.deb or .AppImage). Installed copies update themselves from here. Download page: https://servertv.yarmiplay.com/
 
           $signing See the [code signing policy](https://github.com/$GITHUB_REPOSITORY#code-signing-policy)."
           if gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then

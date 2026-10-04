@@ -18,7 +18,7 @@ doesn't allow apps to download code), so a new Jellyfin version reaches it with 
 |---|---|
 | Package | `src-tauri/target/msix/YarmiplayServerTV-<version>.msix` |
 | Desktop screenshots (1366x768 or larger) | take them of the control panel: Dashboard, Syncplay, Jellyfin, Network |
-| Privacy policy URL | `https://yarmiplay.github.io/YarmiplayServerTV/privacy/` (from `docs/privacy.md`) |
+| Privacy policy URL | `https://servertv.yarmiplay.com/privacy/` (from `docs/privacy.md`) |
 
 ## Pricing and availability
 
@@ -28,7 +28,7 @@ certification.
 ## Properties
 
 **Category:** Photo & video (no subcategory), next to YarmiplayTV.
-**Privacy policy URL:** the URL above. **Website:** `https://yarmiplay.github.io/YarmiplayServerTV/`
+**Privacy policy URL:** the URL above. **Website:** `https://servertv.yarmiplay.com/`
 **Support contact info:** `https://github.com/Yarmiplay/YarmiplayServerTV/issues`
 **Product declarations:** none apply (no accessibility claim, not for Xbox, installable on removable storage
 is fine). **System requirements:** x64 processor; 2 GB memory minimum, 4 GB recommended (Jellyfin

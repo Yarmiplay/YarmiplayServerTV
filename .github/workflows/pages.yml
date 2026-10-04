@@ -77,7 +77,9 @@ jobs:
         uses: actions/configure-pages@v6
 
       - name: Build the site
-        run: python3 scripts/download_site.py --dist dist --out _site $SIGNED
+        env:
+          SITE_URL: ${{ steps.pages.outputs.base_url }}
+        run: python3 scripts/download_site.py --dist dist --out _site --site-url "$SITE_URL" $SIGNED
 
       - uses: actions/upload-pages-artifact@v5
         with:
