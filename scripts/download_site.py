@@ -28,6 +28,7 @@ NAME = "YarmiplayServerTV"
 REPO_URL = "https://github.com/Yarmiplay/YarmiplayServerTV"
 CLIENT_URL = "https://tv.yarmiplay.com/"
 CLIENT_REPO = "https://github.com/Yarmiplay/YarmiplayTV"
+HOME_URL = "https://yarmiplay.com/"
 TITLE = f"{NAME}: host a Syncplay server and a Jellyfin server from your tray (Windows, macOS, Linux)"
 DESCRIPTION = ("Host a Syncplay server and a Jellyfin server for YarmiplayTV from your Windows, macOS or Linux "
                "computer. Watch videos in sync with friends. Free and open source.")
@@ -237,7 +238,7 @@ def render_page(downloads, version, built, windows_signed=False, privacy=False, 
  <strong>Need the player?</strong>
  <p><a href="{CLIENT_URL}">Get YarmiplayTV</a> for Google TV, Android and desktop, then connect it to this server.</p>
 </section>
-<footer><a href="{REPO_URL}">Source</a> &middot; <a href="{REPO_URL}#readme">Setup guide</a> &middot; <a href="{CLIENT_REPO}">YarmiplayTV</a>
+<footer><a href="{HOME_URL}">yarmiplay.com</a> &middot; <a href="{REPO_URL}">Source</a> &middot; <a href="{REPO_URL}#readme">Setup guide</a> &middot; <a href="{CLIENT_REPO}">YarmiplayTV</a>
  &middot; <a href="{REPO_URL}#code-signing-policy">Code signing policy</a>{' &middot; <a href="privacy/">Privacy</a>' if privacy else ''}</footer>
 </main>
 <script>
@@ -320,7 +321,7 @@ def render_doc(md, description, site_url=None, path=""):
 </style></head>
 <body><main>
 {markdown_to_html(md)}
-<p><a href="../">{NAME} downloads</a></p>
+<p><a href="../">{NAME} downloads</a> &middot; <a href="{HOME_URL}">yarmiplay.com</a></p>
 </main></body></html>
 """
 
