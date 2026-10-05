@@ -8,7 +8,9 @@
 #     --env=YARMIPLAYSERVERTV_HOME=$HOME/smoke com.yarmiplay.servertv
 #
 # The app gets SMOKE_HOME as YARMIPLAYSERVERTV_HOME (a sandbox needs it passed in, as above). FAKE_PEER is the
-# path of scripts/fake_peer.py when this script runs from a copy. Needs xvfb-run, dbus-run-session, python3, curl.
+# path of scripts/fake_peer.py when this script runs from a copy. It starts a private D-Bus session unless
+# SMOKE_SESSION_BUS=1 (snap-smoke-test.sh, which needs the user's own). Needs xvfb-run, dbus-run-session, python3
+# and curl.
 set -euo pipefail
 
 home=${SMOKE_HOME:?set SMOKE_HOME to a folder the app can read and write}
@@ -27,7 +29,9 @@ printf '{"syncplay":{"enabled":true,"port":%d},"jellyfin":{"enabled":%s,"httpPor
 
 log=$(mktemp)
 export YARMIPLAYSERVERTV_HOME="$home"
-setsid dbus-run-session -- xvfb-run -a "$@" --minimized > "$log" 2>&1 &
+bus=(dbus-run-session --)
+if [ "${SMOKE_SESSION_BUS:-0}" = 1 ]; then bus=(); fi
+setsid "${bus[@]}" xvfb-run -a "$@" --minimized > "$log" 2>&1 &
 pid=$!
 cleanup() { kill -- "-$pid" 2> /dev/null || true; }
 trap cleanup EXIT
