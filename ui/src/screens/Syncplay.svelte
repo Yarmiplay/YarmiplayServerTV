@@ -43,7 +43,7 @@
         <Address label="On your network" value={snap.addresses.syncplayLan} />
         <Address label="Over the internet" value={snap.addresses.syncplayPublic} />
       </div>
-      <p class="muted small">
+      <p class="muted note">
         {#if snap.syncplay.tls}
           Encrypted connections are available with the certificate for <code>{snap.tls.host}</code>. Connect with that
           name so clients can verify it.
@@ -62,13 +62,12 @@
       <label class="field">Port<input type="number" min="1024" max="65535" bind:value={form.draft.port} /></label>
       <label class="field">
         Server password (optional)
-        <span class="row">
+        <span class="secret">
           <input
             type={showPassword ? "text" : "password"}
             bind:value={form.draft.password}
             placeholder="No password"
             autocomplete="off"
-            style="flex:1"
           />
           <button class="small" onclick={() => (showPassword = !showPassword)}>{showPassword ? "Hide" : "Show"}</button>
         </span>
@@ -139,12 +138,40 @@
   .addrs {
     margin-top: 8px;
   }
-  .small {
+  .note {
     font-size: 0.9em;
     margin: 10px 0 0;
   }
+  .fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  @media (min-width: 1300px) {
+    .fields {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+  }
+  .fields input {
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .secret {
+    position: relative;
+    display: block;
+  }
+  .secret input {
+    padding-right: 64px;
+  }
+  .secret button {
+    position: absolute;
+    top: 50%;
+    right: 5px;
+    transform: translateY(-50%);
+  }
   .motd {
     margin-top: 14px;
+  }
+  .motd textarea {
+    resize: vertical;
   }
   .toggles {
     margin-top: 10px;

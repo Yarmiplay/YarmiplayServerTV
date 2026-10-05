@@ -150,7 +150,7 @@
         </ul>
       {/if}
     {:else}
-      <p class="muted small">Mappings are only made for servers that are switched on.</p>
+      <p class="muted note">Mappings are only made for servers that are switched on.</p>
     {/if}
   </section>
 
@@ -209,7 +209,7 @@
   .err-line {
     font-size: 0.88em;
   }
-  .small {
+  .note {
     font-size: 0.9em;
   }
 </style>

@@ -141,7 +141,7 @@
       <div class="progress" aria-label="Download progress">
         <div style="width:{j.progress.total ? (j.progress.downloaded / j.progress.total) * 100 : 0}%"></div>
       </div>
-      <p class="muted small">
+      <p class="muted note">
         {j.phase === "installing" ? "Unpacking…" : `${formatBytes(j.progress.downloaded)} of ${formatBytes(j.progress.total)}`}
       </p>
     {/if}
@@ -157,7 +157,7 @@
         <Address label="On your network" value={snap.addresses.jellyfinLan} />
         <Address label="Over the internet" value={snap.addresses.jellyfinPublic} />
       </div>
-      <p class="muted small">
+      <p class="muted note">
         {#if j.https}
           HTTPS is on with the certificate for <code>{snap.tls.host}</code>.
         {:else if snap.settings.tls.enabled}
@@ -309,7 +309,7 @@
     font-size: 1em;
     margin: 20px 0 10px;
   }
-  .small {
+  .note {
     font-size: 0.9em;
     margin: 8px 0;
   }
