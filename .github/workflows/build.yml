@@ -39,6 +39,9 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: The version has a release note for the Linux stores
+        run: python3 scripts/linux_packaging.py check-metainfo "$(jq -r .version src-tauri/tauri.conf.json)"
+
       - name: UI type check and build
         run: |
           npm ci

@@ -1,0 +1,40 @@
+name: Tag on version bump
+
+# Off unless the variable AUTO_TAG is "true". Then a green Build on main whose tauri.conf.json version has no
+# v<version> tag yet gets that tag, which starts the release. Tags pushed with the workflow's own token don't
+# start other workflows, so this uses the secret RELEASE_TAG_TOKEN: a fine-grained token for this repository with
+# Contents read and write.
+on:
+  workflow_run:
+    workflows: [Build]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    if: >-
+      vars.AUTO_TAG == 'true' && github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Tag the version
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TAG_TOKEN }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "::error::AUTO_TAG is on but the secret RELEASE_TAG_TOKEN isn't set"; exit 1; fi
+          tag="v$(jq -r .version src-tauri/tauri.conf.json)"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" > /dev/null 2>&1; then
+            echo "$tag already exists"; exit 0
+          fi
+          python3 scripts/linux_packaging.py check-metainfo "${tag#v}"
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$SHA" > /dev/null
+          echo "::notice::Tagged $SHA as $tag"
