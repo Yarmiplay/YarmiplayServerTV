@@ -186,16 +186,6 @@ tag's GitHub release together with `latest.json`, which installed copies read to
 `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`. Keep a backup of that key: without it, installed
 copies can't receive updates anymore.
 
-The Windows installers are submitted to [SignPath](https://signpath.io) for code signing first. An approver
-accepts the request in SignPath (the job waits up to 6 hours), then the signed `.msi` and `.exe` are verified,
-signed for the updater and released, and the download page is republished with them. Signing needs the repository variable `SIGNPATH_ORGANIZATION_ID` and the secret `SIGNPATH_API_TOKEN` (a
-SignPath CI user with submitter rights), a SignPath project with the slug `YarmiplayServerTV` linked to the
-GitHub.com trusted build system, its `release-signing` policy, and
-[.github/signpath/artifact-configuration.xml](.github/signpath/artifact-configuration.xml) as its default
-artifact configuration. Without the variable the release gets the unsigned installers, and the download page
-keeps offering the ones from `main`. SmartScreen may still warn about a newly signed release until it has been
-downloaded enough.
-
 The app is [YarmiplayServerTV on the Microsoft Store](https://apps.microsoft.com/detail/9P6B9C1KXFFQ) (Store ID
 `9P6B9C1KXFFQ`). The same run builds the Store package (`scripts/make-msix.ps1`, an unsigned `.msix` that the
 Store signs, with Jellyfin built in) as the `windows-store-msix-<version>` artifact. Upload it in Partner Center as described in
@@ -204,20 +194,10 @@ from that package: it leaves updates to the Store, keeps its data in the package
 the package's startup task for **Start with system**. `./scripts/make-msix.ps1 -Register` installs the package
 locally for a test (needs Developer Mode).
 
-## Code signing policy
+## Privacy
 
-Free code signing provided by [SignPath.io](https://signpath.io), certificate by
-[SignPath Foundation](https://signpath.org).
-
-- Committers and reviewers: [Yarmiplay](https://github.com/Yarmiplay)
-- Approvers: [Yarmiplay](https://github.com/Yarmiplay)
-
-Only the Windows installers and the YarmiplayServerTV program in them are signed, built by
-`.github/workflows/release.yml` from a version tag of this repository. Jellyfin isn't part of the installers;
-the app downloads unmodified Jellyfin releases, as their project publishes them, when you first switch it on.
-
-Privacy: this program will not transfer any information to other networked systems unless specifically
-requested by the user or the person installing or operating it. There is no telemetry or account. Every
+This program will not transfer any information to other networked systems unless specifically requested by
+the user or the person installing or operating it. There is no telemetry or account. Every
 server and network feature is off until you switch it on, and each one only talks to what it needs:
 
 - **Updates:** only when you click **Check for updates** or switch on **Automatic updates**, the app downloads

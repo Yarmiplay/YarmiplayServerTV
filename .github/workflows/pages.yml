@@ -1,12 +1,11 @@
 name: Download page
 
-# Publishes the download page (scripts/download_site.py) with the installers of the latest green Build on main,
-# except for Windows, whose code-signed installers come from the latest release once it has signed ones. Release runs
-# are for tags, so the branch is checked in the job's condition rather than filtered here.
+# Publishes the download page (scripts/download_site.py) with the installers of the latest green Build on main.
 on:
   workflow_run:
-    workflows: [Build, Release]
+    workflows: [Build]
     types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -23,8 +22,7 @@ jobs:
   build:
     if: >-
       github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      (github.event.workflow_run.name == 'Release' || github.event.workflow_run.head_branch == 'main'))
+      github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -32,8 +30,8 @@ jobs:
         id: run
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.event.workflow_run.name == 'Build' && github.event.workflow_run.id || '' }}
-          RUN_SHA: ${{ github.event.workflow_run.name == 'Build' && github.event.workflow_run.head_sha || '' }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           if [ -z "$RUN_ID" ]; then
             read -r RUN_ID RUN_SHA < <(gh run list -R "$GITHUB_REPOSITORY" --workflow build.yml --branch main \
@@ -56,21 +54,6 @@ jobs:
           gh run download "${{ steps.run.outputs.id }}" -R "$GITHUB_REPOSITORY" -p 'yarmiplayservertv-*' -D artifacts
           mkdir dist
           find artifacts -type f -exec mv -t dist {} +
-          signed=false
-          if gh release download -R "$GITHUB_REPOSITORY" -p '*.msi' -p '*.exe' -D signed; then
-            sudo apt-get install -y -qq osslsigncode > /dev/null
-            signed=true
-            for f in signed/*; do
-              osslsigncode extract-signature -in "$f" -out "$RUNNER_TEMP/sig.p7" > /dev/null 2>&1 || signed=false
-            done
-          fi
-          if [ "$signed" = true ]; then
-            rm -f dist/*.msi dist/*.exe
-            mv signed/* dist/
-            echo "SIGNED=--windows-signed" >> "$GITHUB_ENV"
-          else
-            echo "::notice::No release with signed Windows installers yet; the page offers the unsigned ones from main"
-          fi
           ls -l dist
 
       - id: pages
@@ -79,7 +62,7 @@ jobs:
       - name: Build the site
         env:
           SITE_URL: ${{ steps.pages.outputs.base_url }}
-        run: python3 scripts/download_site.py --dist dist --out _site --site-url "$SITE_URL" $SIGNED
+        run: python3 scripts/download_site.py --dist dist --out _site --site-url "$SITE_URL"
 
       - uses: actions/upload-pages-artifact@v5
         with:
