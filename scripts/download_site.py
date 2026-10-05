@@ -68,11 +68,15 @@ class Platform:
 
 BUILD_FROM_SOURCE = "git clone {repo}\ncd YarmiplayServerTV\nnpm install\nnpx tauri build".format(repo=REPO_URL)
 
+WINDOWS_UNSIGNED = ("Get it from the Microsoft Store (Jellyfin built in, updated by the Store), or run the "
+                    "installer. The installer isn't code-signed, so Windows SmartScreen may warn you: choose "
+                    "<b>More info</b>, then <b>Run anyway</b>.")
+WINDOWS_SIGNED = ("Get it from the Microsoft Store (Jellyfin built in, updated by the Store), or run the "
+                  "installer (code-signed by SignPath Foundation).")
+
 PLATFORMS = [
     Platform("windows", "Windows", "Windows 10 or 11, 64-bit.", [
-        "Get it from the Microsoft Store (Jellyfin built in, updated by the Store), or run the installer. The "
-        "installer isn't code-signed, so Windows SmartScreen may warn you: choose <b>More info</b>, then "
-        "<b>Run anyway</b>.",
+        WINDOWS_UNSIGNED,
         "YarmiplayServerTV starts in the system tray. Click the tray icon to open the control panel.",
     ], "Quit the app from the tray, then remove it in <b>Settings &gt; Apps</b>."),
     Platform("macos", "macOS", "macOS 11 or newer, Apple Silicon and Intel.", [
@@ -137,7 +141,7 @@ def sitemap(site_url, paths, day):
             f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{urls}</urlset>\n')
 
 
-def render_page(downloads, version, built, privacy=False, site_url=None):
+def render_page(downloads, version, built, windows_signed=False, privacy=False, site_url=None):
     """downloads: {platform key: [Download]}. Returns the page as a str."""
     cards = []
     for p in PLATFORMS:
@@ -152,7 +156,8 @@ def render_page(downloads, version, built, privacy=False, site_url=None):
                 buttons += '<p class="more">' + " &middot; ".join(
                     f'<span><a href="{href}"{attr}>{label}</a> <small>{note}</small></span>'
                     for href, attr, label, note in rest) + "</p>"
-            steps = "".join(f"<li>{s}</li>" for s in p.steps)
+            steps = "".join(f"<li>{WINDOWS_SIGNED if windows_signed and s == WINDOWS_UNSIGNED else s}</li>"
+                            for s in p.steps)
             sums = "".join(f"<div>{html.escape(d.href)}<br><code>{d.sha256}</code></div>" for d in files if d.sha256)
             body = (f'<div class="dl">{buttons}</div><ol>{steps}</ol>'
                     f'<p class="uninstall"><b>Uninstall:</b> {p.uninstall} Settings and Jellyfin data stay in your '
@@ -233,7 +238,7 @@ def render_page(downloads, version, built, privacy=False, site_url=None):
  <strong>Need the player?</strong>
  <p><a href="{CLIENT_URL}">Get YarmiplayTV</a> for Google TV, Android and desktop, then connect it to this server.</p>
 </section>
-<footer><a href="{HOME_URL}">yarmiplay.com</a> &middot; <a href="{REPO_URL}">Source</a> &middot; <a href="{REPO_URL}#readme">Setup guide</a> &middot; <a href="{CLIENT_REPO}">YarmiplayTV</a>{' &middot; <a href="privacy/">Privacy</a>' if privacy else ''}</footer>
+<footer><a href="{HOME_URL}">yarmiplay.com</a> &middot; <a href="{REPO_URL}">Source</a> &middot; <a href="{REPO_URL}#readme">Setup guide</a> &middot; <a href="{CLIENT_REPO}">YarmiplayTV</a>{f'{chr(10)} &middot; <a href="{REPO_URL}#code-signing-policy">Code signing policy</a>' if windows_signed else ''}{' &middot; <a href="privacy/">Privacy</a>' if privacy else ''}</footer>
 </main>
 <script>
 (function () {{
@@ -320,7 +325,7 @@ def render_doc(md, description, site_url=None, path=""):
 """
 
 
-def build(dist, out, version, site_url=None):
+def build(dist, out, version, windows_signed=False, site_url=None):
     found = {}
     for name in sorted(os.listdir(dist)) if os.path.isdir(dist) else []:
         path = os.path.join(dist, name)
@@ -359,7 +364,7 @@ def build(dist, out, version, site_url=None):
     now = datetime.datetime.now(datetime.timezone.utc)
     built = now.strftime("%Y-%m-%d %H:%M UTC")
     with open(os.path.join(out, "index.html"), "w", encoding="utf-8") as f:
-        f.write(render_page(downloads, version, built, os.path.isfile(privacy), site_url))
+        f.write(render_page(downloads, version, built, windows_signed, os.path.isfile(privacy), site_url))
     if site_url:
         with open(os.path.join(out, "sitemap.xml"), "w", encoding="utf-8") as f:
             f.write(sitemap(site_url, pages, now.strftime("%Y-%m-%d")))
@@ -379,9 +384,10 @@ def main():
     ap.add_argument("--dist", required=True, help="folder with the built installers")
     ap.add_argument("--out", required=True, help="site folder to (re)create")
     ap.add_argument("--version", default=None, help="defaults to the version in tauri.conf.json")
+    ap.add_argument("--windows-signed", action="store_true", help="the Windows installers are code-signed")
     ap.add_argument("--site-url", default=None, help="public URL of the site: canonical URLs and sitemap.xml")
     a = ap.parse_args()
-    build(a.dist, a.out, a.version or app_version(), a.site_url)
+    build(a.dist, a.out, a.version or app_version(), a.windows_signed, a.site_url)
 
 
 if __name__ == "__main__":

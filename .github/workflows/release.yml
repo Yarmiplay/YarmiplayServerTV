@@ -2,6 +2,11 @@ name: Release
 
 # For a version tag (v1.0.1, v1.1.0), which has to match the version in src-tauri/tauri.conf.json: builds the
 # installers for every OS and attaches them to the tag's GitHub release, with latest.json for the app's updater.
+# Windows code signing through SignPath (certificate by SignPath Foundation) is prepared but off: the sign-windows
+# job only runs once the variable SIGNPATH_ORGANIZATION_ID and the secret SIGNPATH_API_TOKEN are set, and until
+# then the unsigned installers are released. Before switching it on, add SignPath's required "Code signing
+# policy" section (attribution, team roles, privacy) back to the README; the release notes and the download page
+# link to it only for signed releases.
 # Updates are signed with the updater key in the secrets TAURI_SIGNING_PRIVATE_KEY and
 # TAURI_SIGNING_PRIVATE_KEY_PASSWORD; its public half is in tauri.conf.json (plugins > updater > pubkey).
 # The Microsoft Store package (.msix, unsigned: the Store signs it) is attached to the run. With the variables
@@ -25,6 +30,7 @@ jobs:
         shell: bash
     outputs:
       version: ${{ steps.version.outputs.version }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v7
 
@@ -47,6 +53,8 @@ jobs:
 
       - run: npm ci
 
+      # SignPath's artifact configuration (.github/signpath/artifact-configuration.xml) expects the two
+      # installers at the root of the artifact.
       - name: Installers
         run: |
           npx tauri build --bundles msi,nsis
@@ -54,15 +62,16 @@ jobs:
           cp src-tauri/target/release/bundle/msi/*.msi src-tauri/target/release/bundle/nsis/*.exe windows/
           ls -l windows
 
-      - uses: actions/upload-artifact@v7
+      - id: upload
+        uses: actions/upload-artifact@v7
         with:
-          name: installers-windows
+          name: windows-installers-unsigned
           path: windows/
           if-no-files-found: error
           retention-days: 7
 
-      # The Store signs the package itself when it is uploaded. It wraps the same yarmiplayservertv.exe the
-      # installers contain.
+      # Kept out of the SignPath artifact: the Store signs the package itself when it is uploaded. It wraps the
+      # same yarmiplayservertv.exe the installers contain.
       - name: Store package
         run: pwsh -NoProfile -File scripts/make-msix.ps1 -NoBuild
 
@@ -108,6 +117,33 @@ jobs:
           $msix = (Get-Item msix\*.msix).FullName
           msstore publish msix --inputFile $msix --appId 9P6B9C1KXFFQ
           if ($LASTEXITCODE -ne 0) { throw "msstore publish failed" }
+
+  # Waits on a Linux runner while the signing request awaits manual approval in SignPath.
+  sign-windows:
+    needs: windows-installers
+    if: vars.SIGNPATH_ORGANIZATION_ID != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Submit the signing request and wait for its approval
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: YarmiplayServerTV
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ needs.windows-installers.outputs.artifact-id }}
+          parameters: |
+            version: ${{ toJSON(needs.windows-installers.outputs.version) }}
+          wait-for-completion-timeout-in-seconds: 21000
+          output-artifact-directory: signed
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-installers-signed
+          path: signed/
+          if-no-files-found: error
+          retention-days: 7
 
   # The macOS .dmg plus the .app.tar.gz the updater installs, and the Linux .deb and .AppImage, each signed
   # with the updater key.
@@ -176,15 +212,20 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Signs the Windows installers with the updater key, writes latest.json and attaches everything to the tag's
-  # release.
+  # Checks the Windows signatures the way Windows does (including the app inside the .msi), signs the final
+  # Windows installers with the updater key (after SignPath, which changes the files), writes latest.json and
+  # attaches everything to the tag's release. Without SignPath it releases the unsigned Windows installers.
   publish:
-    needs: [windows-installers, other-installers]
+    needs: [windows-installers, sign-windows, other-installers]
+    if: >-
+      always() && needs.windows-installers.result == 'success' && needs.other-installers.result == 'success' &&
+      (needs.sign-windows.result == 'success' || needs.sign-windows.result == 'skipped')
     runs-on: windows-latest
     timeout-minutes: 15
     permissions:
       contents: write
     env:
+      SIGNED: ${{ needs.sign-windows.result == 'success' }}
       VERSION: ${{ needs.windows-installers.outputs.version }}
     steps:
       - uses: actions/checkout@v7
@@ -193,9 +234,28 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
+          name: ${{ needs.sign-windows.result == 'success' && 'windows-installers-signed' || 'windows-installers-unsigned' }}
+          path: signed
+
+      - uses: actions/download-artifact@v8
+        with:
           pattern: installers-*
           path: release
           merge-multiple: true
+
+      - name: Verify the signatures
+        if: env.SIGNED == 'true'
+        shell: pwsh
+        run: |
+          $msi = Get-Item signed\*.msi
+          Start-Process msiexec -Wait -ArgumentList "/a `"$($msi.FullName)`" /qn TARGETDIR=`"$env:RUNNER_TEMP\msi`""
+          $files = @(Get-Item signed\*.msi, signed\*.exe) + @(Get-ChildItem "$env:RUNNER_TEMP\msi" -Recurse -Filter yarmiplayservertv.exe)
+          if ($files.Count -ne 3) { throw "expected the .msi, the .exe and the app inside the .msi, found $($files.Count) files" }
+          foreach ($file in $files) {
+            $sig = Get-AuthenticodeSignature $file.FullName
+            "{0}: {1}, {2}" -f $file.Name, $sig.Status, $sig.SignerCertificate.Subject
+            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) { throw "$($file.Name) isn't validly signed and timestamped" }
+          }
 
       - name: Updater signatures and latest.json
         shell: bash
@@ -203,6 +263,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          cp signed/* release/
           for f in release/*.msi release/*.exe; do npx --yes @tauri-apps/cli@2 signer sign "$f"; done
           python scripts/updater_manifest.py --dir release --version "$VERSION" --tag "v$VERSION" --repo "$GITHUB_REPOSITORY"
           rm release/*.sig
@@ -215,9 +276,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if [ "$SIGNED" = true ]; then
+            signing="Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org). See the [code signing policy](https://github.com/$GITHUB_REPOSITORY#code-signing-policy)."
+          else
+            signing="The Windows installers aren't code signed, so Windows SmartScreen may warn: choose More info, then Run anyway."
+          fi
           notes="YarmiplayServerTV $VERSION for Windows (.msi or -setup.exe), macOS (.dmg) and Linux (.deb or .AppImage). Installed copies update themselves from here. Download page: https://servertv.yarmiplay.com/
 
-          The Windows installers aren't code signed, so Windows SmartScreen may warn: choose More info, then Run anyway."
+          $signing"
           if gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" release/* -R "$GITHUB_REPOSITORY" --clobber
             gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --notes "$notes"
