@@ -33,9 +33,27 @@ or internet can change your settings.
 
 **Start with system** (Dashboard, or the tray menu) starts the app minimized to the tray when you log in.
 
+### Install on Linux
+
+- [Flathub](https://flathub.org/apps/com.yarmiplay.servertv): `flatpak install flathub com.yarmiplay.servertv`
+- [Snap Store](https://snapcraft.io/yarmiplayservertv): `sudo snap install yarmiplayservertv`
+- [AUR](https://aur.archlinux.org/packages/yarmiplayservertv-bin) (Arch, Manjaro): `yay -S yarmiplayservertv-bin`
+- Debian and Ubuntu: the `.deb` from the [download page](https://servertv.yarmiplay.com/),
+  `sudo apt install ./YarmiplayServerTV.deb`
+- Anything else: the AppImage from the download page, `chmod +x YarmiplayServerTV.AppImage` and run it
+
+The store listings go live one by one; the download page names a store once it has the app. Flathub, the Snap
+Store and the AUR keep the app up to date themselves, and the Flathub and Snap copies have Jellyfin built in.
+The Flatpak asks the desktop for permission the first time you switch on **Start with system**, and both
+sandboxed copies see your Videos, Music and Pictures folders and removable drives for Jellyfin libraries. The
+Snap keeps tokens in an owner-only file unless you allow it into your keyring with
+`sudo snap connect yarmiplayservertv:password-manager-service`. On GNOME, the AppIndicator extension is needed
+to see the tray icon.
+
 ### Updates
 
-The Microsoft Store copy is updated by the Store and doesn't show these controls.
+Copies from the Microsoft Store, Flathub, the Snap Store or the AUR are updated by those and don't show these
+controls.
 
 **Check for updates** (Dashboard, or the tray menu) looks for a newer release here on GitHub and downloads
 it; **Install** then restarts the app into the new version. Switch on **Automatic updates** on the Dashboard to
@@ -57,7 +75,8 @@ verify the certificate and use an encrypted connection.
 ### Jellyfin
 
 The first time you switch Jellyfin on, the app downloads Jellyfin (about 150–250 MB, checked against
-pinned SHA-256 checksums) from `repo.jellyfin.org`. The download includes ffmpeg for transcoding.
+pinned SHA-256 checksums) from `repo.jellyfin.org`. The download includes ffmpeg for transcoding. The
+Microsoft Store, Flathub and Snap copies come with that same Jellyfin built in and download nothing.
 
 When Jellyfin is running, the **Jellyfin** page asks you to create the administrator account. That's the
 whole first-run setup: the app configures the language, remote access and Quick Connect for you. Then add
@@ -113,6 +132,8 @@ per-user app-data folder; **Open data folder** on the dashboard opens it.
   both at once, since they would want the same ports.
 - macOS: `~/Library/Application Support/com.Yarmiplay.YarmiplayServerTV`
 - Linux: `~/.config/yarmiplayservertv` and `~/.local/share/yarmiplayservertv`
+- Linux, Flatpak: the same two under `~/.var/app/com.yarmiplay.servertv/`; Snap: under
+  `~/snap/yarmiplayservertv/current/`
 
 Tokens and passwords never appear in the logs; the **Logs** page shows the app's activity and Jellyfin's
 warnings.
@@ -124,7 +145,9 @@ warnings.
 3. Remove the app:
    - Windows: **Settings > Apps > Installed apps**, then YarmiplayServerTV > **Uninstall**.
    - macOS: move YarmiplayServerTV from Applications to the Trash.
-   - Linux: `sudo apt remove yarmiplay-server-tv`, or delete the AppImage.
+   - Linux: `sudo apt remove yarmiplay-server-tv`, or delete the AppImage. Store copies:
+     `flatpak uninstall com.yarmiplay.servertv`, `sudo snap remove yarmiplayservertv` or
+     `sudo pacman -R yarmiplayservertv-bin`.
 4. To remove your settings, certificates and Jellyfin (with its library database) too, delete the folders
    listed in [Where things are stored](#where-things-are-stored) (the Microsoft Store copy's folder is deleted
    with the app). The DuckDNS token and Jellyfin sign-in are
@@ -172,12 +195,18 @@ it with `python scripts/update_jellyfin_manifest.py`.
 
 ### Releases
 
-Bump the version in `src-tauri/tauri.conf.json` (and `package.json` / `src-tauri/Cargo.toml` to match), then
-push a matching tag:
+Bump the version with `python scripts/bump-version.py 1.3.0 --note "What changed."`, which writes it into
+`src-tauri/tauri.conf.json`, `Cargo.toml`, `package.json`, the lock files and a new release entry in the
+AppStream metainfo (`packaging/linux/com.yarmiplay.servertv.metainfo.xml`, shown by the Linux stores). Commit,
+then push a matching tag:
 
 ```sh
-git tag v1.0.1 && git push origin v1.0.1
+git tag v1.3.0 && git push origin v1.3.0
 ```
+
+With the repository variable `AUTO_TAG` set to `true` and a `RELEASE_TAG_TOKEN` secret (a fine-grained token
+with Contents read and write on this repository), `.github/workflows/tag-on-version-bump.yml` pushes that tag
+itself once the Build of a version bump on `main` is green.
 
 `.github/workflows/release.yml` builds the installers for Windows, macOS and Linux and attaches them to the
 tag's GitHub release together with `latest.json`, which installed copies read to update themselves
@@ -193,6 +222,20 @@ Store signs, with Jellyfin built in) as the `windows-store-msix-<version>` artif
 from that package: it leaves updates to the Store, keeps its data in the package's `LocalState` folder and uses
 the package's startup task for **Start with system**. `./scripts/make-msix.ps1 -Register` installs the package
 locally for a test (needs Developer Mode).
+
+After the GitHub release, the same workflow updates the Linux stores. Each job does nothing until its
+repository variable is set, and needs its secret (Settings > Secrets and variables > Actions):
+
+| Store | Variable | Secret |
+| --- | --- | --- |
+| AUR | `AUR_PACKAGE` = `yarmiplayservertv-bin` | `AUR_SSH_PRIVATE_KEY` |
+| Snap Store | `SNAP_NAME` = `yarmiplayservertv` (and optionally `SNAP_CHANNEL`, default `stable`) | `SNAPCRAFT_STORE_CREDENTIALS` |
+| Flathub | `FLATHUB_REPO` = `flathub/com.yarmiplay.servertv` | `FLATHUB_TOKEN` |
+
+The packaging is in `packaging/` (AUR, Flatpak, shared metainfo and desktop file) and `snap/`; see
+[packaging/README.md](packaging/README.md) for local builds and the one-time store setup. The Linux packages
+workflow builds, installs and starts all three whenever their files change. To redo one store for the latest
+release, run the Release workflow by hand with only that store's box ticked.
 
 ## Privacy
 

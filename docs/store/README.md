@@ -115,8 +115,8 @@ limited to invited friends" (server password). Everything else is No. The result
 
 ## Each release
 
-1. Bump the version as usual (`src-tauri/tauri.conf.json`, `package.json`, `src-tauri/Cargo.toml`; the Store
-   needs a higher package version than the last one) and push the version tag.
+1. Bump the version with `python scripts/bump-version.py <version>` (the Store needs a higher package version
+   than the last one) and push the version tag.
 2. With [automatic submission](#automatic-submission) set up, the Release run's `msstore` job submits the
    package for certification once the GitHub release is published; otherwise download the
    `windows-store-msix-<version>` artifact from the run.
@@ -143,5 +143,26 @@ Partner Center. Set it up once:
    without echoing. The environment's deployment rule lets only `v*` tags use it, so no branch, pull request
    or other workflow can read it.
 
+To submit a release again (say the job failed), run the Release workflow by hand on the version tag (Use
+workflow from: `v1.2.1`) with only **msstore** ticked: it takes the package from that tag's Release run, as
+long as the artifact hasn't expired (90 days).
+
 The Store copy doesn't check GitHub for updates; the Store updates it. It keeps its settings and data in its
 own `LocalState` folder, so it doesn't share them with a copy installed from the download page.
+
+## Linux stores
+
+Flathub (`com.yarmiplay.servertv`), the Snap Store (`yarmiplayservertv`) and the AUR (`yarmiplayservertv-bin`)
+share the AppStream metainfo in `packaging/linux/`: its summary, description, screenshot (served from
+`https://servertv.yarmiplay.com/screenshots/`, copied there from `docs/store/screenshots/`), age rating (OARS:
+nothing to declare, so all ages) and a release note per version. The release workflow updates all three after
+the GitHub release once these are set (Settings > Secrets and variables > Actions):
+
+| Variable | Secret | One-time setup |
+|---|---|---|
+| `AUR_PACKAGE` = `yarmiplayservertv-bin` | `AUR_SSH_PRIVATE_KEY` | An [AUR account](https://aur.archlinux.org/register) with the public half of a new SSH key (`ssh-keygen -t ed25519 -f aur -C yarmiplayservertv-aur`); the first push creates the package. |
+| `SNAP_NAME` = `yarmiplayservertv`, optional `SNAP_CHANNEL` (default `stable`) | `SNAPCRAFT_STORE_CREDENTIALS` | A [Snapcraft account](https://snapcraft.io/account), `snapcraft register yarmiplayservertv`, then `snapcraft export-login --snaps yarmiplayservertv --acls package_access,package_push,package_update,package_release -` and paste the output into the secret. |
+| `FLATHUB_REPO` = `flathub/com.yarmiplay.servertv` | `FLATHUB_TOKEN` | Flathub creates that repository after the first submission is accepted (see `packaging/README.md`). The token is a fine-grained GitHub token with Contents and Pull requests read and write on it. |
+
+Secrets go only into GitHub Actions secrets: `gh secret set AUR_SSH_PRIVATE_KEY < aur` reads the key from the
+file without printing it, then delete the local copies.

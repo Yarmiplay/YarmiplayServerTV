@@ -6,8 +6,9 @@ Builds the YarmiplayServerTV download page: one card per desktop OS, each with i
 
 Files in --dist are sorted onto platforms by extension (.msi/.exe: Windows, .dmg: macOS, .deb/.AppImage: Linux)
 and copied under stable names such as YarmiplayServerTV.msi, so links keep working across builds. Platforms
-without a file or store listing show how to build from source. <site>/privacy/ is docs/privacy.md (the Microsoft
-Store privacy policy). With --site-url the pages carry canonical URLs and link-preview tags, and the site a
+without a file or store listing show how to build from source. The Linux card names Flathub, the Snap Store and
+the AUR once their listing exists. <site>/privacy/ is docs/privacy.md (the Microsoft Store privacy policy) and
+<site>/screenshots/ is docs/store/screenshots (the AppStream metainfo links there). With --site-url the pages carry canonical URLs and link-preview tags, and the site a
 sitemap.xml and a robots.txt pointing to it for search engines. The Pages workflow publishes the result.
 Standard library only.
 """
@@ -22,6 +23,7 @@ import os
 import re
 import shutil
 import sys
+import urllib.request
 from dataclasses import dataclass
 
 NAME = "YarmiplayServerTV"
@@ -37,6 +39,29 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STORE_LINKS = {
     "windows": ("Microsoft Store", "https://apps.microsoft.com/detail/9P6B9C1KXFFQ"),
 }
+
+
+@dataclass
+class LinuxStore:
+    name: str
+    url: str
+    command: str
+    remove: str
+    check: str  # answers 200 once the listing exists
+    count_key: str | None = None  # ...and this JSON field is above 0
+
+
+# Shown on the Linux card once their listing exists, checked when the site is built.
+LINUX_STORES = [
+    LinuxStore("Flathub", "https://flathub.org/apps/com.yarmiplay.servertv",
+               "flatpak install flathub com.yarmiplay.servertv", "flatpak uninstall com.yarmiplay.servertv",
+               "https://flathub.org/api/v2/appstream/com.yarmiplay.servertv"),
+    LinuxStore("Snap Store", "https://snapcraft.io/yarmiplayservertv", "sudo snap install yarmiplayservertv",
+               "sudo snap remove yarmiplayservertv", "https://snapcraft.io/yarmiplayservertv"),
+    LinuxStore("AUR", "https://aur.archlinux.org/packages/yarmiplayservertv-bin", "yay -S yarmiplayservertv-bin",
+               "sudo pacman -R yarmiplayservertv-bin",
+               "https://aur.archlinux.org/rpc/v5/info?arg[]=yarmiplayservertv-bin", "resultcount"),
+]
 
 # Lower-case extension -> platform and button label. Without a store listing the first file is the platform's
 # main button.
@@ -101,6 +126,23 @@ def sha256_of(path):
     return h.hexdigest()
 
 
+def listed(store):
+    req = urllib.request.Request(store.check, headers={"User-Agent": f"{NAME}-download-page"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status != 200:
+                return False
+            return store.count_key is None or json.load(resp).get(store.count_key, 0) > 0
+    except (OSError, ValueError):
+        return False
+
+
+def linux_store_step(stores):
+    ways = "; ".join(f'<a href="{html.escape(s.url)}">{html.escape(s.name)}</a>: '
+                     f'<code>{html.escape(s.command)}</code>' for s in stores)
+    return f"From a store, which keeps it up to date: {ways}."
+
+
 def fmt_size(n):
     return f"{n / 1e6:.1f} MB"
 
@@ -141,12 +183,18 @@ def sitemap(site_url, paths, day):
             f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{urls}</urlset>\n')
 
 
-def render_page(downloads, version, built, windows_signed=False, privacy=False, site_url=None):
-    """downloads: {platform key: [Download]}. Returns the page as a str."""
+def render_page(downloads, version, built, windows_signed=False, privacy=False, site_url=None, linux_stores=()):
+    """downloads: {platform key: [Download]}; linux_stores: the LinuxStore entries that are listed. Returns the
+    page as a str."""
     cards = []
     for p in PLATFORMS:
         files = downloads.get(p.key, [])
         store = STORE_LINKS.get(p.key)
+        steps, uninstall = list(p.steps), p.uninstall
+        if p.key == "linux" and linux_stores:
+            steps.insert(0, linux_store_step(linux_stores))
+            uninstall += " Store copies: " + ", ".join(f"<code>{html.escape(s.remove)}</code>"
+                                                       for s in linux_stores) + "."
         if files or store:
             links = [(html.escape(store[1]), "", html.escape(store[0]), "Updates automatically")] if store else []
             links += [(html.escape(d.href), " download", html.escape(d.label), fmt_size(d.size)) for d in files]
@@ -157,10 +205,10 @@ def render_page(downloads, version, built, windows_signed=False, privacy=False, 
                     f'<span><a href="{href}"{attr}>{label}</a> <small>{note}</small></span>'
                     for href, attr, label, note in rest) + "</p>"
             steps = "".join(f"<li>{WINDOWS_SIGNED if windows_signed and s == WINDOWS_UNSIGNED else s}</li>"
-                            for s in p.steps)
+                            for s in steps)
             sums = "".join(f"<div>{html.escape(d.href)}<br><code>{d.sha256}</code></div>" for d in files if d.sha256)
             body = (f'<div class="dl">{buttons}</div><ol>{steps}</ol>'
-                    f'<p class="uninstall"><b>Uninstall:</b> {p.uninstall} Settings and Jellyfin data stay in your '
+                    f'<p class="uninstall"><b>Uninstall:</b> {uninstall} Settings and Jellyfin data stay in your '
                     f'<a href="{REPO_URL}#uninstalling">app-data folder</a>'
                     + (f' (the {html.escape(store[0])} copy removes them with the app)' if store else '') + '.</p>'
                     + (f"<details><summary>SHA-256</summary>{sums}</details>" if sums else ""))
@@ -352,6 +400,11 @@ def build(dist, out, version, windows_signed=False, site_url=None):
         print(f"  {name} -> {target}")
 
     shutil.copyfile(os.path.join(ROOT, "assets", "logo.svg"), os.path.join(out, "logo.svg"))
+    shots = os.path.join(ROOT, "docs", "store", "screenshots")
+    if os.path.isdir(shots):
+        shutil.copytree(shots, os.path.join(out, "screenshots"))
+    linux_stores = [s for s in LINUX_STORES if listed(s)]
+    print("  Linux stores listed: " + (", ".join(s.name for s in linux_stores) or "none yet"))
     pages = [""]
     privacy = os.path.join(ROOT, "docs", "privacy.md")
     if os.path.isfile(privacy):
@@ -364,7 +417,8 @@ def build(dist, out, version, windows_signed=False, site_url=None):
     now = datetime.datetime.now(datetime.timezone.utc)
     built = now.strftime("%Y-%m-%d %H:%M UTC")
     with open(os.path.join(out, "index.html"), "w", encoding="utf-8") as f:
-        f.write(render_page(downloads, version, built, windows_signed, os.path.isfile(privacy), site_url))
+        f.write(render_page(downloads, version, built, windows_signed, os.path.isfile(privacy), site_url,
+                            linux_stores))
     if site_url:
         with open(os.path.join(out, "sitemap.xml"), "w", encoding="utf-8") as f:
             f.write(sitemap(site_url, pages, now.strftime("%Y-%m-%d")))
