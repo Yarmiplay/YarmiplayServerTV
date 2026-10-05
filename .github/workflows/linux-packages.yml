@@ -1,0 +1,146 @@
+name: Linux packages
+
+# Builds the AUR, Snap and Flatpak packages from packaging/ and snap/, installs them and starts them headless
+# (packaging/linux/smoke-test.sh: the Syncplay server answers, and in the Snap and the Flatpak the bundled Jellyfin
+# becomes healthy). The AUR test uses the released .deb its PKGBUILD names; the Snap and the Flatpak are built
+# from this commit. Publishing is the release workflow's job.
+on:
+  push:
+    branches: [main]
+    paths:
+      - packaging/**
+      - snap/**
+      - scripts/linux_packaging.py
+      - src-tauri/jellyfin-manifest.json
+      - .github/workflows/linux-packages.yml
+  pull_request:
+    paths:
+      - packaging/**
+      - snap/**
+      - scripts/linux_packaging.py
+      - src-tauri/jellyfin-manifest.json
+      - .github/workflows/linux-packages.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  aur:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: REPO="$GITHUB_WORKSPACE" bash packaging/aur/test.sh
+
+  # The .deb as the release builds it, for the snap
+  deb:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libdbus-1-dev libxdo-dev libssl-dev build-essential file patchelf
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: deb
+
+      - run: npm ci
+      - run: npx tauri build --bundles deb
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb
+          path: src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error
+          retention-days: 3
+
+  snap:
+    needs: deb
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: deb
+          path: deb
+
+      - run: mkdir -p snap/local && mv deb/*.deb snap/local/yarmiplayservertv.deb
+
+      - id: build
+        uses: snapcore/action-build@v1
+
+      - name: Install it and start it
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb xauth dbus-x11
+          sudo snap install --dangerous "${{ steps.build.outputs.snap }}"
+          snap connections yarmiplayservertv
+          SMOKE_HOME="$HOME/snap-smoke" SMOKE_JELLYFIN=1 bash packaging/linux/smoke-test.sh yarmiplayservertv
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: snap
+          path: ${{ steps.build.outputs.snap }}
+          if-no-files-found: ignore
+          retention-days: 3
+
+  flatpak:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Flatpak tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak xvfb xauth dbus-x11
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/flatpak/.flatpak-builder
+          key: flatpak-${{ hashFiles('packaging/flatpak/com.yarmiplay.servertv.yml', 'src-tauri/Cargo.lock', 'package-lock.json') }}
+          restore-keys: flatpak-
+
+      - name: Build
+        env:
+          BUILD_ROOT: ${{ runner.temp }}/flatpak
+        run: bash packaging/flatpak/build.sh
+
+      - name: Lint as Flathub does
+        env:
+          OUT: ${{ runner.temp }}/flatpak
+        run: |
+          lint() { flatpak run --command=flatpak-builder-lint org.flatpak.Builder "$@"; }
+          lint manifest packaging/flatpak/com.yarmiplay.servertv.yml
+          lint repo "$OUT/repo"
+
+      - name: Install it and start it
+        env:
+          OUT: ${{ runner.temp }}/flatpak
+        run: |
+          flatpak remote-add --user --no-gpg-verify local "$OUT/repo"
+          flatpak install --user -y --noninteractive local com.yarmiplay.servertv
+          home="$HOME/flatpak-smoke"
+          SMOKE_HOME="$home" SMOKE_JELLYFIN=1 bash packaging/linux/smoke-test.sh \
+            flatpak run --filesystem="$home" --env=YARMIPLAYSERVERTV_HOME="$home" com.yarmiplay.servertv

@@ -1,0 +1,72 @@
+# Snap of YarmiplayServerTV: the release's .deb (put at snap/local/yarmiplayservertv.deb before building; the
+# release workflow's snap job does) plus the pinned Jellyfin from src-tauri/jellyfin-manifest.json, so nothing
+# executable is downloaded at runtime. The version comes from src-tauri/tauri.conf.json.
+name: yarmiplayservertv
+title: YarmiplayServerTV
+base: core24
+adopt-info: yarmiplayservertv
+grade: stable
+confinement: strict
+license: GPL-3.0-or-later
+website: https://servertv.yarmiplay.com/
+source-code: https://github.com/Yarmiplay/YarmiplayServerTV
+issues: https://github.com/Yarmiplay/YarmiplayServerTV/issues
+platforms:
+  amd64:
+
+apps:
+  yarmiplayservertv:
+    command: usr/bin/yarmiplayservertv
+    extensions: [gnome]
+    common-id: com.yarmiplay.servertv
+    desktop: usr/share/applications/com.yarmiplay.servertv.desktop
+    # The file the app's "Start with system" writes into $SNAP_USER_DATA/.config/autostart: the productName in
+    # src-tauri/tauri.conf.json plus .desktop (a test in src-tauri/src/autostart.rs checks they match).
+    autostart: YarmiplayServerTV.desktop
+    plugs:
+      - network
+      - network-bind
+      - desktop
+      - wayland
+      - x11
+      - unity7
+      # Media folders for Jellyfin libraries
+      - home
+      - removable-media
+      # Not connected automatically; until it is, secrets go to an owner-only file in $SNAP_USER_DATA.
+      - password-manager-service
+
+parts:
+  yarmiplayservertv:
+    plugin: dump
+    source: snap/local/yarmiplayservertv.deb
+    source-type: deb
+    build-packages: [python3]
+    stage-packages:
+      - libayatana-appindicator3-1
+      # The .NET runtime inside Jellyfin
+      - libicu74
+    override-pull: |
+      craftctl default
+      craftctl set version="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' \
+        "$CRAFT_PROJECT_DIR/src-tauri/tauri.conf.json")"
+    override-build: |
+      craftctl default
+      rm -f "$CRAFT_PART_INSTALL/usr/share/applications/YarmiplayServerTV.desktop"
+      rm -rf "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/256x256@2"
+      install -Dm644 "$CRAFT_PROJECT_DIR/packaging/linux/com.yarmiplay.servertv.desktop" \
+        "$CRAFT_PART_INSTALL/usr/share/applications/com.yarmiplay.servertv.desktop"
+      install -Dm644 "$CRAFT_PROJECT_DIR/packaging/linux/com.yarmiplay.servertv.metainfo.xml" \
+        "$CRAFT_PART_INSTALL/usr/share/metainfo/com.yarmiplay.servertv.metainfo.xml"
+      for size in 32 64 128 256 512; do
+        install -Dm644 "$CRAFT_PROJECT_DIR/src-tauri/icons/${size}x${size}.png" \
+          "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/${size}x${size}/apps/com.yarmiplay.servertv.png"
+      done
+    parse-info: [usr/share/metainfo/com.yarmiplay.servertv.metainfo.xml]
+
+  jellyfin:
+    plugin: nil
+    build-packages: [python3]
+    override-build: |
+      python3 "$CRAFT_PROJECT_DIR/scripts/linux_packaging.py" fetch-jellyfin --arch "$CRAFT_ARCH_BUILD_FOR" \
+        --dest "$CRAFT_PART_INSTALL/usr/lib/yarmiplayservertv/jellyfin"

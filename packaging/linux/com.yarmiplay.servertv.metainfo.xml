@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 Yarmiplay -->
+<component type="desktop-application">
+  <id>com.yarmiplay.servertv</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>YarmiplayServerTV</name>
+  <summary>Host Syncplay and Jellyfin servers</summary>
+  <developer id="com.yarmiplay">
+    <name>Yarmiplay</name>
+  </developer>
+
+  <description>
+    <p>
+      YarmiplayServerTV runs a Syncplay server and a Jellyfin server from the system tray, so friends can watch
+      videos in sync from your media library with YarmiplayTV or any Syncplay client.
+    </p>
+    <ul>
+      <li>A Syncplay 1.7 compatible server with rooms, an optional password, chat and a shared playlist</li>
+      <li>A Jellyfin media server, set up from the control panel</li>
+      <li>Optional UPnP port forwarding so people outside your home network can connect</li>
+      <li>Free encrypted connections with a DuckDNS domain and a Let's Encrypt certificate</li>
+      <li>Starts with your session and keeps running in the tray</li>
+    </ul>
+    <p>
+      Jellyfin is developed by the Jellyfin project and included unmodified under its own license.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">com.yarmiplay.servertv.desktop</launchable>
+  <icon type="stock">com.yarmiplay.servertv</icon>
+
+  <url type="homepage">https://servertv.yarmiplay.com/</url>
+  <url type="bugtracker">https://github.com/Yarmiplay/YarmiplayServerTV/issues</url>
+  <url type="vcs-browser">https://github.com/Yarmiplay/YarmiplayServerTV</url>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>The dashboard with the Syncplay and Jellyfin servers running</caption>
+      <image type="source" width="1366" height="768">https://servertv.yarmiplay.com/screenshots/1-dashboard.png</image>
+    </screenshot>
+  </screenshots>
+
+  <categories>
+    <category>AudioVideo</category>
+    <category>Video</category>
+    <category>Network</category>
+  </categories>
+  <keywords>
+    <keyword>Syncplay</keyword>
+    <keyword>Jellyfin</keyword>
+    <keyword>media server</keyword>
+    <keyword>watch together</keyword>
+    <keyword>YarmiplayTV</keyword>
+  </keywords>
+
+  <provides>
+    <binary>yarmiplayservertv</binary>
+  </provides>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#B9DDFB</color>
+    <color type="primary" scheme_preference="dark">#0E1116</color>
+  </branding>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="1.2.1" date="2026-10-05">
+      <description>
+        <p>Tidier Syncplay settings: the fields line up in two columns and the password's Show button sits inside its box.</p>
+      </description>
+    </release>
+    <release version="1.2.0" date="2026-10-05">
+      <description>
+        <p>Updates get their own card on the dashboard, and a new About screen links to the website, YarmiplayTV and the source code.</p>
+      </description>
+    </release>
+    <release version="1.1.1" date="2026-10-03">
+      <description>
+        <p>Packaging improvements for the Microsoft Store.</p>
+      </description>
+    </release>
+    <release version="1.1.0" date="2026-10-03">
+      <description>
+        <p>Automatic updates from GitHub releases, and the control panel can be opened in a web browser on the same computer.</p>
+      </description>
+    </release>
+    <release version="1.0.0" date="2026-10-03">
+      <description>
+        <p>First release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=YarmiplayServerTV
+GenericName=Syncplay and Jellyfin server
+Comment=Host a Syncplay server and a Jellyfin server from the tray
+Exec=yarmiplayservertv
+Icon=com.yarmiplay.servertv
+Terminal=false
+Categories=AudioVideo;Video;Network;
+Keywords=Syncplay;Jellyfin;media server;watch together;
+StartupNotify=true
