@@ -41,10 +41,10 @@ pub struct UpdateStatus {
     pub last_check: Option<i64>,
     /// Whether this kind of install can update without an administrator prompt.
     pub unattended: bool,
-    /// False in development builds and the Microsoft Store package.
+    /// False in development builds and copies a store or package manager updates.
     pub supported: bool,
-    /// Installed from the Microsoft Store, which updates it.
-    pub store: bool,
+    /// Who updates this copy instead: "microsoft-store", "flathub", "snap", "aur", ...
+    pub managed_by: Option<String>,
 }
 
 pub struct Updates {
@@ -69,7 +69,7 @@ impl Updates {
                 last_check: None,
                 unattended: unattended(),
                 supported: supported(),
-                store: crate::paths::package_family().is_some(),
+                managed_by: crate::paths::managed_by().map(str::to_string),
             }),
             ready: Mutex::new(None),
             busy: tokio::sync::Mutex::new(()),
@@ -88,9 +88,22 @@ impl Updates {
     }
 }
 
-/// The Store package mustn't update itself outside the Store.
+/// Store and package-manager copies mustn't update themselves around their store.
 pub fn supported() -> bool {
-    !tauri::is_dev() && crate::paths::package_family().is_none()
+    !tauri::is_dev() && crate::paths::managed_by().is_none()
+}
+
+fn managed_error() -> Option<String> {
+    crate::paths::managed_by().map(|m| format!("This copy is updated by {}", updater_name(m)))
+}
+
+fn updater_name(managed_by: &str) -> &'static str {
+    match managed_by {
+        "microsoft-store" => "the Microsoft Store",
+        "flathub" => "Flathub",
+        "snap" => "the Snap Store",
+        _ => "your package manager",
+    }
 }
 
 fn unattended() -> bool {
@@ -118,7 +131,7 @@ pub fn start(handle: AppHandle) {
         let mut last_check: Option<Instant> = None;
         loop {
             let auto = handle.state::<Arc<App>>().settings().updates.auto;
-            if auto && last_check.map_or(true, |t| t.elapsed() >= CHECK_EVERY) {
+            if auto && last_check.is_none_or(|t| t.elapsed() >= CHECK_EVERY) {
                 last_check = Some(Instant::now());
                 let _ = check(&handle).await;
             }
@@ -159,8 +172,8 @@ async fn auto_install(handle: &AppHandle) {
 
 /// Look for a newer release and download it. Errors also land in the status.
 pub async fn check(handle: &AppHandle) -> Result<(), String> {
-    if crate::paths::package_family().is_some() {
-        return Err("This copy is updated by the Microsoft Store".into());
+    if let Some(e) = managed_error() {
+        return Err(e);
     }
     let app = handle.state::<Arc<App>>().inner().clone();
     let updates = app.updates.clone();
@@ -262,8 +275,8 @@ pub async fn install(handle: &AppHandle) -> Result<(), String> {
     if tauri::is_dev() {
         return Err("Updates can't be installed over a development build".into());
     }
-    if crate::paths::package_family().is_some() {
-        return Err("This copy is updated by the Microsoft Store".into());
+    if let Some(e) = managed_error() {
+        return Err(e);
     }
     let app = handle.state::<Arc<App>>().inner().clone();
     let updates = app.updates.clone();
@@ -301,5 +314,19 @@ pub async fn install(handle: &AppHandle) -> Result<(), String> {
             });
             Err(e)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::updater_name;
+
+    #[test]
+    fn names_who_updates_the_copy() {
+        assert_eq!(updater_name("microsoft-store"), "the Microsoft Store");
+        assert_eq!(updater_name("flathub"), "Flathub");
+        assert_eq!(updater_name("snap"), "the Snap Store");
+        assert_eq!(updater_name("aur"), "your package manager");
+        assert_eq!(updater_name("package-manager"), "your package manager");
     }
 }

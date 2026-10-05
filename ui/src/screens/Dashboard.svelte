@@ -3,7 +3,7 @@
   import type { Snapshot } from "../lib/api";
   import { api, formatDate, inApp } from "../lib/api";
   import { store } from "../lib/store.svelte";
-  import { jellyfinPill, syncplayPill, tlsPill, updatePill, upnpPill } from "../lib/status";
+  import { jellyfinPill, syncplayPill, tlsPill, updatedBy, updatePill, upnpPill } from "../lib/status";
   import Toggle from "../lib/Toggle.svelte";
   import Address from "../lib/Address.svelte";
 
@@ -129,10 +129,12 @@
         <span class="pill {upd.kind}">{upd.text}</span>
       </div>
       <p class="sub">
-        {snap.update.store ? `Version ${snap.version}, kept up to date by the Microsoft Store.` : `You're running version ${snap.version}.`}
+        {snap.update.managedBy
+          ? `Version ${snap.version}. ${updatedBy(snap.update.managedBy)}.`
+          : `You're running version ${snap.version}.`}
       </p>
       {#if snap.update.error}<div class="notice err">{snap.update.error}</div>{/if}
-      {#if !snap.update.store && snap.update.supported}
+      {#if !snap.update.managedBy && snap.update.supported}
         <Toggle
           label="Automatic updates"
           hint={snap.update.unattended

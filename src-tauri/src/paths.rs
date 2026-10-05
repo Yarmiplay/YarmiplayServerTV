@@ -99,6 +99,58 @@ fn read_package_family() -> Option<String> {
     None
 }
 
+/// Written by packages whose package manager updates the app (the AUR package
+/// puts `aur` in it). A file rather than an environment variable because the
+/// login entry starts the binary directly, bypassing any wrapper script.
+pub const MANAGED_BY_FILE: &str = "/usr/lib/yarmiplayservertv/managed-by";
+
+/// Who updates this copy, when it isn't the app's own updater:
+/// "microsoft-store", "flathub", "snap", or the contents of [`MANAGED_BY_FILE`].
+pub fn managed_by() -> Option<&'static str> {
+    static MANAGED: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    MANAGED
+        .get_or_init(|| {
+            managed_by_from(
+                package_family(),
+                std::env::var_os("FLATPAK_ID").is_some(),
+                std::env::var_os("SNAP").is_some(),
+                || std::fs::read_to_string(MANAGED_BY_FILE).ok(),
+            )
+        })
+        .as_deref()
+}
+
+fn managed_by_from(
+    package_family: Option<&str>,
+    flatpak: bool,
+    snap: bool,
+    marker: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    if package_family.is_some() {
+        return Some("microsoft-store".into());
+    }
+    if flatpak {
+        return Some("flathub".into());
+    }
+    if snap {
+        return Some("snap".into());
+    }
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let name = marker()?.trim().to_ascii_lowercase();
+    let valid = !name.is_empty()
+        && name.len() <= 32
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    Some(if valid { name } else { "package-manager".into() })
+}
+
+/// The Flatpak and Snap packages carry the pinned Jellyfin themselves, so
+/// nothing executable is downloaded into a sandbox at runtime.
+pub fn sandboxed() -> bool {
+    matches!(managed_by(), Some("flathub" | "snap"))
+}
+
 /// Owner-only permissions where the OS supports it (Windows app-data is already per-user).
 pub fn restrict_dir(path: &std::path::Path) {
     #[cfg(unix)]
@@ -126,4 +178,48 @@ pub fn write_atomic(path: &std::path::Path, contents: &[u8]) -> Result<(), Strin
         let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
     }
     std::fs::rename(&tmp, path).map_err(|e| format!("rename to {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::managed_by_from;
+
+    fn none() -> Option<String> {
+        None
+    }
+
+    #[test]
+    fn managed_by_prefers_the_sandbox_over_the_marker_file() {
+        let marker = || Some("aur\n".to_string());
+        assert_eq!(
+            managed_by_from(Some("Yarmiplay.YarmiplayServerTV_x"), false, false, marker).as_deref(),
+            Some("microsoft-store")
+        );
+        assert_eq!(managed_by_from(None, true, true, marker).as_deref(), Some("flathub"));
+        assert_eq!(managed_by_from(None, false, true, marker).as_deref(), Some("snap"));
+        assert_eq!(managed_by_from(None, false, false, none), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_by_reads_the_marker_file() {
+        assert_eq!(
+            managed_by_from(None, false, false, || Some("AUR\n".into())).as_deref(),
+            Some("aur")
+        );
+        assert_eq!(
+            managed_by_from(None, false, false, || Some("<script>".into())).as_deref(),
+            Some("package-manager")
+        );
+        assert_eq!(
+            managed_by_from(None, false, false, || Some("  ".into())).as_deref(),
+            Some("package-manager")
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn marker_file_is_linux_only() {
+        assert_eq!(managed_by_from(None, false, false, || Some("aur".into())), None);
+    }
 }

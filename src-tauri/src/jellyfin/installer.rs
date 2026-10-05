@@ -1,7 +1,7 @@
 //! Downloads the pinned Jellyfin server (and jellyfin-ffmpeg where the server
 //! archive doesn't bundle it), verifies the SHA-256 from the embedded
-//! manifest, and extracts it into the app-data folder. The Microsoft Store
-//! package has it built in instead.
+//! manifest, and extracts it into the app-data folder. The Microsoft Store,
+//! Flatpak and Snap packages have it built in instead.
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -76,7 +76,7 @@ fn installed_file(root: &Path) -> PathBuf {
 
 /// The current install, if it matches the pinned version and still exists.
 pub fn current(root: &Path) -> Option<Installed> {
-    if crate::paths::package_family().is_some() {
+    if built_in() {
         return bundled().clone();
     }
     let raw = std::fs::read_to_string(installed_file(root)).ok()?;
@@ -86,29 +86,54 @@ pub fn current(root: &Path) -> Option<Installed> {
         .then_some(installed)
 }
 
-/// The Microsoft Store package ships the pinned Jellyfin in its `jellyfin`
-/// folder next to the app (scripts/make-msix.ps1 puts it there), read-only.
+/// Packages that carry the pinned Jellyfin themselves.
+fn built_in() -> bool {
+    crate::paths::package_family().is_some() || crate::paths::sandboxed()
+}
+
+/// Read-only. The Microsoft Store package has it in a `jellyfin` folder next
+/// to the app (scripts/make-msix.ps1); the Flatpak and the Snap in
+/// `lib/yarmiplayservertv/jellyfin` beside the `bin` folder of the app, with
+/// jellyfin-ffmpeg in its `ffmpeg` subfolder.
 fn bundled() -> &'static Option<Installed> {
     static BUNDLED: std::sync::OnceLock<Option<Installed>> = std::sync::OnceLock::new();
     BUNDLED.get_or_init(|| {
-        let dir = std::env::current_exe().ok()?.parent()?.join("jellyfin");
+        let bin = std::env::current_exe().ok()?.parent()?.to_path_buf();
+        let dir = bundled_dir(&bin, crate::paths::package_family().is_some());
         let m = manifest();
-        let bundled_ffmpeg = m.platforms.get(&platform_key())?.bundled_ffmpeg.clone();
+        let ffmpeg = m
+            .platforms
+            .get(&platform_key())?
+            .bundled_ffmpeg
+            .clone()
+            .unwrap_or_else(|| exe_name("ffmpeg"));
         Some(Installed {
             version: m.jellyfin,
             ffmpeg_version: m.ffmpeg,
             exe: find_file(&dir, &[exe_name("jellyfin")])?,
             web: find_dir_with(&dir, "jellyfin-web", "index.html")?,
-            ffmpeg: bundled_ffmpeg.and_then(|name| find_file(&dir, &[name])),
+            ffmpeg: find_file(&dir, &[ffmpeg]),
         })
     })
+}
+
+fn bundled_dir(bin: &Path, msix: bool) -> PathBuf {
+    if msix {
+        bin.join("jellyfin")
+    } else {
+        bin.parent()
+            .unwrap_or(bin)
+            .join("lib")
+            .join("yarmiplayservertv")
+            .join("jellyfin")
+    }
 }
 
 pub async fn ensure(root: &Path, progress: ProgressFn) -> Result<Installed, String> {
     if let Some(i) = current(root) {
         return Ok(i);
     }
-    if crate::paths::package_family().is_some() {
+    if built_in() {
         return Err("Jellyfin is missing from the app package; reinstall YarmiplayServerTV".into());
     }
     let m = manifest();
@@ -435,6 +460,20 @@ mod tests {
         let exe = find_file(&out, &[exe_name("jellyfin")]).unwrap();
         assert!(exe.ends_with(Path::new("jellyfin").join(exe_name("jellyfin"))));
         assert!(find_dir_with(&out, "jellyfin-web", "index.html").is_some());
+    }
+
+    #[test]
+    fn bundled_jellyfin_locations() {
+        let bin = Path::new("/app/bin");
+        assert_eq!(
+            bundled_dir(bin, false),
+            Path::new("/app/lib/yarmiplayservertv/jellyfin")
+        );
+        assert_eq!(
+            bundled_dir(Path::new("/snap/yarmiplayservertv/x1/usr/bin"), false),
+            Path::new("/snap/yarmiplayservertv/x1/usr/lib/yarmiplayservertv/jellyfin")
+        );
+        assert_eq!(bundled_dir(bin, true), bin.join("jellyfin"));
     }
 
     #[test]

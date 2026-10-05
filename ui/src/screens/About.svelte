@@ -2,6 +2,7 @@
   import logo from "../assets/logo.svg";
   import type { Snapshot } from "../lib/api";
   import { api } from "../lib/api";
+  import { updatedBy } from "../lib/status";
 
   let { snap }: { snap: Snapshot } = $props();
 
@@ -21,7 +22,9 @@
     <img src={logo} alt="" width="56" height="56" />
     <div>
       <h2>YarmiplayServerTV</h2>
-      <p class="muted">Version {snap.version}</p>
+      <p class="muted">
+        Version {snap.version}{#if snap.update.managedBy}. {updatedBy(snap.update.managedBy)}{/if}
+      </p>
     </div>
   </section>
 

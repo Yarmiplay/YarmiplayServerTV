@@ -6,7 +6,7 @@ authors = ["Yarmiplay"]
 license = "GPL-3.0-or-later"
 repository = "https://github.com/Yarmiplay/YarmiplayServerTV"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.87"
 
 [lib]
 name = "yarmiplayservertv_lib"
@@ -68,6 +68,10 @@ windows = { version = "0.62", features = ["ApplicationModel", "ApplicationModel_
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# "Start with system" in the Flatpak, through the Background portal
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "background"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -121,8 +121,8 @@ export interface UpdateStatus {
   /** False for .msi and .deb installs, which need an administrator prompt to update. */
   unattended: boolean;
   supported: boolean;
-  /** Installed from the Microsoft Store, which updates it. */
-  store: boolean;
+  /** Who updates this copy instead of the built-in updater: "microsoft-store", "flathub", "snap", "aur", ... */
+  managedBy: string | null;
 }
 
 export interface RoomInfo {

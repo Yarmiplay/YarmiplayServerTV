@@ -272,7 +272,7 @@ impl TlsManager {
             let now = acme::unix_now();
             let due = force
                 || (now >= retry_at
-                    && self.current().map_or(true, |b| {
+                    && self.current().is_none_or(|b| {
                         acme::needs_renewal(b.not_before, b.not_after, now)
                     }));
             if due {

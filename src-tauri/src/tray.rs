@@ -96,8 +96,8 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         &sep4,
         &autostart,
     ];
-    // The Store updates its copy.
-    if crate::paths::package_family().is_none() {
+    // Store and package-manager copies are updated by their store.
+    if crate::paths::managed_by().is_none() {
         items.push(&update);
     }
     items.push(&quit);
