@@ -124,20 +124,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ashpd"
-version = "0.13.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb8421aaa9644a5faf26735f258b669b15f063313ef8f8e2bdb28912a1a6f111"
-dependencies = [
- "enumflags2",
- "futures-util",
- "getrandom 0.4.3",
- "serde",
- "tokio",
- "zbus 5.19.0",
-]
-
-[[package]]
 name = "asn1-rs"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5684,7 +5670,6 @@ dependencies = [
  "signal-hook-registry",
  "socket2 0.6.5",
  "tokio-macros",
- "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -7023,7 +7008,6 @@ dependencies = [
 name = "yarmiplayservertv"
 version = "1.2.1"
 dependencies = [
- "ashpd",
  "axum",
  "directories",
  "futures-util",
@@ -7158,7 +7142,6 @@ dependencies = [
  "rustix",
  "serde",
  "serde_repr",
- "tokio",
  "tracing",
  "uds_windows",
  "uuid",

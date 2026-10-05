@@ -99,20 +99,19 @@ fn read_package_family() -> Option<String> {
     None
 }
 
-/// Written by packages whose package manager updates the app (the AUR package
-/// puts `aur` in it). A file rather than an environment variable because the
-/// login entry starts the binary directly, bypassing any wrapper script.
+/// Written by distribution packages whose package manager updates the app
+/// (their name, e.g. `debian`). A file rather than an environment variable
+/// because the login entry starts the binary directly, bypassing any wrapper.
 pub const MANAGED_BY_FILE: &str = "/usr/lib/yarmiplayservertv/managed-by";
 
 /// Who updates this copy, when it isn't the app's own updater:
-/// "microsoft-store", "flathub", "snap", or the contents of [`MANAGED_BY_FILE`].
+/// "microsoft-store", "snap", or the contents of [`MANAGED_BY_FILE`].
 pub fn managed_by() -> Option<&'static str> {
     static MANAGED: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     MANAGED
         .get_or_init(|| {
             managed_by_from(
                 package_family(),
-                std::env::var_os("FLATPAK_ID").is_some(),
                 std::env::var_os("SNAP").is_some(),
                 || std::fs::read_to_string(MANAGED_BY_FILE).ok(),
             )
@@ -122,15 +121,11 @@ pub fn managed_by() -> Option<&'static str> {
 
 fn managed_by_from(
     package_family: Option<&str>,
-    flatpak: bool,
     snap: bool,
     marker: impl FnOnce() -> Option<String>,
 ) -> Option<String> {
     if package_family.is_some() {
         return Some("microsoft-store".into());
-    }
-    if flatpak {
-        return Some("flathub".into());
     }
     if snap {
         return Some("snap".into());
@@ -145,10 +140,10 @@ fn managed_by_from(
     Some(if valid { name } else { "package-manager".into() })
 }
 
-/// The Flatpak and Snap packages carry the pinned Jellyfin themselves, so
-/// nothing executable is downloaded into a sandbox at runtime.
+/// The Snap carries the pinned Jellyfin itself, so nothing executable is
+/// downloaded into the sandbox at runtime.
 pub fn sandboxed() -> bool {
-    matches!(managed_by(), Some("flathub" | "snap"))
+    managed_by() == Some("snap")
 }
 
 /// Owner-only permissions where the OS supports it (Windows app-data is already per-user).
@@ -189,30 +184,29 @@ mod tests {
     }
 
     #[test]
-    fn managed_by_prefers_the_sandbox_over_the_marker_file() {
-        let marker = || Some("aur\n".to_string());
+    fn managed_by_prefers_the_store_over_the_marker_file() {
+        let marker = || Some("debian\n".to_string());
         assert_eq!(
-            managed_by_from(Some("Yarmiplay.YarmiplayServerTV_x"), false, false, marker).as_deref(),
+            managed_by_from(Some("Yarmiplay.YarmiplayServerTV_x"), false, marker).as_deref(),
             Some("microsoft-store")
         );
-        assert_eq!(managed_by_from(None, true, true, marker).as_deref(), Some("flathub"));
-        assert_eq!(managed_by_from(None, false, true, marker).as_deref(), Some("snap"));
-        assert_eq!(managed_by_from(None, false, false, none), None);
+        assert_eq!(managed_by_from(None, true, marker).as_deref(), Some("snap"));
+        assert_eq!(managed_by_from(None, false, none), None);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_by_reads_the_marker_file() {
         assert_eq!(
-            managed_by_from(None, false, false, || Some("AUR\n".into())).as_deref(),
-            Some("aur")
+            managed_by_from(None, false, || Some("Debian\n".into())).as_deref(),
+            Some("debian")
         );
         assert_eq!(
-            managed_by_from(None, false, false, || Some("<script>".into())).as_deref(),
+            managed_by_from(None, false, || Some("<script>".into())).as_deref(),
             Some("package-manager")
         );
         assert_eq!(
-            managed_by_from(None, false, false, || Some("  ".into())).as_deref(),
+            managed_by_from(None, false, || Some("  ".into())).as_deref(),
             Some("package-manager")
         );
     }
@@ -220,6 +214,6 @@ mod tests {
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn marker_file_is_linux_only() {
-        assert_eq!(managed_by_from(None, false, false, || Some("aur".into())), None);
+        assert_eq!(managed_by_from(None, false, || Some("debian".into())), None);
     }
 }

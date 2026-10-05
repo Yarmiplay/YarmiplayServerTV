@@ -66,8 +66,6 @@ export function updatedBy(managedBy: string): string {
   switch (managedBy) {
     case "microsoft-store":
       return "Updated by the Microsoft Store";
-    case "flathub":
-      return "Updated by Flathub";
     case "snap":
       return "Updated by the Snap Store";
     default:
@@ -78,7 +76,6 @@ export function updatedBy(managedBy: string): string {
 export function updatePill(s: Snapshot): Pill {
   const u = s.update;
   if (u.managedBy === "microsoft-store") return { kind: "", text: "Microsoft Store" };
-  if (u.managedBy === "flathub") return { kind: "", text: "Flathub" };
   if (u.managedBy === "snap") return { kind: "", text: "Snap Store" };
   if (u.managedBy) return { kind: "", text: "Package manager" };
   if (!u.supported) return { kind: "", text: "Development build" };

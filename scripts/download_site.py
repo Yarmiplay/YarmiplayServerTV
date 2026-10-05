@@ -6,8 +6,8 @@ Builds the YarmiplayServerTV download page: one card per desktop OS, each with i
 
 Files in --dist are sorted onto platforms by extension (.msi/.exe: Windows, .dmg: macOS, .deb/.AppImage: Linux)
 and copied under stable names such as YarmiplayServerTV.msi, so links keep working across builds. Platforms
-without a file or store listing show how to build from source. The Linux card names Flathub, the Snap Store and
-the AUR once their listing exists. <site>/privacy/ is docs/privacy.md (the Microsoft Store privacy policy) and
+without a file or store listing show how to build from source. The Linux card names the Snap Store once its
+listing exists. <site>/privacy/ is docs/privacy.md (the Microsoft Store privacy policy) and
 <site>/screenshots/ is docs/store/screenshots (the AppStream metainfo links there). With --site-url the pages carry canonical URLs and link-preview tags, and the site a
 sitemap.xml and a robots.txt pointing to it for search engines. The Pages workflow publishes the result.
 Standard library only.
@@ -48,19 +48,12 @@ class LinuxStore:
     command: str
     remove: str
     check: str  # answers 200 once the listing exists
-    count_key: str | None = None  # ...and this JSON field is above 0
 
 
 # Shown on the Linux card once their listing exists, checked when the site is built.
 LINUX_STORES = [
-    LinuxStore("Flathub", "https://flathub.org/apps/com.yarmiplay.servertv",
-               "flatpak install flathub com.yarmiplay.servertv", "flatpak uninstall com.yarmiplay.servertv",
-               "https://flathub.org/api/v2/appstream/com.yarmiplay.servertv"),
     LinuxStore("Snap Store", "https://snapcraft.io/yarmiplayservertv", "sudo snap install yarmiplayservertv",
                "sudo snap remove yarmiplayservertv", "https://snapcraft.io/yarmiplayservertv"),
-    LinuxStore("AUR", "https://aur.archlinux.org/packages/yarmiplayservertv-bin", "yay -S yarmiplayservertv-bin",
-               "sudo pacman -R yarmiplayservertv-bin",
-               "https://aur.archlinux.org/rpc/v5/info?arg[]=yarmiplayservertv-bin", "resultcount"),
 ]
 
 # Lower-case extension -> platform and button label. Without a store listing the first file is the platform's
@@ -130,10 +123,8 @@ def listed(store):
     req = urllib.request.Request(store.check, headers={"User-Agent": f"{NAME}-download-page"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            if resp.status != 200:
-                return False
-            return store.count_key is None or json.load(resp).get(store.count_key, 0) > 0
-    except (OSError, ValueError):
+            return resp.status == 200
+    except OSError:
         return False
 
 

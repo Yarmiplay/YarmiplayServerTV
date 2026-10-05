@@ -1,9 +1,8 @@
 name: Linux packages
 
-# Builds the AUR, Snap and Flatpak packages from packaging/ and snap/, installs them and starts them headless
-# (packaging/linux/smoke-test.sh: the Syncplay server answers, and in the Snap and the Flatpak the bundled Jellyfin
-# becomes healthy). The AUR test uses the released .deb its PKGBUILD names; the Snap and the Flatpak are built
-# from this commit. Publishing is the release workflow's job.
+# Builds the snap (snap/snapcraft.yaml) from this commit's .deb, installs it and starts it headless
+# (packaging/linux/snap-smoke-test.sh: the Syncplay server answers and the bundled Jellyfin becomes healthy).
+# Publishing is the release workflow's job.
 on:
   push:
     branches: [main]
@@ -30,14 +29,6 @@ permissions:
   contents: read
 
 jobs:
-  aur:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    container: archlinux:latest
-    steps:
-      - uses: actions/checkout@v7
-      - run: REPO="$GITHUB_WORKSPACE" bash packaging/aur/test.sh
-
   # The .deb as the release builds it, for the snap
   deb:
     runs-on: ubuntu-22.04
@@ -104,54 +95,3 @@ jobs:
           path: ${{ steps.build.outputs.snap }}
           if-no-files-found: ignore
           retention-days: 3
-
-  flatpak:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 75
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Flatpak tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y flatpak ostree xvfb xauth dbus-x11
-
-      - uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/flatpak/.flatpak-builder
-          key: flatpak-${{ hashFiles('packaging/flatpak/com.yarmiplay.servertv.yml', 'src-tauri/Cargo.lock', 'package-lock.json') }}
-          restore-keys: flatpak-
-
-      - name: Build
-        env:
-          BUILD_ROOT: ${{ runner.temp }}/flatpak
-        run: bash packaging/flatpak/build.sh
-
-      - name: Lint as Flathub does
-        env:
-          OUT: ${{ runner.temp }}/flatpak
-        run: |
-          lint() { flatpak run --command=flatpak-builder-lint org.flatpak.Builder "$@"; }
-          lint manifest packaging/flatpak/com.yarmiplay.servertv.yml
-          lint repo "$OUT/repo" > "$RUNNER_TEMP/lint.json" || true
-          cat "$RUNNER_TEMP/lint.json"
-          python3 - "$RUNNER_TEMP/lint.json" <<'EOF'
-          import json, sys
-          # Copying screenshots and icons to dl.flathub.org/media is part of Flathub's own build.
-          flathub_only = {"appstream-external-screenshot-url", "appstream-remote-icon-not-mirrored",
-                          "appstream-screenshots-not-mirrored-in-ostree"}
-          text = open(sys.argv[1]).read().strip()
-          left = set(json.loads(text).get("errors", []) if text else []) - flathub_only
-          if left:
-              sys.exit("flatpak-builder-lint repo: " + ", ".join(sorted(left)))
-          EOF
-
-      - name: Install it and start it
-        env:
-          OUT: ${{ runner.temp }}/flatpak
-        run: |
-          flatpak remote-add --user --no-gpg-verify local "$OUT/repo"
-          flatpak install --user -y --noninteractive local com.yarmiplay.servertv
-          home="$HOME/flatpak-smoke"
-          SMOKE_HOME="$home" SMOKE_JELLYFIN=1 bash packaging/linux/smoke-test.sh \
-            flatpak run --filesystem="$home" --env=YARMIPLAYSERVERTV_HOME="$home" com.yarmiplay.servertv

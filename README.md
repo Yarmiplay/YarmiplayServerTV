@@ -35,25 +35,19 @@ or internet can change your settings.
 
 ### Install on Linux
 
-- [Flathub](https://flathub.org/apps/com.yarmiplay.servertv): `flatpak install flathub com.yarmiplay.servertv`
 - [Snap Store](https://snapcraft.io/yarmiplayservertv): `sudo snap install yarmiplayservertv`
-- [AUR](https://aur.archlinux.org/packages/yarmiplayservertv-bin) (Arch, Manjaro): `yay -S yarmiplayservertv-bin`
 - Debian and Ubuntu: the `.deb` from the [download page](https://servertv.yarmiplay.com/),
   `sudo apt install ./YarmiplayServerTV.deb`
 - Anything else: the AppImage from the download page, `chmod +x YarmiplayServerTV.AppImage` and run it
 
-The store listings go live one by one; the download page names a store once it has the app. Flathub, the Snap
-Store and the AUR keep the app up to date themselves, and the Flathub and Snap copies have Jellyfin built in.
-The Flatpak asks the desktop for permission the first time you switch on **Start with system**, and both
-sandboxed copies see your Videos, Music and Pictures folders and removable drives for Jellyfin libraries. The
-Snap keeps tokens in an owner-only file unless you allow it into your keyring with
-`sudo snap connect yarmiplayservertv:password-manager-service`. On GNOME, the AppIndicator extension is needed
-to see the tray icon.
+The Snap Store keeps the snap up to date and it has Jellyfin built in. It can reach your home folder and
+removable drives for Jellyfin libraries, and keeps tokens in an owner-only file unless you allow it into your
+keyring with `sudo snap connect yarmiplayservertv:password-manager-service`. On GNOME, the AppIndicator
+extension is needed to see the tray icon.
 
 ### Updates
 
-Copies from the Microsoft Store, Flathub, the Snap Store or the AUR are updated by those and don't show these
-controls.
+Copies from the Microsoft Store or the Snap Store are updated by those stores and don't show these controls.
 
 **Check for updates** (Dashboard, or the tray menu) looks for a newer release here on GitHub and downloads
 it; **Install** then restarts the app into the new version. Switch on **Automatic updates** on the Dashboard to
@@ -76,7 +70,7 @@ verify the certificate and use an encrypted connection.
 
 The first time you switch Jellyfin on, the app downloads Jellyfin (about 150–250 MB, checked against
 pinned SHA-256 checksums) from `repo.jellyfin.org`. The download includes ffmpeg for transcoding. The
-Microsoft Store, Flathub and Snap copies come with that same Jellyfin built in and download nothing.
+Microsoft Store and Snap copies come with that same Jellyfin built in and download nothing.
 
 When Jellyfin is running, the **Jellyfin** page asks you to create the administrator account. That's the
 whole first-run setup: the app configures the language, remote access and Quick Connect for you. Then add
@@ -132,8 +126,7 @@ per-user app-data folder; **Open data folder** on the dashboard opens it.
   both at once, since they would want the same ports.
 - macOS: `~/Library/Application Support/com.Yarmiplay.YarmiplayServerTV`
 - Linux: `~/.config/yarmiplayservertv` and `~/.local/share/yarmiplayservertv`
-- Linux, Flatpak: the same two under `~/.var/app/com.yarmiplay.servertv/`; Snap: under
-  `~/snap/yarmiplayservertv/current/`
+- Linux, Snap: the same two under `~/snap/yarmiplayservertv/current/`
 
 Tokens and passwords never appear in the logs; the **Logs** page shows the app's activity and Jellyfin's
 warnings.
@@ -145,9 +138,8 @@ warnings.
 3. Remove the app:
    - Windows: **Settings > Apps > Installed apps**, then YarmiplayServerTV > **Uninstall**.
    - macOS: move YarmiplayServerTV from Applications to the Trash.
-   - Linux: `sudo apt remove yarmiplay-server-tv`, or delete the AppImage. Store copies:
-     `flatpak uninstall com.yarmiplay.servertv`, `sudo snap remove yarmiplayservertv` or
-     `sudo pacman -R yarmiplayservertv-bin`.
+   - Linux: `sudo apt remove yarmiplay-server-tv`, or delete the AppImage. The snap:
+     `sudo snap remove yarmiplayservertv`.
 4. To remove your settings, certificates and Jellyfin (with its library database) too, delete the folders
    listed in [Where things are stored](#where-things-are-stored) (the Microsoft Store copy's folder is deleted
    with the app). The DuckDNS token and Jellyfin sign-in are
@@ -197,7 +189,7 @@ it with `python scripts/update_jellyfin_manifest.py`.
 
 Bump the version with `python scripts/bump-version.py 1.3.0 --note "What changed."`, which writes it into
 `src-tauri/tauri.conf.json`, `Cargo.toml`, `package.json`, the lock files and a new release entry in the
-AppStream metainfo (`packaging/linux/com.yarmiplay.servertv.metainfo.xml`, shown by the Linux stores). Commit,
+AppStream metainfo (`packaging/linux/com.yarmiplay.servertv.metainfo.xml`, shown by the Snap Store). Commit,
 then push a matching tag:
 
 ```sh
@@ -223,19 +215,14 @@ from that package: it leaves updates to the Store, keeps its data in the package
 the package's startup task for **Start with system**. `./scripts/make-msix.ps1 -Register` installs the package
 locally for a test (needs Developer Mode).
 
-After the GitHub release, the same workflow updates the Linux stores. Each job does nothing until its
-repository variable is set, and needs its secret (Settings > Secrets and variables > Actions):
-
-| Store | Variable | Secret |
-| --- | --- | --- |
-| AUR | `AUR_PACKAGE` = `yarmiplayservertv-bin` | `AUR_SSH_PRIVATE_KEY` |
-| Snap Store | `SNAP_NAME` = `yarmiplayservertv` (and optionally `SNAP_CHANNEL`, default `stable`) | `SNAPCRAFT_STORE_CREDENTIALS` |
-| Flathub | `FLATHUB_REPO` = `flathub/com.yarmiplay.servertv` | `FLATHUB_TOKEN` |
-
-The packaging is in `packaging/` (AUR, Flatpak, shared metainfo and desktop file) and `snap/`; see
-[packaging/README.md](packaging/README.md) for local builds and the one-time store setup. The Linux packages
-workflow builds, installs and starts all three whenever their files change. To redo one store for the latest
-release, run the Release workflow by hand with only that store's box ticked.
+After the GitHub release, the same workflow's snap job builds the snap from the release's `.deb`
+(`snap/snapcraft.yaml`, with the metainfo and desktop file from `packaging/linux/`), checks that it starts, and
+uploads it to the [Snap Store](https://snapcraft.io/yarmiplayservertv). It does nothing until the repository
+variable `SNAP_NAME` is `yarmiplayservertv`, and needs the secret `SNAPCRAFT_STORE_CREDENTIALS`; the optional
+variable `SNAP_CHANNEL` picks the channel (default `stable`). See [packaging/README.md](packaging/README.md) for
+a local build and the one-time setup. The Linux packages workflow builds, installs and starts the snap whenever
+its files change. To redo a store for the latest release, run the Release workflow by hand with only that
+store's box ticked.
 
 ## Privacy
 

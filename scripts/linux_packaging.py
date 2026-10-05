@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """
-Helpers for the Linux store packages (packaging/, snap/). Standard library only.
+Helpers for the Snap (snap/) and the release checks. Standard library only.
 
   fetch-jellyfin --arch amd64 --dest DIR
       Downloads the pinned Jellyfin server and jellyfin-ffmpeg from src-tauri/jellyfin-manifest.json, checks
       their size and SHA-256, and unpacks them as the app expects a built-in copy: the server in DIR, ffmpeg in
-      DIR/ffmpeg, plus a NOTICE.txt. The Snap uses it.
-  flatpak-sources [--app-source dir|git] [--tag TAG --commit SHA]
-      Writes packaging/flatpak/jellyfin-sources.json (the same downloads as Flatpak sources) and
-      app-source.json: this checkout ("dir", for local builds) or the release tag and commit ("git", for
-      Flathub). Clones flathub/shared-modules at the pinned commit next to the manifest.
+      DIR/ffmpeg, plus a NOTICE.txt.
   check-metainfo VERSION
       Fails unless the AppStream metainfo has a <release version="VERSION"> entry.
 """
@@ -19,8 +15,6 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
-import subprocess
 import sys
 import tarfile
 import tempfile
@@ -30,12 +24,9 @@ import xml.etree.ElementTree as ET
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFEST = os.path.join(ROOT, "src-tauri", "jellyfin-manifest.json")
 METAINFO = os.path.join(ROOT, "packaging", "linux", "com.yarmiplay.servertv.metainfo.xml")
-FLATPAK_DIR = os.path.join(ROOT, "packaging", "flatpak")
-REPO_URL = "https://github.com/Yarmiplay/YarmiplayServerTV.git"
-SHARED_MODULES = ("https://github.com/flathub/shared-modules.git", "cb9ec602a1ece1c76d5a4f8aa1d87c4a6bf99c3e")
 
-# Debian/Snap architecture names, Flatpak's and the manifest's.
-ARCHES = {"amd64": ("x86_64", "linux-x86_64"), "arm64": ("aarch64", "linux-aarch64")}
+# Debian/Snap architecture names and the manifest's.
+ARCHES = {"amd64": "linux-x86_64", "arm64": "linux-aarch64"}
 ARCH_ALIASES = {"x86_64": "amd64", "aarch64": "arm64"}
 
 
@@ -46,7 +37,7 @@ def manifest():
 
 def artifacts(arch):
     m = manifest()
-    entry = m["platforms"][ARCHES[arch][1]]
+    entry = m["platforms"][ARCHES[arch]]
     return m, entry["server"], entry["ffmpeg"]
 
 
@@ -89,43 +80,6 @@ def fetch_jellyfin(arch, dest):
     print(f"Jellyfin {m['jellyfin']} with jellyfin-ffmpeg {m['ffmpeg']} in {dest}")
 
 
-def flatpak_sources(app_source, tag, commit):
-    sources = []
-    for arch, (flatpak_arch, _) in ARCHES.items():
-        _, server, ffmpeg = artifacts(arch)
-        for artifact, name in ((server, "jellyfin.tar.xz"), (ffmpeg, "jellyfin-ffmpeg.tar.xz")):
-            sources.append({"type": "file", "url": artifact["url"], "sha256": artifact["sha256"],
-                            "dest-filename": name, "only-arches": [flatpak_arch]})
-    sources.append({"type": "inline", "dest-filename": "NOTICE.txt", "contents": notice(manifest())})
-    write_json(os.path.join(FLATPAK_DIR, "jellyfin-sources.json"), sources)
-
-    if app_source == "git":
-        if not (tag and commit):
-            sys.exit("--app-source git needs --tag and --commit")
-        app = [{"type": "git", "url": REPO_URL, "tag": tag, "commit": commit}]
-    else:
-        app = [{"type": "dir", "path": "../..",
-                "skip": [".git", "node_modules", "dist", "build", "_site", "src-tauri/target", "src-tauri/gen",
-                         "packaging/flatpak/.flatpak-builder", "packaging/flatpak/build-dir",
-                         "packaging/flatpak/repo"]}]
-    write_json(os.path.join(FLATPAK_DIR, "app-source.json"), app)
-
-    shared = os.path.join(FLATPAK_DIR, "shared-modules")
-    url, rev = SHARED_MODULES
-    if not os.path.isdir(os.path.join(shared, ".git")):
-        shutil.rmtree(shared, ignore_errors=True)
-        subprocess.run(["git", "clone", "--quiet", url, shared], check=True)
-    subprocess.run(["git", "-C", shared, "fetch", "--quiet", "origin", rev], check=True)
-    subprocess.run(["git", "-C", shared, "checkout", "--quiet", rev], check=True)
-
-
-def write_json(path, data):
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-    print(f"wrote {os.path.relpath(path, ROOT)}")
-
-
 def metainfo_versions(path=METAINFO):
     return [r.get("version") for r in ET.parse(path).getroot().iter("release")]
 
@@ -143,10 +97,6 @@ def main():
     f = sub.add_parser("fetch-jellyfin")
     f.add_argument("--arch", required=True, help="amd64 or arm64 (x86_64 and aarch64 work too)")
     f.add_argument("--dest", required=True)
-    s = sub.add_parser("flatpak-sources")
-    s.add_argument("--app-source", choices=["dir", "git"], default="dir")
-    s.add_argument("--tag")
-    s.add_argument("--commit")
     c = sub.add_parser("check-metainfo")
     c.add_argument("version")
     a = ap.parse_args()
@@ -155,8 +105,6 @@ def main():
         if arch not in ARCHES:
             sys.exit(f"unsupported architecture {a.arch}")
         fetch_jellyfin(arch, a.dest)
-    elif a.cmd == "flatpak-sources":
-        flatpak_sources(a.app_source, a.tag, a.commit)
     else:
         check_metainfo(a.version)
 

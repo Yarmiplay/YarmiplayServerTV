@@ -13,14 +13,9 @@ name: Release
 # MSSTORE_TENANT_ID, MSSTORE_SELLER_ID and MSSTORE_CLIENT_ID and the secret MSSTORE_CLIENT_SECRET of the
 # microsoft-store environment (which only v* tags may use), the msstore job submits it to Partner Center for
 # certification once the release is published; see docs/store/README.md.
-# The Linux stores follow the published release, each job independent and inert until its variable is set:
-#   aur      AUR_PACKAGE (yarmiplayservertv-bin) + secret AUR_SSH_PRIVATE_KEY: pushes packaging/aur/PKGBUILD
-#            with the new version and checksum.
-#   snap     SNAP_NAME (yarmiplayservertv) + secret SNAPCRAFT_STORE_CREDENTIALS: builds snap/snapcraft.yaml from
-#            the release's .deb, checks that it starts, uploads it to SNAP_CHANNEL (default stable).
-#   flathub  FLATHUB_REPO (flathub/com.yarmiplay.servertv) + secret FLATHUB_TOKEN: opens a pull request with
-#            the manifest for the tag on branch release-<version> and asks GitHub to merge it once Flathub's
-#            test build passes.
+# The Snap Store follows the published release too: with the variable SNAP_NAME (yarmiplayservertv) and the
+# secret SNAPCRAFT_STORE_CREDENTIALS, the snap job builds snap/snapcraft.yaml from the release's .deb, checks that
+# it starts, and uploads it to SNAP_CHANNEL (default stable).
 # The tag's version must also have a <release> in packaging/linux/com.yarmiplay.servertv.metainfo.xml;
 # python scripts/bump-version.py <version> writes all of them. Running the workflow by hand with one of the
 # store boxes ticked redoes only those stores for the latest release.
@@ -33,16 +28,8 @@ on:
         description: Only resubmit the latest release to the Microsoft Store
         type: boolean
         default: false
-      aur:
-        description: Only republish the latest release to the AUR
-        type: boolean
-        default: false
       snap:
         description: Only republish the latest release to the Snap Store
-        type: boolean
-        default: false
-      flathub:
-        description: Only republish the latest release to Flathub
         type: boolean
         default: false
 
@@ -51,7 +38,7 @@ permissions:
 
 jobs:
   windows-installers:
-    if: ${{ !(inputs.msstore || inputs.aur || inputs.snap || inputs.flathub) }}
+    if: ${{ !(inputs.msstore || inputs.snap) }}
     runs-on: windows-latest
     timeout-minutes: 60
     defaults:
@@ -121,7 +108,7 @@ jobs:
     needs: store-release
     if: >-
       always() && needs.store-release.result == 'success' && vars.MSSTORE_CLIENT_ID != '' &&
-      (inputs.msstore || !(inputs.aur || inputs.snap || inputs.flathub))
+      (inputs.msstore || !inputs.snap)
     runs-on: windows-latest
     timeout-minutes: 30
     environment: microsoft-store
@@ -186,7 +173,7 @@ jobs:
   # The macOS .dmg plus the .app.tar.gz the updater installs, and the Linux .deb and .AppImage, each signed
   # with the updater key.
   other-installers:
-    if: ${{ !(inputs.msstore || inputs.aur || inputs.snap || inputs.flathub) }}
+    if: ${{ !(inputs.msstore || inputs.snap) }}
     strategy:
       fail-fast: false
       matrix:
@@ -337,7 +324,7 @@ jobs:
     needs: publish
     if: >-
       always() && ((github.ref_type == 'tag' && needs.publish.result == 'success') ||
-      (needs.publish.result == 'skipped' && (inputs.msstore || inputs.aur || inputs.snap || inputs.flathub)))
+      (needs.publish.result == 'skipped' && (inputs.msstore || inputs.snap)))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -370,91 +357,13 @@ jobs:
           echo "release $tag ($commit), built by run ${run_id:-unknown}"
           { echo "tag=$tag"; echo "version=${tag#v}"; echo "commit=$commit"; echo "run-id=$run_id"; } >> "$GITHUB_OUTPUT"
 
-  # Updates the PKGBUILD's version and checksum, builds, installs and starts the package in Arch Linux, then pushes
-  # PKGBUILD and .SRCINFO to the AUR. The same version again only gets a new pkgrel if the PKGBUILD changed.
-  aur:
-    needs: store-release
-    if: >-
-      always() && needs.store-release.result == 'success' && vars.AUR_PACKAGE != '' &&
-      (inputs.aur || !(inputs.msstore || inputs.snap || inputs.flathub))
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    container: archlinux:latest
-    defaults:
-      run:
-        shell: bash
-    env:
-      PACKAGE: ${{ vars.AUR_PACKAGE }}
-      VERSION: ${{ needs.store-release.outputs.version }}
-    steps:
-      - run: pacman -Syu --noconfirm --needed git openssh pacman-contrib base-devel > /dev/null
-
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.store-release.outputs.tag }}
-
-      - name: Clone the AUR package
-        env:
-          SSH_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-        run: |
-          if [ -z "$SSH_KEY" ]; then echo "::error::The secret AUR_SSH_PRIVATE_KEY isn't set"; exit 1; fi
-          ssh_dir="$RUNNER_TEMP/ssh"
-          mkdir -p "$ssh_dir" && chmod 700 "$ssh_dir"
-          printf '%s\n' "$SSH_KEY" > "$ssh_dir/aur" && chmod 600 "$ssh_dir/aur"
-          # Pinned: the fingerprint published on https://aur.archlinux.org/
-          ssh-keyscan -t ed25519 aur.archlinux.org 2> /dev/null > "$ssh_dir/known_hosts"
-          ssh-keygen -lf "$ssh_dir/known_hosts" | grep -q 'SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4' || {
-            echo "::error::aur.archlinux.org's host key doesn't match its published fingerprint"; exit 1; }
-          GIT_SSH_COMMAND="ssh -i $ssh_dir/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh_dir/known_hosts -o StrictHostKeyChecking=yes"
-          echo "GIT_SSH_COMMAND=$GIT_SSH_COMMAND" >> "$GITHUB_ENV"
-          export GIT_SSH_COMMAND
-          git -c init.defaultBranch=master clone "ssh://aur@aur.archlinux.org/$PACKAGE.git" "$RUNNER_TEMP/aur"
-
-      - name: PKGBUILD for the release
-        run: |
-          pkgrel=1
-          aur="$RUNNER_TEMP/aur"
-          sed -e "s/^pkgname=.*/pkgname=$PACKAGE/" -e "s/^pkgver=.*/pkgver=$VERSION/" -e "s/^pkgrel=.*/pkgrel=1/" \
-            packaging/aur/PKGBUILD > PKGBUILD.new
-          useradd -m builder
-          chown builder: PKGBUILD.new && mv PKGBUILD.new /home/builder/PKGBUILD
-          su builder -c "cd ~ && updpkgsums"
-          if [ -f "$aur/PKGBUILD" ] && [ "$(sed -n 's/^pkgver=//p' "$aur/PKGBUILD")" = "$VERSION" ]; then
-            old=$(sed -n 's/^pkgrel=//p' "$aur/PKGBUILD")
-            if ! diff -q <(sed '/^pkgrel=/d' "$aur/PKGBUILD") <(sed '/^pkgrel=/d' /home/builder/PKGBUILD) > /dev/null; then
-              pkgrel=$((old + 1))
-            else
-              pkgrel=$old
-            fi
-          fi
-          sed -i "s/^pkgrel=.*/pkgrel=$pkgrel/" /home/builder/PKGBUILD
-          cp /home/builder/PKGBUILD packaging/aur/PKGBUILD
-          cat packaging/aur/PKGBUILD
-
-      - name: Build, install and start it
-        run: REPO="$GITHUB_WORKSPACE" bash packaging/aur/test.sh
-
-      - name: Push to the AUR
-        run: |
-          aur="$RUNNER_TEMP/aur"
-          cp packaging/aur/PKGBUILD "$aur/"
-          chown -R builder: "$aur"
-          su builder -c "cd '$aur' && makepkg --printsrcinfo > .SRCINFO"
-          cd "$aur"
-          git config --global --add safe.directory "$aur"
-          git add PKGBUILD .SRCINFO
-          if git diff --cached --quiet; then echo "The AUR already has this PKGBUILD"; exit 0; fi
-          git -c user.name="Yarmiplay" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -m "Update to $VERSION"
-          git push origin HEAD:master
-
   # Builds the snap from the release's .deb, installs it and checks that the Syncplay server and the bundled
   # Jellyfin start, then uploads it to SNAP_CHANNEL.
   snap:
     needs: store-release
     if: >-
       always() && needs.store-release.result == 'success' && vars.SNAP_NAME != '' &&
-      (inputs.snap || !(inputs.msstore || inputs.aur || inputs.flathub))
+      (inputs.snap || !inputs.msstore)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -488,61 +397,3 @@ jobs:
         with:
           snap: ${{ steps.build.outputs.snap }}
           release: ${{ vars.SNAP_CHANNEL || 'stable' }}
-
-  # Flathub builds from its own repository: this opens a pull request there with the manifest for the tag and its
-  # generated sources, which Flathub test-builds; GitHub merges it once that passes, and the merge publishes.
-  flathub:
-    needs: store-release
-    if: >-
-      always() && needs.store-release.result == 'success' && vars.FLATHUB_REPO != '' &&
-      (inputs.flathub || !(inputs.msstore || inputs.aur || inputs.snap))
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      TAG: ${{ needs.store-release.outputs.tag }}
-      VERSION: ${{ needs.store-release.outputs.version }}
-      COMMIT: ${{ needs.store-release.outputs.commit }}
-      FLATHUB_REPO: ${{ vars.FLATHUB_REPO }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.store-release.outputs.tag }}
-
-      - name: Generated sources for the tag
-        run: APP_SOURCE=git NO_BUILD=1 bash packaging/flatpak/build.sh
-
-      - uses: actions/checkout@v7
-        with:
-          repository: ${{ vars.FLATHUB_REPO }}
-          token: ${{ secrets.FLATHUB_TOKEN }}
-          path: flathub
-          submodules: true
-
-      - name: Pull request on Flathub
-        env:
-          GH_TOKEN: ${{ secrets.FLATHUB_TOKEN }}
-        run: |
-          if [ -z "$GH_TOKEN" ]; then echo "::error::The secret FLATHUB_TOKEN isn't set"; exit 1; fi
-          src="$GITHUB_WORKSPACE/packaging/flatpak"
-          cd flathub
-          base=$(git rev-parse --abbrev-ref HEAD)
-          branch="release-$VERSION"
-          git checkout -B "$branch"
-          cp "$src"/com.yarmiplay.servertv.yml "$src"/{app-source,jellyfin-sources,cargo-sources,node-sources}.json .
-          if [ ! -e shared-modules/.git ]; then
-            git submodule add https://github.com/flathub/shared-modules.git shared-modules
-          fi
-          git -C shared-modules fetch --quiet origin "$(git -C "$src/shared-modules" rev-parse HEAD)"
-          git -C shared-modules checkout --quiet FETCH_HEAD
-          git add -A
-          if git diff --cached --quiet; then echo "Flathub already has $TAG"; exit 0; fi
-          git -c user.name="Yarmiplay" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -m "Update to $VERSION"
-          git push --force origin "$branch"
-          if ! gh pr view "$branch" -R "$FLATHUB_REPO" > /dev/null 2>&1; then
-            gh pr create -R "$FLATHUB_REPO" --base "$base" --head "$branch" --title "Update to $VERSION" \
-              --body "YarmiplayServerTV $TAG: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
-          fi
-          if ! gh pr merge "$branch" -R "$FLATHUB_REPO" --auto --merge; then
-            echo "::warning::Auto-merge isn't allowed in $FLATHUB_REPO; merge the pull request $branch once Flathub's test build passes"
-          fi

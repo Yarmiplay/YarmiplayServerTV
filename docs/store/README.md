@@ -150,19 +150,12 @@ long as the artifact hasn't expired (90 days).
 The Store copy doesn't check GitHub for updates; the Store updates it. It keeps its settings and data in its
 own `LocalState` folder, so it doesn't share them with a copy installed from the download page.
 
-## Linux stores
+## Snap Store
 
-Flathub (`com.yarmiplay.servertv`), the Snap Store (`yarmiplayservertv`) and the AUR (`yarmiplayservertv-bin`)
-share the AppStream metainfo in `packaging/linux/`: its summary, description, screenshot (served from
-`https://servertv.yarmiplay.com/screenshots/`, copied there from `docs/store/screenshots/`), age rating (OARS:
-nothing to declare, so all ages) and a release note per version. The release workflow updates all three after
-the GitHub release once these are set (Settings > Secrets and variables > Actions):
-
-| Variable | Secret | One-time setup |
-|---|---|---|
-| `AUR_PACKAGE` = `yarmiplayservertv-bin` | `AUR_SSH_PRIVATE_KEY` | An [AUR account](https://aur.archlinux.org/register) with the public half of a new SSH key (`ssh-keygen -t ed25519 -f aur -C yarmiplayservertv-aur`); the first push creates the package. |
-| `SNAP_NAME` = `yarmiplayservertv`, optional `SNAP_CHANNEL` (default `stable`) | `SNAPCRAFT_STORE_CREDENTIALS` | A [Snapcraft account](https://snapcraft.io/account), `snapcraft register yarmiplayservertv`, then `snapcraft export-login --snaps yarmiplayservertv --acls package_access,package_push,package_update,package_release -` and paste the output into the secret. |
-| `FLATHUB_REPO` = `flathub/com.yarmiplay.servertv` | `FLATHUB_TOKEN` | Flathub creates that repository after the first submission is accepted (see `packaging/README.md`). The token is a fine-grained GitHub token with Contents and Pull requests read and write on it. |
-
-Secrets go only into GitHub Actions secrets: `gh secret set AUR_SSH_PRIVATE_KEY < aur` reads the key from the
-file without printing it, then delete the local copies.
+The Snap Store listing (`yarmiplayservertv`) comes from the AppStream metainfo in `packaging/linux/`: its
+summary, description, screenshot (served from `https://servertv.yarmiplay.com/screenshots/`, copied there from
+`docs/store/screenshots/`) and a release note per version. The release workflow uploads each release once the
+repository variable `SNAP_NAME` = `yarmiplayservertv` (optionally `SNAP_CHANNEL`, default `stable`) and the
+secret `SNAPCRAFT_STORE_CREDENTIALS` are set; `packaging/README.md` has the one-time setup. The credentials go
+only into that GitHub Actions secret: `gh secret set SNAPCRAFT_STORE_CREDENTIALS < snap-creds` reads them from
+the file without printing them, then delete the file.

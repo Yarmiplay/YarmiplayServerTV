@@ -1,7 +1,7 @@
 //! Downloads the pinned Jellyfin server (and jellyfin-ffmpeg where the server
 //! archive doesn't bundle it), verifies the SHA-256 from the embedded
-//! manifest, and extracts it into the app-data folder. The Microsoft Store,
-//! Flatpak and Snap packages have it built in instead.
+//! manifest, and extracts it into the app-data folder. The Microsoft Store
+//! and Snap packages have it built in instead.
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -92,7 +92,7 @@ fn built_in() -> bool {
 }
 
 /// Read-only. The Microsoft Store package has it in a `jellyfin` folder next
-/// to the app (scripts/make-msix.ps1); the Flatpak and the Snap in
+/// to the app (scripts/make-msix.ps1); the Snap in
 /// `lib/yarmiplayservertv/jellyfin` beside the `bin` folder of the app, with
 /// jellyfin-ffmpeg in its `ffmpeg` subfolder.
 fn bundled() -> &'static Option<Installed> {

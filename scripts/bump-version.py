@@ -5,9 +5,8 @@ Sets the app version everywhere it is written down:
   python scripts/bump-version.py 1.3.0 [--note "What changed, one sentence."] [--date 2026-10-05]
 
 tauri.conf.json, Cargo.toml, Cargo.lock, package.json, package-lock.json and a new <release> at the top of the
-AppStream metainfo (the stores show its note; edit it afterwards for more than one paragraph). The release
-workflow refuses a tag whose version is missing from any of them. packaging/aur/PKGBUILD is left alone: the
-release workflow's aur job sets its version and checksum when it publishes.
+AppStream metainfo (the Snap Store shows its note; edit it afterwards for more than one paragraph). The
+release workflow refuses a tag whose version is missing from any of them.
 """
 from __future__ import annotations
 

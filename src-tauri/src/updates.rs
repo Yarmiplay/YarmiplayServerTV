@@ -43,7 +43,7 @@ pub struct UpdateStatus {
     pub unattended: bool,
     /// False in development builds and copies a store or package manager updates.
     pub supported: bool,
-    /// Who updates this copy instead: "microsoft-store", "flathub", "snap", "aur", ...
+    /// Who updates this copy instead: "microsoft-store", "snap", or a distribution's name.
     pub managed_by: Option<String>,
 }
 
@@ -100,7 +100,6 @@ fn managed_error() -> Option<String> {
 fn updater_name(managed_by: &str) -> &'static str {
     match managed_by {
         "microsoft-store" => "the Microsoft Store",
-        "flathub" => "Flathub",
         "snap" => "the Snap Store",
         _ => "your package manager",
     }
@@ -324,9 +323,8 @@ mod tests {
     #[test]
     fn names_who_updates_the_copy() {
         assert_eq!(updater_name("microsoft-store"), "the Microsoft Store");
-        assert_eq!(updater_name("flathub"), "Flathub");
         assert_eq!(updater_name("snap"), "the Snap Store");
-        assert_eq!(updater_name("aur"), "your package manager");
+        assert_eq!(updater_name("debian"), "your package manager");
         assert_eq!(updater_name("package-manager"), "your package manager");
     }
 }

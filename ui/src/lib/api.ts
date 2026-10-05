@@ -121,7 +121,7 @@ export interface UpdateStatus {
   /** False for .msi and .deb installs, which need an administrator prompt to update. */
   unattended: boolean;
   supported: boolean;
-  /** Who updates this copy instead of the built-in updater: "microsoft-store", "flathub", "snap", "aur", ... */
+  /** Who updates this copy instead of the built-in updater: "microsoft-store", "snap", or a distribution's name. */
   managedBy: string | null;
 }
 

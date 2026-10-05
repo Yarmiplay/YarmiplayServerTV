@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # Starts an installed YarmiplayServerTV headless (Xvfb and a private D-Bus session) with the Syncplay server on,
 # then joins it with scripts/fake_peer.py. With SMOKE_JELLYFIN=1 it also switches Jellyfin on and waits for its
-# health endpoint, which checks the Jellyfin built into the Flatpak and the Snap.
+# health endpoint, which checks the Jellyfin built into the snap.
 #
 #   SMOKE_HOME=~/smoke packaging/linux/smoke-test.sh yarmiplayservertv
-#   SMOKE_HOME=~/smoke packaging/linux/smoke-test.sh flatpak run --filesystem=~/smoke \
-#     --env=YARMIPLAYSERVERTV_HOME=$HOME/smoke com.yarmiplay.servertv
 #
-# The app gets SMOKE_HOME as YARMIPLAYSERVERTV_HOME (a sandbox needs it passed in, as above). FAKE_PEER is the
+# The app gets SMOKE_HOME as YARMIPLAYSERVERTV_HOME (snap-smoke-test.sh passes it into the snap). FAKE_PEER is the
 # path of scripts/fake_peer.py when this script runs from a copy. It starts a private D-Bus session unless
 # SMOKE_SESSION_BUS=1 (snap-smoke-test.sh, which needs the user's own). Needs xvfb-run, dbus-run-session, python3
 # and curl.
