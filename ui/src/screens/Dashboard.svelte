@@ -7,7 +7,7 @@
   import Toggle from "../lib/Toggle.svelte";
   import Address from "../lib/Address.svelte";
 
-  type Screen = "dashboard" | "syncplay" | "jellyfin" | "network" | "logs";
+  type Screen = "dashboard" | "syncplay" | "jellyfin" | "network" | "logs" | "about";
   let { snap, go }: { snap: Snapshot; go: (s: Screen) => void } = $props();
 
   let autostart = $state(false);
@@ -115,14 +115,24 @@
         checked={snap.settings.browser.enabled}
         onchange={(v) => store.save((s) => (s.browser.enabled = v))}
       />
-      <div class="spread update">
-        <span>Version {snap.version}</span>
+      <div class="actions">
+        <button onclick={() => api.openFolder("data")}>Open data folder</button>
+        {#if inApp && snap.settings.browser.enabled}
+          <button onclick={() => store.run(api.openInBrowser)}>Open in browser</button>
+        {/if}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="spread">
+        <h2>Updates</h2>
         <span class="pill {upd.kind}">{upd.text}</span>
       </div>
+      <p class="sub">
+        {snap.update.store ? `Version ${snap.version}, kept up to date by the Microsoft Store.` : `You're running version ${snap.version}.`}
+      </p>
       {#if snap.update.error}<div class="notice err">{snap.update.error}</div>{/if}
-      {#if snap.update.store}
-        <p class="sub">Updates come from the Microsoft Store.</p>
-      {:else if snap.update.supported}
+      {#if !snap.update.store && snap.update.supported}
         <Toggle
           label="Automatic updates"
           hint={snap.update.unattended
@@ -141,13 +151,6 @@
           {/if}
         </div>
       {/if}
-      <div class="actions">
-        <button onclick={() => api.openFolder("data")}>Open data folder</button>
-        {#if inApp && snap.settings.browser.enabled}
-          <button onclick={() => store.run(api.openInBrowser)}>Open in browser</button>
-        {/if}
-        <button onclick={() => api.openUrl("https://github.com/Yarmiplay/YarmiplayServerTV")}>Project page</button>
-      </div>
     </section>
   </div>
 </div>
@@ -176,10 +179,5 @@
   }
   .notice {
     margin: 6px 0;
-  }
-  .update {
-    margin-top: 14px;
-    color: var(--muted);
-    font-size: 0.93em;
   }
 </style>

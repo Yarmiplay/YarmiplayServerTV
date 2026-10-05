@@ -9,8 +9,9 @@
   import Jellyfin from "./screens/Jellyfin.svelte";
   import Network from "./screens/Network.svelte";
   import Logs from "./screens/Logs.svelte";
+  import About from "./screens/About.svelte";
 
-  type Screen = "dashboard" | "syncplay" | "jellyfin" | "network" | "logs";
+  type Screen = "dashboard" | "syncplay" | "jellyfin" | "network" | "logs" | "about";
   let screen = $state<Screen>("dashboard");
   let loadError = $state<string | null>(null);
 
@@ -31,6 +32,7 @@
         pill: s ? (s.settings.tls.enabled ? tlsPill(s) : upnpPill(s)) : null,
       },
       { id: "logs" as Screen, label: "Logs", pill: null },
+      { id: "about" as Screen, label: "About", pill: null },
     ];
   });
 </script>
@@ -71,8 +73,10 @@
       <Jellyfin snap={store.snap} />
     {:else if screen === "network"}
       <Network snap={store.snap} />
-    {:else}
+    {:else if screen === "logs"}
       <Logs />
+    {:else}
+      <About snap={store.snap} />
     {/if}
   </main>
 
