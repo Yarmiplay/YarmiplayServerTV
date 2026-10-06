@@ -15,7 +15,8 @@ name: Release
 # certification once the release is published; see docs/store/README.md.
 # The Snap Store follows the published release too: with the variable SNAP_NAME (yarmiplayservertv) and the
 # secret SNAPCRAFT_STORE_CREDENTIALS, the snap job builds snap/snapcraft.yaml from the release's .deb, checks that
-# it starts, and uploads it to SNAP_CHANNEL (default stable).
+# it starts, and uploads it to SNAP_CHANNEL (default stable). SNAPCRAFT_STORE_AUTH is candid when the credentials
+# came from a browser login.
 # The tag's version must also have a <release> in packaging/linux/com.yarmiplay.servertv.metainfo.xml;
 # python scripts/bump-version.py <version> writes all of them. Running the workflow by hand with one of the
 # store boxes ticked redoes only those stores for the latest release.
@@ -394,6 +395,7 @@ jobs:
       - uses: snapcore/action-publish@v1
         env:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+          SNAPCRAFT_STORE_AUTH: ${{ vars.SNAPCRAFT_STORE_AUTH }}
         with:
           snap: ${{ steps.build.outputs.snap }}
           release: ${{ vars.SNAP_CHANNEL || 'stable' }}

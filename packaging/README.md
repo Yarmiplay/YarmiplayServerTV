@@ -35,5 +35,9 @@ sudo snap install --dangerous yarmiplayservertv_*.snap
    gh secret set SNAPCRAFT_STORE_CREDENTIALS < snap-creds && rm snap-creds
    ```
 
+   Without snapcraft installed, the `ghcr.io/canonical/snapcraft:8_core24` Docker image runs the same command
+   (`--entrypoint snapcraft`, with the output folder mounted). With `SNAPCRAFT_STORE_AUTH=candid` set, it logs
+   in through a web page instead of asking for the password and 2FA code; such credentials also need the
+   repository variable `SNAPCRAFT_STORE_AUTH` = `candid`.
 3. The repository variable `SNAP_NAME` = `yarmiplayservertv` (and optionally `SNAP_CHANNEL`). Renew the
-   credentials before they expire.
+   credentials before they expire (the current ones: October 2027).
