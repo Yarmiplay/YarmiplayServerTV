@@ -382,8 +382,14 @@ jobs:
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '*_amd64.deb' -O snap/local/yarmiplayservertv.deb
           sed -i "s/^name: .*/name: $SNAP_NAME/" snap/snapcraft.yaml
 
+      # On the runner itself (destructive mode needs the base's Ubuntu, 24.04 for core24), so packages come from
+      # the runner's Azure mirror instead of an LXD instance pulling an image and debs from archive.ubuntu.com.
       - id: build
-        uses: snapcore/action-build@v1
+        name: Build the snap
+        run: |
+          sudo snap install --classic snapcraft
+          sudo snapcraft pack --destructive-mode
+          echo "snap=$(ls *.snap)" >> "$GITHUB_OUTPUT"
 
       - name: Install it and start it
         run: |
