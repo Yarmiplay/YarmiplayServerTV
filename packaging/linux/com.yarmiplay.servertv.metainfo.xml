@@ -75,6 +75,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.6.1" date="2026-10-08">
+      <description>
+        <p>The Jellyfin page no longer warns about a missing Syncplay password when only approved devices can join, and renaming an approved device is tidier.</p>
+      </description>
+    </release>
     <release version="1.6.0" date="2026-10-07">
       <description>
         <p>Viewers in a room can now stream or download a video another YarmiplayTV viewer has through a cached file relay, the host can share Jellyfin with Syncplay users through a guest account and the Syncplay port, and a vanilla Syncplay mode turns all of it off.</p>

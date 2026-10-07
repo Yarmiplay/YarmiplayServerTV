@@ -98,7 +98,8 @@ see them. All of it runs on the Syncplay port: no extra port to forward.
   server can add your Jellyfin with one tap. The app signs them in through Quick Connect as a hidden
   "Syncplay guests" account that can watch but can't delete or manage anything, and Jellyfin is reachable
   through the Syncplay port too. Switching sharing off disables that account, which signs every guest out.
-  Set a Syncplay password before you share, or anyone who finds the server can watch your libraries.
+  Set "Who can join" to a password or approved devices only before you share, or anyone who finds the
+  server can watch your libraries.
 - **Vanilla Syncplay mode** makes the server behave exactly like the official one for everyone: no file
   relay, no Jellyfin sharing, no device approvals (approved devices need the password like everyone else),
   and nothing but Syncplay on its port. It can't be combined with **Approved devices only**. Switching it on

@@ -290,10 +290,10 @@
       onchange={(v) => store.save((s) => (s.jellyfin.shareWithSyncplay = v))}
     />
     {#if snap.settings.jellyfin.shareWithSyncplay && !snap.settings.syncplay.vanillaMode}
-      {#if !snap.settings.syncplay.password}
+      {#if snap.settings.syncplay.access === "open"}
         <div class="notice warn">
-          The Syncplay server has no password, so anyone who finds it can watch your libraries. Set a password on the
-          Syncplay page.
+          Anyone can join the Syncplay server, so anyone who finds it can watch your libraries. On the Syncplay page,
+          choose a password or approved devices only under "Who can join".
         </div>
       {/if}
       {#if snap.jellyfinShare.error}<div class="notice err">{snap.jellyfinShare.error}</div>{/if}
