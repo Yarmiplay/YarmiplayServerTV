@@ -333,6 +333,16 @@ async fn dispatch(h: &AppHandle, command: &str, a: &Value) -> Result<Value, Stri
         }
         "jellyfin_rescan" => ok(cmd::jellyfin_rescan(app()).await?),
         "clear_relay_cache" => ok(cmd::clear_relay_cache(app())),
+        "syncplay_device_approve" => {
+            ok(cmd::syncplay_device_approve(app(), arg(a, "fingerprint")?)?)
+        }
+        "syncplay_device_deny" => ok(cmd::syncplay_device_deny(app(), arg(a, "fingerprint")?)?),
+        "syncplay_device_remove" => ok(cmd::syncplay_device_remove(app(), arg(a, "fingerprint")?)?),
+        "syncplay_device_rename" => ok(cmd::syncplay_device_rename(
+            app(),
+            arg(a, "fingerprint")?,
+            arg(a, "name")?,
+        )?),
         "get_logs" => ok(cmd::get_logs()),
         "clear_logs" => {
             cmd::clear_logs();

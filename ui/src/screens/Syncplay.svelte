@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snapshot } from "../lib/api";
-  import { api, formatBytes } from "../lib/api";
+  import { api, formatBytes, formatDateTime } from "../lib/api";
   import { store } from "../lib/store.svelte";
   import { useDraft } from "../lib/draft.svelte";
   import { syncplayPill } from "../lib/status";
@@ -28,9 +28,29 @@
     if (next) store.snap = next;
   }
 
+  async function device(call: () => Promise<Snapshot>, done?: string) {
+    const next = await store.run(call, done);
+    if (next) store.snap = next;
+  }
+
+  let renaming = $state<string | null>(null);
+  let newName = $state("");
+  function startRename(fingerprint: string, name: string) {
+    renaming = fingerprint;
+    newName = name;
+  }
+  async function rename() {
+    if (!renaming) return;
+    const fp = renaming;
+    renaming = null;
+    await device(() => api.renameDevice(fp, newName));
+  }
+
   const pill = $derived(syncplayPill(snap));
   const vanilla = $derived(snap.settings.syncplay.vanillaMode);
+  const access = $derived(snap.settings.syncplay.access);
   const relay = $derived(snap.syncplay.relay);
+  const devices = $derived(snap.syncplay.devices);
   const OFF_IN_VANILLA = "Off in vanilla Syncplay mode";
 
   function rate(bytesPerSecond: number): string {
@@ -64,7 +84,13 @@
         {:else}
           Connections are unencrypted. Set up DuckDNS on the Network page to enable TLS.
         {/if}
-        {#if snap.settings.syncplay.password}Clients need the server password.{/if}
+        {#if access === "password"}
+          Clients need the server password{vanilla ? "." : ", except YarmiplayTV devices you approved."}
+        {:else if access === "approved"}
+          Only YarmiplayTV devices you approve can join; official Syncplay clients are turned away.
+        {:else}
+          Anyone who knows the address can join.
+        {/if}
       </p>
     {/if}
   </section>
@@ -75,17 +101,27 @@
     <div class="fields">
       <label class="field">Port<input type="number" min="1024" max="65535" bind:value={form.draft.port} /></label>
       <label class="field">
-        Server password (optional)
-        <span class="secret">
-          <input
-            type={showPassword ? "text" : "password"}
-            bind:value={form.draft.password}
-            placeholder="No password"
-            autocomplete="off"
-          />
-          <button class="small" onclick={() => (showPassword = !showPassword)}>{showPassword ? "Hide" : "Show"}</button>
-        </span>
+        Who can join
+        <select bind:value={form.draft.access}>
+          <option value="open">Anyone</option>
+          <option value="password">Password</option>
+          <option value="approved" disabled={vanilla}>Approved devices only</option>
+        </select>
       </label>
+      {#if form.draft.access === "password"}
+        <label class="field">
+          Server password
+          <span class="secret">
+            <input
+              type={showPassword ? "text" : "password"}
+              bind:value={form.draft.password}
+              placeholder="Required"
+              autocomplete="off"
+            />
+            <button class="small" onclick={() => (showPassword = !showPassword)}>{showPassword ? "Hide" : "Show"}</button>
+          </span>
+        </label>
+      {/if}
       <label class="field">Max chat message length<input type="number" min="1" bind:value={form.draft.maxChatMessageLength} /></label>
       <label class="field">Max username length<input type="number" min="1" bind:value={form.draft.maxUsernameLength} /></label>
     </div>
@@ -115,11 +151,83 @@
   </section>
 
   <section class="card">
+    <h2>Devices</h2>
+    <p class="sub">
+      YarmiplayTV devices prove who they are with a key of their own. Compare the code with the one the device shows
+      before approving it.
+    </p>
+    {#if vanilla}
+      <div class="notice">The list isn't in use while vanilla Syncplay mode is on.</div>
+    {:else if access === "open"}
+      <div class="notice">Devices are only checked when joining needs a password or approval.</div>
+    {/if}
+
+    {#if devices.pending.length > 0}
+      <h3>Waiting for approval</h3>
+      <ul class="devices">
+        {#each devices.pending as d (d.fingerprint)}
+          <li>
+            <div class="spread">
+              <strong class="selectable">{d.name}</strong>
+              <code class="selectable">{d.fingerprint}</code>
+            </div>
+            <div class="muted selectable">
+              {d.username || "No username"} · {d.ip} · {formatDateTime(d.requestedAt)}{d.connected ? "" : " · gave up waiting"}
+            </div>
+            <div class="row">
+              <button class="small primary" onclick={() => device(() => api.approveDevice(d.fingerprint), `${d.name} approved`)}>
+                Approve
+              </button>
+              <button class="small" onclick={() => device(() => api.denyDevice(d.fingerprint))}>Deny</button>
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
+    <h3>Approved</h3>
+    {#if devices.approved.length === 0}
+      <p class="muted">No devices yet.</p>
+    {:else}
+      <ul class="devices">
+        {#each devices.approved as d (d.fingerprint)}
+          <li>
+            <div class="spread">
+              {#if renaming === d.fingerprint}
+                <span class="row">
+                  <input bind:value={newName} maxlength="60" onkeydown={(e) => e.key === "Enter" && rename()} />
+                  <button class="small primary" onclick={rename}>Save</button>
+                  <button class="small" onclick={() => (renaming = null)}>Cancel</button>
+                </span>
+              {:else}
+                <strong class="selectable">{d.name}</strong>
+              {/if}
+              <code class="selectable">{d.fingerprint}</code>
+            </div>
+            <div class="muted selectable">
+              Last seen {formatDateTime(d.lastSeen)}{d.lastUsername ? ` as ${d.lastUsername}` : ""}
+            </div>
+            <div class="row">
+              <button class="small" onclick={() => startRename(d.fingerprint, d.name)}>Rename</button>
+              <button class="small" onclick={() => device(() => api.removeDevice(d.fingerprint), `${d.name} removed`)}>
+                Remove
+              </button>
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+
+  <section class="card">
     <h2>YarmiplayTV extras</h2>
     <p class="sub">Extra features for YarmiplayTV clients. Official Syncplay clients never see them.</p>
     <Toggle
       label="Vanilla Syncplay mode"
-      hint="Behave exactly like the official server: no file relay and no Jellyfin on the Syncplay port"
+      hint={access === "approved" && !vanilla
+        ? "Choose another way to join first: approved devices need YarmiplayTV features"
+        : "Behave exactly like the official Syncplay server. YarmiplayTV features such as approved devices, the file relay and Jellyfin sharing are off."}
+      disabled={access === "approved" && !vanilla}
       checked={vanilla}
       onchange={(v) => store.save((s) => (s.syncplay.vanillaMode = v))}
     />
@@ -271,5 +379,25 @@
   .relay {
     font-size: 0.9em;
     margin-top: 4px;
+  }
+  h3 {
+    font-size: 1em;
+    margin: 14px 0 8px;
+  }
+  .devices {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .devices li {
+    background: var(--card-high);
+    border-radius: 10px;
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
 </style>

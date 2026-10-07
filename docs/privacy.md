@@ -32,6 +32,11 @@ until you switch it on, and each one only talks to what it needs.
 - **Syncplay server:** people you give the address to connect to it. The names they enter, file names,
   playback state and chat are passed between them and not stored; the app's log on your computer notes who
   joined and left which room.
+- **Approved devices** (when you choose **Password** or **Approved devices only**): a YarmiplayTV device that
+  asks to join sends its public key, a device name and its username. Requests you haven't answered, including
+  the device's IP address, are kept in memory only and forgotten after a day or when the app quits. For each
+  device you approve, the app saves its public key, name, approval date, when it was last seen and the username
+  it last used, on your computer only, until you remove it.
 - **File relay** (on by default, off in vanilla Syncplay mode): YarmiplayTV users in a room can play a video
   file that someone else in the room has. The file's bytes travel from that person's device through your
   computer to the people watching, and are cached on your computer's disk so each part is sent only once. The
@@ -44,8 +49,8 @@ until you switch it on, and each one only talks to what it needs.
 
 ## What stays on your device
 
-Your settings, the ACME account and certificates, Jellyfin (program, database, cache and logs), the file
-relay cache and the app's log are stored only on your computer. The DuckDNS token and the Jellyfin sign-in are kept in the system
+Your settings, the approved Syncplay devices, the ACME account and certificates, Jellyfin (program, database,
+cache and logs), the file relay cache and the app's log are stored only on your computer. The DuckDNS token and the Jellyfin sign-in are kept in the system
 credential store (Windows Credential Manager, macOS Keychain or the Secret Service on Linux). Your media folders
 are read by Jellyfin and never changed or uploaded by the app. The control panel can only be reached from your
 own computer.

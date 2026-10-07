@@ -1,18 +1,25 @@
 //! Native Syncplay 1.7-compatible server, plus the YarmiplayTV extensions.
 
+pub mod devices;
 pub mod ext;
 pub mod mux;
 pub mod protocol;
 pub mod room;
 pub mod server;
 
+pub use crate::config::SyncplayAccess;
 pub use room::{RoomInfo, SyncplayOptions};
 pub use server::{AuthorizeFn, Extensions, SyncplayServer};
 
 impl From<&crate::config::SyncplaySettings> for SyncplayOptions {
     fn from(s: &crate::config::SyncplaySettings) -> Self {
+        let password = match s.access {
+            SyncplayAccess::Password => s.password.clone(),
+            _ => String::new(),
+        };
         Self {
-            password: s.password.clone(),
+            access: s.access,
+            password,
             motd: s.motd.clone(),
             isolate_rooms: s.isolate_rooms,
             disable_chat: s.disable_chat,

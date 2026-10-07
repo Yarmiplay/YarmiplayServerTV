@@ -4,7 +4,9 @@
 
 use std::sync::Arc;
 use yarmiplayservertv_lib::relay::Relay;
-use yarmiplayservertv_lib::syncplay::{Extensions, SyncplayOptions, SyncplayServer};
+use yarmiplayservertv_lib::syncplay::{
+    Extensions, SyncplayAccess, SyncplayOptions, SyncplayServer,
+};
 
 #[tokio::main]
 async fn main() {
@@ -16,6 +18,11 @@ async fn main() {
     let port: u16 = args.next().and_then(|p| p.parse().ok()).unwrap_or(8999);
     let password = args.next().unwrap_or_default();
     let opts = SyncplayOptions {
+        access: if password.is_empty() {
+            SyncplayAccess::Open
+        } else {
+            SyncplayAccess::Password
+        },
         password,
         file_relay: true,
         ..SyncplayOptions::default()

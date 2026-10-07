@@ -63,9 +63,14 @@ export function copyText(text: string): Promise<void> {
   return inApp ? writeText(text) : navigator.clipboard.writeText(text);
 }
 
+/** Who may join: anyone, the password (or an approved device), or approved devices only. */
+export type SyncplayAccess = "open" | "password" | "approved";
+
 export interface SyncplaySettings {
   enabled: boolean;
   port: number;
+  access: SyncplayAccess;
+  /** Used in password mode only. */
   password: string;
   motd: string;
   isolateRooms: boolean;
@@ -156,6 +161,31 @@ export interface RelayStatus {
   active: RelayActivity[];
 }
 
+export interface PendingDevice {
+  fingerprint: string;
+  name: string;
+  username: string;
+  ip: string;
+  /** Unix seconds. */
+  requestedAt: number;
+  /** Still connected and waiting. */
+  connected: boolean;
+}
+
+export interface ApprovedDevice {
+  fingerprint: string;
+  publicKey: string;
+  name: string;
+  approvedAt: number;
+  lastSeen: number;
+  lastUsername: string;
+}
+
+export interface DevicesStatus {
+  pending: PendingDevice[];
+  approved: ApprovedDevice[];
+}
+
 export interface SyncplayStatus {
   running: boolean;
   port: number | null;
@@ -164,6 +194,7 @@ export interface SyncplayStatus {
   rooms: RoomInfo[];
   tls: boolean;
   relay: RelayStatus;
+  devices: DevicesStatus;
 }
 
 export interface ShareStatus {
@@ -269,6 +300,11 @@ export const api = {
   jellyfinRemovePath: (library: string, path: string) => invoke<void>("jellyfin_remove_path", { library, path }),
   jellyfinRescan: () => invoke<void>("jellyfin_rescan"),
   clearRelayCache: () => invoke<Snapshot>("clear_relay_cache"),
+  approveDevice: (fingerprint: string) => invoke<Snapshot>("syncplay_device_approve", { fingerprint }),
+  denyDevice: (fingerprint: string) => invoke<Snapshot>("syncplay_device_deny", { fingerprint }),
+  removeDevice: (fingerprint: string) => invoke<Snapshot>("syncplay_device_remove", { fingerprint }),
+  renameDevice: (fingerprint: string, name: string) =>
+    invoke<Snapshot>("syncplay_device_rename", { fingerprint, name }),
   getLogs: () => invoke<LogLine[]>("get_logs"),
   clearLogs: () => invoke<void>("clear_logs"),
   openUrl: async (url: string) => {
@@ -298,6 +334,11 @@ export function clone<T>(v: T): T {
 export function formatDate(unix: number | null): string {
   if (!unix) return "–";
   return new Date(unix * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+export function formatDateTime(unix: number | null): string {
+  if (!unix) return "–";
+  return new Date(unix * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
 export function formatBytes(n: number): string {

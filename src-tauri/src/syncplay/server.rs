@@ -4,10 +4,12 @@
 //! Unless vanilla mode is on, the same port also answers HTTP(S) for the
 //! YarmiplayTV extensions (see [`super::mux`]).
 
-use super::ext::{Effect, JellyfinShare};
+use super::devices::{self, Decision, DeviceStore};
+use super::ext::{self, Effect, JellyfinShare};
 use super::mux::{self, ConnMeta, HttpSender, Sniff};
 use super::protocol::{line, now_secs, MAX_LINE_LENGTH};
-use super::room::{ConnId, Out, RoomInfo, ServerState, SyncplayOptions};
+use super::room::{Access, ConnId, Out, RoomInfo, ServerState, SyncplayOptions};
+use crate::config::SyncplayAccess;
 use crate::jellyfin::proxy::JellyfinProxy;
 use crate::relay::Relay;
 use crate::tls::CertStore;
@@ -20,9 +22,16 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
+
+/// A YarmiplayTV client must answer a device challenge within this.
+const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a device may wait for the host to approve it.
+const PENDING_LIMIT: Duration = Duration::from_secs(10 * 60);
+const PENDING_KEEPALIVE: Duration = Duration::from_secs(60);
+const AUTH_FAILED: &str = "Device authentication failed";
 
 pub type ChangeNotify = Arc<dyn Fn() + Send + Sync>;
 /// Approve a Jellyfin Quick Connect code for the guest account.
@@ -35,6 +44,8 @@ pub struct Extensions {
     pub relay: Option<Relay>,
     pub proxy: Option<Arc<JellyfinProxy>>,
     pub authorize: Option<AuthorizeFn>,
+    /// Approved device keys; without it nobody gets a device challenge.
+    pub devices: Option<Arc<DeviceStore>>,
 }
 
 pub struct SyncplayServer {
@@ -180,6 +191,15 @@ impl SyncplayServer {
     /// What extension sessions are told about the shared Jellyfin.
     pub fn set_jellyfin(&self, share: Option<JellyfinShare>) {
         self.shared.state.lock().set_jellyfin(share);
+    }
+
+    /// Disconnect every login that used this device key.
+    pub fn kick_device(&self, fingerprint: &str) {
+        let kicked = self.shared.state.lock().kick_device(fingerprint);
+        self.shared.dispatch();
+        if kicked > 0 {
+            (self.shared.notify)();
+        }
     }
 
     pub fn user_count(&self) -> usize {
@@ -394,14 +414,47 @@ async fn run_session<S>(
                 drop_with_error("You must be known to server before sending this command");
                 break;
             };
-            let result = shared
-                .state
-                .lock()
-                .handle_hello(id, hello, tx.clone(), now_secs());
+            let devices = shared.ext.devices.clone();
+            let access = shared.state.lock().check_access(hello, devices.is_some());
+            let device = match (access, &devices) {
+                (Access::Admit, _) => None,
+                (Access::Reject(msg), _) => {
+                    debug!(%peer, error = %msg, "Syncplay Hello rejected");
+                    drop_with_error(&msg);
+                    break;
+                }
+                (Access::Challenge(mode), Some(store)) => {
+                    let shake = Handshake {
+                        tx: &tx,
+                        store,
+                        hello,
+                        mode,
+                        peer,
+                        shared: &shared,
+                    };
+                    match shake.run(&mut reader, &mut buf).await {
+                        Some(device) => device,
+                        None => break,
+                    }
+                }
+                (Access::Challenge(_), None) => {
+                    drop_with_error(AUTH_FAILED);
+                    break;
+                }
+            };
+            let result =
+                shared
+                    .state
+                    .lock()
+                    .login(id, hello, tx.clone(), now_secs(), device.clone());
             match result {
                 Ok(()) => {
                     logged = true;
-                    debug!(%peer, tls, "Syncplay client logged in");
+                    if let (Some(fp), Some(store)) = (&device, &devices) {
+                        let name = hello.get("username").and_then(Value::as_str).unwrap_or("");
+                        store.seen(fp, name.trim());
+                    }
+                    debug!(%peer, tls, device = ?device, "Syncplay client logged in");
                     shared.dispatch();
                     (shared.notify)();
                     let rest: Map<String, Value> = obj
@@ -452,6 +505,153 @@ async fn run_session<S>(
     }
     drop(tx);
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), writer).await;
+}
+
+/// The device challenge a YarmiplayTV client goes through before its Hello
+/// is answered (`password` and `approved` access).
+struct Handshake<'a> {
+    tx: &'a UnboundedSender<Out>,
+    store: &'a DeviceStore,
+    hello: &'a Value,
+    mode: SyncplayAccess,
+    peer: SocketAddr,
+    shared: &'a Shared,
+}
+
+impl Handshake<'_> {
+    fn send(&self, value: Value) {
+        let _ = self.tx.send(Out::Line(line(&value)));
+    }
+
+    fn status(&self, state: &str, fingerprint: &str) {
+        self.send(
+            json!({ "Yarmiplay": { "status": { "state": state, "fingerprint": fingerprint } } }),
+        );
+    }
+
+    fn fail(&self, message: &str) {
+        debug!(peer = %self.peer, error = message, "Syncplay device not admitted");
+        self.send(json!({ "Error": { "message": message } }));
+        let _ = self.tx.send(Out::Close);
+    }
+
+    /// `Some(device)` to log in (`None` inside: admitted by password without
+    /// an approved key); `None` when the connection is done.
+    async fn run<R: AsyncRead + Unpin>(
+        &self,
+        reader: &mut BufReader<R>,
+        buf: &mut Vec<u8>,
+    ) -> Option<Option<String>> {
+        let server_id = self.store.server_id();
+        let nonce = devices::new_nonce();
+        self.send(json!({ "Yarmiplay": { "challenge": {
+            "protocol": ext::PROTOCOL,
+            "serverId": server_id,
+            "nonce": nonce,
+            "access": self.mode.as_str(),
+        } } }));
+        let auth = match tokio::time::timeout(AUTH_TIMEOUT, read_line(reader, buf)).await {
+            Ok(Ok(Some(m))) => m.get("Yarmiplay").and_then(|y| y.get("auth")).cloned(),
+            Ok(_) => return None,
+            Err(_) => {
+                self.fail("Device authentication timed out");
+                return None;
+            }
+        };
+        let Some(auth) = auth else {
+            self.fail(AUTH_FAILED);
+            return None;
+        };
+        let field = |k: &str| auth.get(k).and_then(Value::as_str).unwrap_or("");
+        let Some(fp) = devices::verify(field("publicKey"), field("signature"), &server_id, &nonce)
+        else {
+            self.fail(AUTH_FAILED);
+            return None;
+        };
+        if self.store.is_approved(&fp) {
+            self.status("approved", &fp);
+            return Some(Some(fp));
+        }
+        let request = auth
+            .get("requestAccess")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if self.mode == SyncplayAccess::Password {
+            match self.shared.state.lock().password_ok(self.hello) {
+                Ok(()) => return Some(None),
+                Err(e) if !request => {
+                    self.fail(&e);
+                    return None;
+                }
+                Err(_) => {}
+            }
+        } else if !request {
+            self.status("required", &fp);
+            self.fail("This device isn't approved on this server");
+            return None;
+        }
+
+        let username = self
+            .hello
+            .get("username")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let ip = self.peer.ip().to_canonical().to_string();
+        let mut decision =
+            match self
+                .store
+                .request(&fp, field("publicKey"), field("deviceName"), username, &ip)
+            {
+                Ok(rx) => rx,
+                Err(e) => {
+                    self.fail(&e);
+                    return None;
+                }
+            };
+        info!(fingerprint = %fp, "Syncplay device is waiting for approval");
+        self.status("pending", &fp);
+        (self.shared.notify)();
+
+        let deadline = tokio::time::sleep(PENDING_LIMIT);
+        tokio::pin!(deadline);
+        let start = tokio::time::Instant::now() + PENDING_KEEPALIVE;
+        let mut keepalive = tokio::time::interval_at(start, PENDING_KEEPALIVE);
+        let outcome = loop {
+            tokio::select! {
+                changed = decision.changed() => match changed.map(|_| *decision.borrow_and_update()) {
+                    Ok(Decision::Waiting) => {}
+                    Ok(Decision::Approved) => {
+                        self.status("approved", &fp);
+                        break Some(Some(fp.clone()));
+                    }
+                    Ok(Decision::Denied) => {
+                        self.status("denied", &fp);
+                        self.fail("The host denied this device");
+                        break None;
+                    }
+                    Err(_) => {
+                        self.status("expired", &fp);
+                        self.fail("The request is no longer waiting; try again");
+                        break None;
+                    }
+                },
+                _ = keepalive.tick() => self.status("pending", &fp),
+                line = read_line(reader, buf) => match line {
+                    Ok(Some(_)) => {}
+                    _ => break None,
+                },
+                _ = &mut deadline => {
+                    self.status("expired", &fp);
+                    self.fail("Nobody approved this device in time");
+                    break None;
+                }
+            }
+        };
+        self.store.disconnected(&fp);
+        (self.shared.notify)();
+        outcome
+    }
 }
 
 #[cfg(test)]
@@ -665,6 +865,310 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("known"));
+        server.stop();
+    }
+
+    use crate::syncplay::devices::testkey::DeviceKey;
+    use crate::syncplay::protocol::md5_hex;
+    use crate::syncplay::room::APPROVED_ONLY;
+
+    type Conn = BufReader<TcpStream>;
+
+    async fn start_with(
+        access: SyncplayAccess,
+        vanilla_mode: bool,
+        store: &Arc<DeviceStore>,
+    ) -> SyncplayServer {
+        let opts = SyncplayOptions {
+            access,
+            password: if access == SyncplayAccess::Password {
+                "pw".into()
+            } else {
+                String::new()
+            },
+            vanilla_mode,
+            ..SyncplayOptions::default()
+        };
+        let ext = Extensions {
+            devices: Some(store.clone()),
+            ..Extensions::default()
+        };
+        SyncplayServer::start(0, opts, Arc::default(), Arc::new(|| {}), ext)
+            .await
+            .unwrap()
+    }
+
+    async fn connect(server: &SyncplayServer) -> Conn {
+        BufReader::new(
+            TcpStream::connect(("127.0.0.1", server.port))
+                .await
+                .unwrap(),
+        )
+    }
+
+    async fn send(c: &mut Conn, v: Value) {
+        c.get_mut().write_all(line(&v).as_bytes()).await.unwrap();
+    }
+
+    /// The next message, or `None` once the server closed the connection.
+    async fn next(c: &mut Conn) -> Option<Value> {
+        let mut buf = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), read_line(c, &mut buf))
+            .await
+            .expect("timeout")
+            .ok()
+            .flatten()
+    }
+
+    /// Every message until the connection closes.
+    async fn rest(c: &mut Conn) -> Vec<Value> {
+        let mut out = Vec::new();
+        while let Some(m) = next(c).await {
+            out.push(m);
+        }
+        out
+    }
+
+    fn hello_with(name: &str, ext: bool, password: Option<&str>) -> Value {
+        let mut h = json!({ "username": name, "room": { "name": "lobby" }, "version": "1.2.255",
+            "realversion": "1.7.4", "features": { "sharedPlaylists": true, "chat": true } });
+        if ext {
+            h["features"]["yarmiplay"] =
+                json!({ "protocol": 1, "client": "YarmiplayTV", "version": "2.0.0" });
+        }
+        if let Some(p) = password {
+            h["password"] = json!(md5_hex(p));
+        }
+        json!({ "Hello": h })
+    }
+
+    /// Answer the device challenge with `key`.
+    async fn answer(c: &mut Conn, key: &DeviceKey, request_access: bool, access: &str) {
+        let m = next(c).await.unwrap();
+        let ch = &m["Yarmiplay"]["challenge"];
+        assert_eq!(ch["protocol"], 1);
+        assert_eq!(ch["access"], access);
+        let sig = key.sign(
+            ch["serverId"].as_str().unwrap(),
+            ch["nonce"].as_str().unwrap(),
+        );
+        send(
+            c,
+            json!({ "Yarmiplay": { "auth": {
+            "publicKey": key.public_key(), "signature": sig,
+            "deviceName": "Test device", "requestAccess": request_access,
+        } } }),
+        )
+        .await;
+    }
+
+    async fn expect_status(c: &mut Conn, state: &str, key: &DeviceKey) {
+        let m = next(c).await.unwrap();
+        assert_eq!(m["Yarmiplay"]["status"]["state"], state, "{m}");
+        assert_eq!(m["Yarmiplay"]["status"]["fingerprint"], key.fingerprint());
+    }
+
+    fn approve(store: &DeviceStore, key: &DeviceKey) {
+        store
+            .request(
+                &key.fingerprint(),
+                &key.public_key(),
+                "Phone",
+                "ana",
+                "10.0.0.9",
+            )
+            .unwrap();
+        store.approve(&key.fingerprint()).unwrap();
+    }
+
+    fn error_of(msgs: &[Value]) -> String {
+        msgs.iter()
+            .find_map(|m| m["Error"]["message"].as_str())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn approved_devices_skip_the_password() {
+        let store = Arc::new(DeviceStore::in_memory());
+        let key = DeviceKey::new();
+        approve(&store, &key);
+        let server = start_with(SyncplayAccess::Password, false, &store).await;
+
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("ana", true, None)).await;
+        answer(&mut c, &key, false, "password").await;
+        expect_status(&mut c, "approved", &key).await;
+        let h = read_until_key(&mut c, "Hello").await;
+        assert_eq!(h["Hello"]["features"]["yarmiplay"]["device"], "approved");
+        assert_eq!(h["Hello"]["features"]["yarmiplay"]["access"], "password");
+        assert_eq!(store.status().approved[0].last_username, "ana");
+
+        // An unknown key still needs the password...
+        let other = DeviceKey::new();
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("bo", true, None)).await;
+        answer(&mut c, &other, false, "password").await;
+        assert_eq!(error_of(&rest(&mut c).await), "Password required");
+        // ...and with it gets in without an approved key.
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("cy", true, Some("pw"))).await;
+        answer(&mut c, &other, false, "password").await;
+        let h = read_until_key(&mut c, "Hello").await;
+        assert_eq!(h["Hello"]["features"]["yarmiplay"]["device"], "none");
+        // A wrong password with requestAccess waits for the host.
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("di", true, Some("nope"))).await;
+        answer(&mut c, &other, true, "password").await;
+        expect_status(&mut c, "pending", &other).await;
+        server.stop();
+    }
+
+    #[tokio::test]
+    async fn pending_devices_get_in_once_approved() {
+        let store = Arc::new(DeviceStore::in_memory());
+        let server = start_with(SyncplayAccess::Approved, false, &store).await;
+        let key = DeviceKey::new();
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("ana", true, None)).await;
+        answer(&mut c, &key, true, "approved").await;
+        expect_status(&mut c, "pending", &key).await;
+        let pending = store.status().pending;
+        assert_eq!(pending[0].fingerprint, key.fingerprint());
+        assert_eq!(pending[0].name, "Test device");
+        assert_eq!(pending[0].username, "ana");
+        assert_eq!(pending[0].ip, "127.0.0.1");
+
+        store.approve(&key.fingerprint()).unwrap();
+        expect_status(&mut c, "approved", &key).await;
+        let h = read_until_key(&mut c, "Hello").await;
+        assert_eq!(h["Hello"]["features"]["yarmiplay"]["device"], "approved");
+        assert_eq!(server.user_count(), 1);
+        server.stop();
+    }
+
+    #[tokio::test]
+    async fn denied_unrequested_and_forged_devices_are_refused() {
+        let store = Arc::new(DeviceStore::in_memory());
+        let server = start_with(SyncplayAccess::Approved, false, &store).await;
+        let key = DeviceKey::new();
+
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("ana", true, None)).await;
+        answer(&mut c, &key, true, "approved").await;
+        expect_status(&mut c, "pending", &key).await;
+        store.deny(&key.fingerprint()).unwrap();
+        expect_status(&mut c, "denied", &key).await;
+        assert!(error_of(&rest(&mut c).await).contains("denied"));
+
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("ana", true, None)).await;
+        answer(&mut c, &key, false, "approved").await;
+        expect_status(&mut c, "required", &key).await;
+        assert!(error_of(&rest(&mut c).await).contains("isn't approved"));
+
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("ana", true, None)).await;
+        next(&mut c).await.unwrap();
+        let forged = key.sign("someone else's server", "nonce");
+        send(&mut c, json!({ "Yarmiplay": { "auth": {
+            "publicKey": key.public_key(), "signature": forged, "deviceName": "x", "requestAccess": true,
+        } } }))
+        .await;
+        assert_eq!(error_of(&rest(&mut c).await), AUTH_FAILED);
+        assert!(store.status().pending.is_empty());
+        assert_eq!(server.user_count(), 0);
+        server.stop();
+    }
+
+    #[tokio::test]
+    async fn official_clients_and_vanilla_mode_see_an_official_server() {
+        let store = Arc::new(DeviceStore::in_memory());
+        let key = DeviceKey::new();
+        approve(&store, &key);
+        let no_ext = |msgs: &[Value]| {
+            msgs.iter().all(|m| {
+                m.get("Yarmiplay").is_none() && m["Hello"]["features"].get("yarmiplay").is_none()
+            })
+        };
+
+        // Approved devices only: an official client is refused, readably.
+        let server = start_with(SyncplayAccess::Approved, false, &store).await;
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("v", false, Some("pw"))).await;
+        let out = rest(&mut c).await;
+        assert_eq!(error_of(&out), APPROVED_ONLY);
+        assert!(no_ext(&out));
+        server.stop();
+
+        // Password mode: an official client gets today's replies.
+        let server = start_with(SyncplayAccess::Password, false, &store).await;
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("v", false, Some("pw"))).await;
+        let mut out = Vec::new();
+        loop {
+            let m = next(&mut c).await.unwrap();
+            let done = m.get("Hello").is_some();
+            out.push(m);
+            if done {
+                break;
+            }
+        }
+        assert!(no_ext(&out));
+        server.stop();
+
+        // Open mode: YarmiplayTV gets no challenge, only the marker.
+        let server = start_with(SyncplayAccess::Open, false, &store).await;
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("y", true, None)).await;
+        let first = next(&mut c).await.unwrap();
+        assert!(first["Yarmiplay"].get("challenge").is_none());
+        let h = read_until_key(&mut c, "Hello").await;
+        assert_eq!(h["Hello"]["features"]["yarmiplay"]["access"], "open");
+        server.stop();
+
+        // Vanilla mode: no challenge, no marker, and approved keys don't skip the password.
+        let server = start_with(SyncplayAccess::Password, true, &store).await;
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("y", true, None)).await;
+        let out = rest(&mut c).await;
+        assert_eq!(error_of(&out), "Password required");
+        assert!(no_ext(&out));
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("y", true, Some("pw"))).await;
+        let mut out = Vec::new();
+        loop {
+            let m = next(&mut c).await.unwrap();
+            let done = m.get("Hello").is_some();
+            out.push(m);
+            if done {
+                break;
+            }
+        }
+        assert!(no_ext(&out));
+        server.stop();
+    }
+
+    #[tokio::test]
+    async fn removed_devices_are_disconnected() {
+        let store = Arc::new(DeviceStore::in_memory());
+        let key = DeviceKey::new();
+        approve(&store, &key);
+        let server = start_with(SyncplayAccess::Approved, false, &store).await;
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("ana", true, None)).await;
+        answer(&mut c, &key, false, "approved").await;
+        expect_status(&mut c, "approved", &key).await;
+        read_until_key(&mut c, "Hello").await;
+
+        store.remove(&key.fingerprint()).unwrap();
+        server.kick_device(&key.fingerprint());
+        let out = rest(&mut c).await;
+        assert!(out
+            .iter()
+            .any(|m| m["Yarmiplay"]["status"]["state"] == "revoked"));
+        assert!(error_of(&out).contains("removed"));
+        assert_eq!(server.user_count(), 0);
         server.stop();
     }
 }

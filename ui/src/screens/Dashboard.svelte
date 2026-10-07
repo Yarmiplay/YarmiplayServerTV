@@ -27,6 +27,7 @@
   const upnp = $derived(upnpPill(snap));
   const upd = $derived(updatePill(snap));
   const updateBusy = $derived(["checking", "downloading", "installing"].includes(snap.update.phase));
+  const waiting = $derived(snap.syncplay.devices.pending.length);
   const needsJellyfinSetup = $derived(snap.jellyfin.phase === "running" && snap.jellyfin.wizardCompleted === false);
 </script>
 
@@ -50,11 +51,20 @@
         onchange={(v) => store.save((s) => (s.syncplay.enabled = v))}
       />
       {#if snap.syncplay.error}<div class="notice err">{snap.syncplay.error}</div>{/if}
+      {#if waiting > 0}
+        <div class="notice warn">
+          {waiting === 1 ? "1 device is" : `${waiting} devices are`} waiting for approval.
+        </div>
+      {/if}
       {#if snap.settings.syncplay.enabled}
         <Address label="On your network" value={snap.addresses.syncplayLan} />
         <Address label="Over the internet" value={snap.addresses.syncplayPublic} />
       {/if}
-      <div class="actions"><button onclick={() => go("syncplay")}>Syncplay settings</button></div>
+      <div class="actions">
+        <button class:primary={waiting > 0} onclick={() => go("syncplay")}>
+          {waiting > 0 ? "Review devices" : "Syncplay settings"}
+        </button>
+      </div>
     </section>
 
     <section class="card">

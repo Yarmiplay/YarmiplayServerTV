@@ -10,6 +10,7 @@ use crate::net::upnp::{UpnpManager, UpnpStatus};
 use crate::paths::AppPaths;
 use crate::relay::{Relay, RelayStatus};
 use crate::secrets::{self, Secrets};
+use crate::syncplay::devices::{DeviceStore, DevicesStatus};
 use crate::syncplay::ext::JellyfinShare;
 use crate::syncplay::{AuthorizeFn, Extensions, RoomInfo, SyncplayOptions, SyncplayServer};
 use crate::tls::{IpSource, Notify, TlsManager, TlsRequest, TlsStatus};
@@ -35,6 +36,7 @@ pub struct SyncplayStatus {
     pub rooms: Vec<RoomInfo>,
     pub tls: bool,
     pub relay: RelayStatus,
+    pub devices: DevicesStatus,
 }
 
 /// Jellyfin sharing with Syncplay users, as it actually is right now.
@@ -109,6 +111,7 @@ pub struct App {
     proxy: Arc<JellyfinProxy>,
     share: Mutex<ShareState>,
     share_lock: tokio::sync::Mutex<()>,
+    devices: Arc<DeviceStore>,
 }
 
 impl App {
@@ -130,8 +133,10 @@ impl App {
             u64::from(settings.syncplay.relay_cache_gb) << 30,
             settings.syncplay.relay_effective(),
         );
+        let devices = Arc::new(DeviceStore::load(paths.syncplay_devices_file()));
         Arc::new(Self {
             relay,
+            devices,
             proxy: Arc::new(JellyfinProxy::new()),
             share: Mutex::new(ShareState::default()),
             share_lock: tokio::sync::Mutex::new(()),
@@ -279,6 +284,7 @@ impl App {
             relay: Some(self.relay.clone()),
             proxy: Some(self.proxy.clone()),
             authorize: Some(authorize),
+            devices: Some(self.devices.clone()),
         }
     }
 
@@ -525,6 +531,36 @@ impl App {
         Ok(())
     }
 
+    // ------------------------------------------------------------ Syncplay devices
+
+    pub fn approve_device(&self, fingerprint: &str) -> Result<Snapshot, String> {
+        let result = self.devices.approve(fingerprint);
+        (self.notify)();
+        result.map(|()| self.snapshot())
+    }
+
+    pub fn deny_device(&self, fingerprint: &str) -> Result<Snapshot, String> {
+        self.devices.deny(fingerprint)?;
+        (self.notify)();
+        Ok(self.snapshot())
+    }
+
+    /// Forget an approved device and disconnect it.
+    pub fn remove_device(&self, fingerprint: &str) -> Result<Snapshot, String> {
+        self.devices.remove(fingerprint)?;
+        if let Some(srv) = self.syncplay.lock().as_ref() {
+            srv.kick_device(fingerprint);
+        }
+        (self.notify)();
+        Ok(self.snapshot())
+    }
+
+    pub fn rename_device(&self, fingerprint: &str, name: &str) -> Result<Snapshot, String> {
+        self.devices.rename(fingerprint, name)?;
+        (self.notify)();
+        Ok(self.snapshot())
+    }
+
     pub fn share_status(&self) -> ShareStatus {
         let s = self.settings.read();
         let st = self.share.lock();
@@ -579,10 +615,12 @@ impl App {
                     rooms: srv.rooms(),
                     tls: self.tls.current().is_some(),
                     relay: self.relay.status(),
+                    devices: self.devices.status(),
                 },
                 None => SyncplayStatus {
                     error: self.syncplay_error.read().clone(),
                     relay: self.relay.status(),
+                    devices: self.devices.status(),
                     ..Default::default()
                 },
             }

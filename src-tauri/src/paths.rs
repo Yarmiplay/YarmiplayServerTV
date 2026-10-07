@@ -48,6 +48,11 @@ impl AppPaths {
         self.config.join("settings.json")
     }
 
+    /// Syncplay devices the host approved, and this server's device-key id.
+    pub fn syncplay_devices_file(&self) -> PathBuf {
+        self.config.join("syncplay-devices.json")
+    }
+
     pub fn acme_dir(&self) -> PathBuf {
         self.data.join("acme")
     }

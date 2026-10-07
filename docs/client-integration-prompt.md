@@ -69,6 +69,11 @@ If `features.yarmiplay` is missing, the server is stock Syncplay (or vanilla mod
 this off for the connection. The session protocol is `min(client, server)`; this document is
 protocol 1.
 
+When the host only admits approved devices or uses a password, the server first answers the Hello
+with a `Yarmiplay.challenge` that the client must sign before it gets the Hello reply. That part of
+protocol 1 is in [yarmiplaytv-device-access-prompt.md](yarmiplaytv-device-access-prompt.md); a client
+that declares `features.yarmiplay` must implement it too.
+
 Right after that Hello, the server sends the session:
 
 ```json

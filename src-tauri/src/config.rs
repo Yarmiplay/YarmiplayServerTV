@@ -37,12 +37,36 @@ impl Default for BrowserSettings {
     }
 }
 
+/// Who may join the Syncplay server.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncplayAccess {
+    #[default]
+    Open,
+    /// The password, or a device the host approved.
+    Password,
+    /// Only devices the host approved (YarmiplayTV).
+    Approved,
+}
+
+impl SyncplayAccess {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Password => "password",
+            Self::Approved => "approved",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SyncplaySettings {
     pub enabled: bool,
     pub port: u16,
-    /// Plain text; shown in the UI so it can be shared with friends.
+    pub access: SyncplayAccess,
+    /// Plain text; shown in the UI so it can be shared with friends. Used in
+    /// `password` mode only.
     pub password: String,
     pub motd: String,
     pub isolate_rooms: bool,
@@ -71,6 +95,7 @@ impl Default for SyncplaySettings {
         Self {
             enabled: false,
             port: 8999,
+            access: SyncplayAccess::Open,
             password: String::new(),
             motd: String::new(),
             isolate_rooms: false,
@@ -143,12 +168,23 @@ pub struct TlsSettings {
 impl Settings {
     pub fn load(path: &Path) -> Self {
         match std::fs::read_to_string(path) {
-            Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
+            Ok(raw) => Self::parse(&raw).unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "settings file unreadable, using defaults");
                 Self::default()
             }),
             Err(_) => Self::default(),
         }
+    }
+
+    fn parse(raw: &str) -> Result<Self, serde_json::Error> {
+        let value: serde_json::Value = serde_json::from_str(raw)?;
+        let has_access = value.pointer("/syncplay/access").is_some();
+        let mut s: Self = serde_json::from_value(value)?;
+        // Settings from before access modes: a password meant password mode.
+        if !has_access && !s.syncplay.password.is_empty() {
+            s.syncplay.access = SyncplayAccess::Password;
+        }
+        Ok(s)
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -180,6 +216,15 @@ impl Settings {
         }
         if !(1..=2000).contains(&self.syncplay.relay_cache_gb) {
             return Err("the relay cache must be between 1 and 2000 GB".into());
+        }
+        match self.syncplay.access {
+            SyncplayAccess::Password if self.syncplay.password.is_empty() => {
+                return Err("Enter a Syncplay password, or choose who can join another way".into())
+            }
+            SyncplayAccess::Approved if self.syncplay.vanilla_mode => {
+                return Err("Approved devices only needs vanilla Syncplay mode off".into())
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -227,6 +272,34 @@ mod tests {
         assert!(s.validate().is_err());
         s.syncplay.port = 80;
         assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn access_mode_comes_from_the_old_password() {
+        let s = Settings::parse(r#"{"syncplay":{"password":"pw"}}"#).unwrap();
+        assert_eq!(s.syncplay.access, SyncplayAccess::Password);
+        let s = Settings::parse(r#"{"syncplay":{}}"#).unwrap();
+        assert_eq!(s.syncplay.access, SyncplayAccess::Open);
+        let s = Settings::parse(r#"{"syncplay":{"password":"pw","access":"open"}}"#).unwrap();
+        assert_eq!(s.syncplay.access, SyncplayAccess::Open);
+        let s = Settings::parse(r#"{"syncplay":{"access":"approved"}}"#).unwrap();
+        assert_eq!(s.syncplay.access, SyncplayAccess::Approved);
+    }
+
+    #[test]
+    fn access_mode_validation() {
+        let mut s = Settings::default();
+        s.syncplay.access = SyncplayAccess::Password;
+        assert!(s.validate().is_err());
+        s.syncplay.password = "pw".into();
+        assert!(s.validate().is_ok());
+        s.syncplay.access = SyncplayAccess::Approved;
+        assert!(s.validate().is_ok());
+        s.syncplay.vanilla_mode = true;
+        assert_eq!(
+            s.validate().unwrap_err(),
+            "Approved devices only needs vanilla Syncplay mode off"
+        );
     }
 
     #[test]

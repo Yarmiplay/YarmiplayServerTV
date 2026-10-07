@@ -128,6 +128,30 @@ pub fn clear_relay_cache(app: AppState<'_>) -> Snapshot {
 }
 
 #[tauri::command]
+pub fn syncplay_device_approve(app: AppState<'_>, fingerprint: String) -> Result<Snapshot, String> {
+    app.approve_device(&fingerprint)
+}
+
+#[tauri::command]
+pub fn syncplay_device_deny(app: AppState<'_>, fingerprint: String) -> Result<Snapshot, String> {
+    app.deny_device(&fingerprint)
+}
+
+#[tauri::command]
+pub fn syncplay_device_remove(app: AppState<'_>, fingerprint: String) -> Result<Snapshot, String> {
+    app.remove_device(&fingerprint)
+}
+
+#[tauri::command]
+pub fn syncplay_device_rename(
+    app: AppState<'_>,
+    fingerprint: String,
+    name: String,
+) -> Result<Snapshot, String> {
+    app.rename_device(&fingerprint, &name)
+}
+
+#[tauri::command]
 pub fn get_logs() -> Vec<LogLine> {
     logs::snapshot()
 }

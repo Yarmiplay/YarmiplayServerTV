@@ -14,6 +14,7 @@ use super::ext::{self, Effect, ExtSession, JellyfinShare};
 use super::protocol::{
     self, line, truncate, PingService, MAX_FILENAME_LENGTH, MAX_ROOM_NAME_LENGTH,
 };
+use crate::config::SyncplayAccess;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -27,8 +28,22 @@ pub enum Out {
     Close,
 }
 
+pub const APPROVED_ONLY: &str = "This server only admits devices approved by the host. Connect with YarmiplayTV and request access.";
+
+/// What to do with a Hello.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Access {
+    Admit,
+    /// Ask the YarmiplayTV client to prove its device key first.
+    Challenge(SyncplayAccess),
+    Reject(String),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SyncplayOptions {
+    /// Device challenges happen in `password` and `approved` mode only.
+    pub access: SyncplayAccess,
+    /// Checked whenever it is set, except in `approved` mode.
     pub password: String,
     pub motd: String,
     pub isolate_rooms: bool,
@@ -45,6 +60,7 @@ pub struct SyncplayOptions {
 impl Default for SyncplayOptions {
     fn default() -> Self {
         Self {
+            access: SyncplayAccess::Open,
             password: String::new(),
             motd: String::new(),
             isolate_rooms: false,
@@ -73,6 +89,8 @@ struct Watcher {
     server_ignoring: u32,
     client_ignoring: u32,
     ext: Option<ExtSession>,
+    /// Fingerprint of the approved device key this login used.
+    device: Option<String>,
     tx: UnboundedSender<Out>,
 }
 
@@ -187,6 +205,29 @@ pub struct RoomInfo {
     pub paused: bool,
 }
 
+/// Username, room and client version from a Hello.
+fn hello_args(hello: &Value) -> Result<(&str, &str, &str), String> {
+    let username = hello
+        .get("username")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let room = hello
+        .get("room")
+        .and_then(|r| r.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let version = hello
+        .get("realversion")
+        .or_else(|| hello.get("version"))
+        .and_then(Value::as_str);
+    match (username, room, version) {
+        (Some(u), Some(r), Some(v)) => Ok((u, r, v)),
+        _ => Err("Not enough Hello arguments".into()),
+    }
+}
+
 pub struct ServerState {
     opts: SyncplayOptions,
     password_md5: Option<String>,
@@ -215,12 +256,100 @@ impl ServerState {
     pub fn set_options(&mut self, opts: SyncplayOptions) {
         self.password_md5 = (!opts.password.is_empty()).then(|| protocol::md5_hex(&opts.password));
         let revoke = opts.vanilla_mode && !self.opts.vanilla_mode;
+        let approved_only =
+            opts.access == SyncplayAccess::Approved && self.opts.access != SyncplayAccess::Approved;
         let before = self.capabilities();
         self.opts = opts;
         if revoke {
             self.revoke_sessions();
         } else if self.capabilities() != before {
             self.broadcast_ext_state();
+        }
+        if approved_only {
+            let ids: Vec<ConnId> = self
+                .watchers
+                .iter()
+                .filter(|(_, w)| w.device.is_none())
+                .map(|(id, _)| *id)
+                .collect();
+            for id in ids {
+                self.drop_watcher(id, None, APPROVED_ONLY);
+            }
+        }
+    }
+
+    /// Send `status` (to an extension session) and an `Error`, then disconnect.
+    fn drop_watcher(&mut self, id: ConnId, status: Option<Value>, message: &str) {
+        let Some(w) = self.watchers.get(&id) else {
+            return;
+        };
+        if let (Some(status), Some(_)) = (status, &w.ext) {
+            w.send(json!({ "Yarmiplay": { "status": status } }));
+        }
+        w.send(json!({ "Error": { "message": message } }));
+        let _ = w.tx.send(Out::Close);
+        self.remove(id);
+    }
+
+    /// The host removed a device: disconnect every login that used it.
+    pub fn kick_device(&mut self, fingerprint: &str) -> usize {
+        let ids: Vec<ConnId> = self
+            .watchers
+            .iter()
+            .filter(|(_, w)| w.device.as_deref() == Some(fingerprint))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &ids {
+            let status = json!({ "state": "revoked", "fingerprint": fingerprint });
+            self.drop_watcher(*id, Some(status), "The host removed this device");
+        }
+        ids.len()
+    }
+
+    /// Check the Hello's password (when one is set).
+    pub fn password_ok(&self, hello: &Value) -> Result<(), String> {
+        let Some(expected) = &self.password_md5 else {
+            return Ok(());
+        };
+        match hello
+            .get("password")
+            .and_then(Value::as_str)
+            .filter(|p| !p.is_empty())
+        {
+            None => Err("Password required".into()),
+            Some(p) if !p.eq_ignore_ascii_case(expected) => Err("Wrong password supplied".into()),
+            Some(_) => Ok(()),
+        }
+    }
+
+    /// Whether the Hello carries the YarmiplayTV extension opt-in that this server honours.
+    pub fn extended(&self, hello: &Value) -> bool {
+        !self.opts.vanilla_mode
+            && hello
+                .get("features")
+                .and_then(ext::requested_protocol)
+                .is_some()
+    }
+
+    /// Decide on a Hello before logging in. `devices` says whether device
+    /// keys can be checked at all.
+    pub fn check_access(&self, hello: &Value, devices: bool) -> Access {
+        if let Err(e) = hello_args(hello) {
+            return Access::Reject(e);
+        }
+        let mode = self.opts.access;
+        if mode == SyncplayAccess::Approved && (self.opts.vanilla_mode || !devices) {
+            return Access::Reject(APPROVED_ONLY.into());
+        }
+        if devices && mode != SyncplayAccess::Open && self.extended(hello) {
+            return Access::Challenge(mode);
+        }
+        if mode == SyncplayAccess::Approved {
+            return Access::Reject(APPROVED_ONLY.into());
+        }
+        match self.password_ok(hello) {
+            Ok(()) => Access::Admit,
+            Err(e) => Access::Reject(e),
         }
     }
 
@@ -367,7 +496,7 @@ impl ServerState {
         rooms
     }
 
-    fn features(&self, session: Option<&ExtSession>) -> Value {
+    fn features(&self, session: Option<&ExtSession>, device: bool) -> Value {
         let mut f = json!({
             "isolateRooms": self.opts.isolate_rooms,
             "readiness": !self.opts.disable_ready,
@@ -385,6 +514,8 @@ impl ServerState {
                 "version": env!("CARGO_PKG_VERSION"),
                 "protocol": s.protocol,
                 "capabilities": self.capabilities(),
+                "access": self.opts.access.as_str(),
+                "device": if device { "approved" } else { "none" },
             });
         }
         f
@@ -447,8 +578,8 @@ impl ServerState {
         name
     }
 
-    /// Validate a Hello and log the client in. On error the caller sends
-    /// `{"Error": {"message": ...}}` and closes the connection.
+    /// Validate a Hello (without device keys) and log the client in. On error
+    /// the caller sends `{"Error": {"message": ...}}` and closes the connection.
     pub fn handle_hello(
         &mut self,
         id: ConnId,
@@ -456,37 +587,24 @@ impl ServerState {
         tx: UnboundedSender<Out>,
         now: f64,
     ) -> Result<(), String> {
-        let username = hello
-            .get("username")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-        let room = hello
-            .get("room")
-            .and_then(|r| r.get("name"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-        let version = hello
-            .get("realversion")
-            .or_else(|| hello.get("version"))
-            .and_then(Value::as_str);
-        let (Some(username), Some(room), Some(version)) = (username, room, version) else {
-            return Err("Not enough Hello arguments".into());
-        };
-        if let Some(expected) = &self.password_md5 {
-            match hello
-                .get("password")
-                .and_then(Value::as_str)
-                .filter(|p| !p.is_empty())
-            {
-                None => return Err("Password required".into()),
-                Some(p) if !p.eq_ignore_ascii_case(expected) => {
-                    return Err("Wrong password supplied".into())
-                }
-                Some(_) => {}
-            }
+        match self.check_access(hello, false) {
+            Access::Admit => self.login(id, hello, tx, now, None),
+            Access::Reject(e) => Err(e),
+            Access::Challenge(_) => Err("Device authentication failed".into()),
         }
+    }
+
+    /// Log in a client whose access was already checked; `device` is the
+    /// approved key it proved, if any.
+    pub fn login(
+        &mut self,
+        id: ConnId,
+        hello: &Value,
+        tx: UnboundedSender<Out>,
+        now: f64,
+        device: Option<String>,
+    ) -> Result<(), String> {
+        let (username, room, version) = hello_args(hello)?;
         let name = self.free_username(username);
         let mut features = hello
             .get("features")
@@ -514,6 +632,7 @@ impl ServerState {
                 server_ignoring: 0,
                 client_ignoring: 0,
                 ext: session,
+                device,
                 tx,
             },
         );
@@ -527,7 +646,7 @@ impl ServerState {
                 "version": w.version,
                 "realversion": protocol::SERVER_VERSION,
                 "motd": self.opts.motd,
-                "features": self.features(w.ext.as_ref()),
+                "features": self.features(w.ext.as_ref(), w.device.is_some()),
             }
         }));
         if let Some(s) = &w.ext {
@@ -1476,5 +1595,150 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("wait"));
+    }
+
+    fn ext_hello(name: &str) -> Value {
+        let mut h = hello(name, "movie");
+        h["features"]["yarmiplay"] =
+            json!({ "protocol": 1, "client": "YarmiplayTV", "version": "2.0.0" });
+        h
+    }
+
+    fn access_opts(access: SyncplayAccess, vanilla_mode: bool) -> SyncplayOptions {
+        SyncplayOptions {
+            access,
+            password: if access == SyncplayAccess::Password {
+                "pw".into()
+            } else {
+                String::new()
+            },
+            vanilla_mode,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn access_decisions() {
+        use SyncplayAccess::*;
+        let plain = hello("v", "movie");
+        let mut plain_pw = plain.clone();
+        plain_pw["password"] = json!(protocol::md5_hex("pw"));
+        let ext = ext_hello("y");
+
+        let s = ServerState::new(access_opts(Open, false));
+        assert_eq!(s.check_access(&plain, true), Access::Admit);
+        assert_eq!(s.check_access(&ext, true), Access::Admit);
+
+        let s = ServerState::new(access_opts(Password, false));
+        assert_eq!(s.check_access(&ext, true), Access::Challenge(Password));
+        assert_eq!(
+            s.check_access(&plain, true),
+            Access::Reject("Password required".into())
+        );
+        assert_eq!(s.check_access(&plain_pw, true), Access::Admit);
+        // Without a device store, YarmiplayTV uses the password like everyone else.
+        assert_eq!(
+            s.check_access(&ext, false),
+            Access::Reject("Password required".into())
+        );
+
+        let s = ServerState::new(access_opts(Approved, false));
+        assert_eq!(s.check_access(&ext, true), Access::Challenge(Approved));
+        assert_eq!(
+            s.check_access(&plain_pw, true),
+            Access::Reject(APPROVED_ONLY.into())
+        );
+        assert_eq!(
+            s.check_access(&ext, false),
+            Access::Reject(APPROVED_ONLY.into())
+        );
+
+        // Vanilla mode: the official rules for everyone.
+        let s = ServerState::new(access_opts(Password, true));
+        assert_eq!(
+            s.check_access(&ext, true),
+            Access::Reject("Password required".into())
+        );
+        let mut ext_pw = ext.clone();
+        ext_pw["password"] = json!(protocol::md5_hex("pw"));
+        assert_eq!(s.check_access(&ext_pw, true), Access::Admit);
+
+        // Missing arguments come first, as on the official server.
+        let s = ServerState::new(access_opts(Approved, false));
+        assert_eq!(
+            s.check_access(&json!({ "username": "x" }), true),
+            Access::Reject("Not enough Hello arguments".into())
+        );
+    }
+
+    #[test]
+    fn marker_reports_access_and_device() {
+        let mut s = ServerState::new(access_opts(SyncplayAccess::Password, false));
+        let (tx, mut d) = unbounded_channel();
+        s.login(
+            1,
+            &ext_hello("dev"),
+            tx,
+            0.0,
+            Some("AAAA-BBBB-CCCC-DDDD".into()),
+        )
+        .unwrap();
+        let reply = |out: Vec<Value>| out.into_iter().find(|m| m.get("Hello").is_some()).unwrap();
+        let marker = reply(drain(&mut d))["Hello"]["features"]["yarmiplay"].clone();
+        assert_eq!(marker["access"], "password");
+        assert_eq!(marker["device"], "approved");
+        assert_eq!(marker["server"], "YarmiplayServerTV");
+
+        let (tx, mut p) = unbounded_channel();
+        s.login(2, &ext_hello("pw"), tx, 0.0, None).unwrap();
+        assert_eq!(
+            reply(drain(&mut p))["Hello"]["features"]["yarmiplay"]["device"],
+            "none"
+        );
+
+        let (tx, mut v) = unbounded_channel();
+        s.login(3, &hello("vanilla", "movie"), tx, 0.0, None)
+            .unwrap();
+        let out = drain(&mut v);
+        assert!(out.iter().all(|m| m.get("Yarmiplay").is_none()));
+        assert!(reply(out)["Hello"]["features"].get("yarmiplay").is_none());
+    }
+
+    #[test]
+    fn approved_only_drops_other_logins_and_removed_devices_are_kicked() {
+        let mut s = ServerState::new(access_opts(SyncplayAccess::Password, false));
+        let fp = "AAAA-BBBB-CCCC-DDDD";
+        let (tx, mut d) = unbounded_channel();
+        s.login(1, &ext_hello("dev"), tx, 0.0, Some(fp.into()))
+            .unwrap();
+        let (tx, mut p) = unbounded_channel();
+        s.login(2, &hello("pw", "movie"), tx, 0.0, None).unwrap();
+        drain(&mut d);
+        drain(&mut p);
+
+        s.set_options(access_opts(SyncplayAccess::Approved, false));
+        let mut out = Vec::new();
+        let mut closed = false;
+        while let Ok(o) = p.try_recv() {
+            match o {
+                Out::Line(l) => out.push(serde_json::from_str::<Value>(l.trim_end()).unwrap()),
+                Out::Close => closed = true,
+            }
+        }
+        assert_eq!(out[0]["Error"]["message"], APPROVED_ONLY);
+        assert!(closed);
+        assert!(s.is_logged(1) && !s.is_logged(2));
+        assert!(drain(&mut d)[0]["Set"]["user"]["pw"]["event"]["left"] == true);
+
+        assert_eq!(s.kick_device("FFFF-FFFF-FFFF-FFFF"), 0);
+        assert_eq!(s.kick_device(fp), 1);
+        let out = drain(&mut d);
+        assert_eq!(out[0]["Yarmiplay"]["status"]["state"], "revoked");
+        assert_eq!(out[0]["Yarmiplay"]["status"]["fingerprint"], fp);
+        assert!(out[1]["Error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("removed"));
+        assert!(!s.is_logged(1));
     }
 }
