@@ -1,6 +1,6 @@
 # YarmiplayServerTV privacy policy
 
-Effective 3 October 2026. This policy covers the YarmiplayServerTV app for Windows, macOS and Linux, including
+Effective 7 October 2026. This policy covers the YarmiplayServerTV app for Windows, macOS and Linux, including
 the copy from the Microsoft Store.
 
 ## Summary
@@ -32,11 +32,20 @@ until you switch it on, and each one only talks to what it needs.
 - **Syncplay server:** people you give the address to connect to it. The names they enter, file names,
   playback state and chat are passed between them and not stored; the app's log on your computer notes who
   joined and left which room.
+- **File relay** (on by default, off in vanilla Syncplay mode): YarmiplayTV users in a room can play a video
+  file that someone else in the room has. The file's bytes travel from that person's device through your
+  computer to the people watching, and are cached on your computer's disk so each part is sent only once. The
+  cache only holds what was relayed, is limited to the size you set, is deleted when the app starts, after a
+  day without use, or when you click **Clear cache**, and is never sent anywhere else.
+- **Sharing Jellyfin with Syncplay users** (off until you switch it on): the Syncplay server tells YarmiplayTV
+  users that your Jellyfin is available and approves their Quick Connect sign-ins for a hidden guest account
+  that can watch but not change anything. Their Jellyfin traffic can reach Jellyfin through the Syncplay port.
+  Switching sharing off disables the guest account, which signs every guest out.
 
 ## What stays on your device
 
-Your settings, the ACME account and certificates, Jellyfin (program, database, cache and logs) and the app's
-log are stored only on your computer. The DuckDNS token and the Jellyfin sign-in are kept in the system
+Your settings, the ACME account and certificates, Jellyfin (program, database, cache and logs), the file
+relay cache and the app's log are stored only on your computer. The DuckDNS token and the Jellyfin sign-in are kept in the system
 credential store (Windows Credential Manager, macOS Keychain or the Secret Service on Linux). Your media folders
 are read by Jellyfin and never changed or uploaded by the app. The control panel can only be reached from your
 own computer.

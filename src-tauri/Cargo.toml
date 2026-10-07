@@ -1,6 +1,6 @@
 [package]
 name = "yarmiplayservertv"
-version = "1.3.0"
+version = "1.6.0"
 description = "Host a Syncplay server and a Jellyfin server from your desktop"
 authors = ["Yarmiplay"]
 license = "GPL-3.0-or-later"
@@ -52,8 +52,11 @@ rcgen = "0.14"
 p12-keystore = "0.3"
 futures-util = "0.3"
 
-# Browser access to the control panel (127.0.0.1 only)
+# Browser access to the control panel (127.0.0.1 only), and the relay and
+# Jellyfin HTTP that shares the Syncplay port
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 
 # Jellyfin download / extraction
 zip = { version = "2", default-features = false, features = ["deflate"] }
@@ -63,7 +66,7 @@ liblzma = { version = "0.4", features = ["static"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_Storage_Packaging_Appx"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx"] }
 windows = { version = "0.62", features = ["ApplicationModel", "ApplicationModel_Activation", "Foundation"] }
 
 [target.'cfg(unix)'.dependencies]

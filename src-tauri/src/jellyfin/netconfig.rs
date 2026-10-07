@@ -40,11 +40,25 @@ fn escape(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Return `existing` (or a fresh document) with the managed elements set.
+/// The Syncplay port's Jellyfin proxy connects from here.
+const PROXY: &str = "127.0.0.1";
+
+fn known_proxies(entries: &[String]) -> String {
+    let mut out = String::from("  <KnownProxies>\n");
+    for e in entries {
+        out.push_str(&format!("    <string>{}</string>\n", escape(e)));
+    }
+    out.push_str("  </KnownProxies>");
+    out
+}
+
+/// Return `existing` (or a fresh document) with the managed elements set and
+/// the local proxy in `KnownProxies` (next to any the user added).
 pub fn patch_network_xml(existing: Option<&str>, settings: &NetworkSettings) -> String {
     let managed = settings.managed();
     let mut body: Vec<String> = Vec::new();
     let mut seen: Vec<&str> = Vec::new();
+    let mut proxies_seen = false;
 
     if let Some(xml) = existing {
         let trimmed = xml.trim_start_matches('\u{feff}');
@@ -53,7 +67,20 @@ pub fn patch_network_xml(existing: Option<&str>, settings: &NetworkSettings) -> 
             if root.tag_name().name() == "NetworkConfiguration" {
                 for child in root.children().filter(|n| n.is_element()) {
                     let name = child.tag_name().name();
-                    if let Some((key, value)) = managed.iter().find(|(k, _)| *k == name) {
+                    if name == "KnownProxies" {
+                        proxies_seen = true;
+                        let mut entries: Vec<String> = child
+                            .children()
+                            .filter(|n| n.is_element())
+                            .filter_map(|n| n.text())
+                            .map(|t| t.trim().to_string())
+                            .filter(|t| !t.is_empty())
+                            .collect();
+                        if !entries.iter().any(|e| e == PROXY) {
+                            entries.push(PROXY.into());
+                        }
+                        body.push(known_proxies(&entries));
+                    } else if let Some((key, value)) = managed.iter().find(|(k, _)| *k == name) {
                         seen.push(key);
                         body.push(format!("  <{key}>{}</{key}>", escape(value)));
                     } else {
@@ -67,6 +94,9 @@ pub fn patch_network_xml(existing: Option<&str>, settings: &NetworkSettings) -> 
         if !seen.contains(key) {
             body.push(format!("  <{key}>{}</{key}>", escape(value)));
         }
+    }
+    if !proxies_seen {
+        body.push(known_proxies(&[PROXY.into()]));
     }
     format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<NetworkConfiguration xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n{}\n</NetworkConfiguration>\n",
@@ -143,6 +173,8 @@ mod tests {
         let out = patch_network_xml(Some(EXISTING), &s);
         assert!(out.contains("<BaseUrl />"));
         assert!(out.contains("<string>10.0.0.2</string>"));
+        assert!(out.contains("<string>127.0.0.1</string>"));
+        assert_eq!(out.matches("<KnownProxies>").count(), 1);
         assert!(out.contains("<InternalHttpPort>9096</InternalHttpPort>"));
         assert!(out.contains("<EnableHttps>true</EnableHttps>"));
         assert!(out.contains("<CertificatePath>C:\\a&amp;b\\cert.pfx</CertificatePath>"));
@@ -162,6 +194,7 @@ mod tests {
         for existing in [None, Some("not xml")] {
             let out = patch_network_xml(existing, &s);
             assert!(out.contains("<EnableHttps>false</EnableHttps>"));
+            assert!(out.contains("<string>127.0.0.1</string>"));
             assert!(roxmltree::Document::parse(&out).is_ok());
         }
     }

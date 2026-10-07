@@ -24,14 +24,44 @@ Script / interactive commands (separated by ';' or one per line on stdin):
   expect-user <name> <key>=<value>   fail unless the user's field matches (file, ready)
   expect-room <key>=<value> [within=<s>]  e.g. paused=false, position~300 (±3s)
   quit
+
+With --yarmiplay the peer declares the YarmiplayServerTV extensions (docs/client-integration-prompt.md)
+and answers the server's upload requests for the files it offers:
+  offer <path>[|<path>...]  offer local files to the room's file relay
+  expect-files <n> [within=<s>]  fail unless the room's relay lists at least n files
+  fetch <name> <out> [stream|download]  download a relayed file over HTTP into <out>
+  expect-same <a> <b>       fail unless two local files have the same contents
 """
 import argparse
 import hashlib
 import json
+import os
 import socket
 import sys
 import threading
 import time
+import urllib.request
+
+MIB = 1 << 20
+
+
+def quick_hash(path):
+    """SHA-256 over the first and last MiB and the size (u64 little endian), as the server expects."""
+    size = os.path.getsize(path)
+    m = min(MIB, size)
+    with open(path, "rb") as f:
+        first = f.read(m)
+        f.seek(size - m)
+        last = f.read(m)
+    return hashlib.sha256(first + last + size.to_bytes(8, "little")).hexdigest()
+
+
+def file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(MIB), b""):
+            h.update(block)
+    return h.hexdigest()
 
 VERSION = "1.2.255"
 REAL_VERSION = "1.7.6"
@@ -42,11 +72,18 @@ def log(msg):
 
 
 class Peer:
-    def __init__(self, host, port, name, room, password=None, verbose=False):
+    def __init__(self, host, port, name, room, password=None, verbose=False, yarmiplay=False):
         self.host, self.port, self.name, self.room = host, port, name, room
         self.password = password
         self.verbose = verbose
+        self.yarmiplay = yarmiplay
         self.sock = None
+        self.send_lock = threading.Lock()
+        # extension state
+        self.token = None
+        self.capabilities = {}
+        self.relay_files = []
+        self.offered = {}  # (size, quickHash) -> local path
         self.lock = threading.RLock()
         # virtual player
         self.paused = True
@@ -100,6 +137,8 @@ class Peer:
             "features": {"sharedPlaylists": True, "chat": True, "readiness": True, "featureList": True,
                          "managedRooms": True, "uiMode": "CLI"},
         }
+        if self.yarmiplay:
+            hello["features"]["yarmiplay"] = {"protocol": 1}
         if self.password:
             hello["password"] = hashlib.md5(self.password.encode()).hexdigest()
         self.send({"Hello": hello})
@@ -110,7 +149,8 @@ class Peer:
         line = json.dumps(obj)
         if self.verbose:
             log(f">> {line}")
-        self.sock.sendall((line + "\r\n").encode())
+        with self.send_lock:
+            self.sock.sendall((line + "\r\n").encode())
 
     def reader(self):
         buf = b""
@@ -156,6 +196,49 @@ class Peer:
             elif cmd == "Error":
                 log(f"ERROR from server: {val}")
                 self.failed = True
+            elif cmd == "Yarmiplay":
+                self.handle_ext(val)
+
+    def handle_ext(self, val):
+        for key, v in val.items():
+            if key == "session":
+                self.token = v.get("token")
+                log(f"extension session (protocol {v.get('protocol')})")
+            elif key == "capabilities":
+                self.capabilities = v
+                log(f"capabilities: {v}")
+            elif key == "files":
+                with self.lock:
+                    self.relay_files = v
+                log("relay files: " + (", ".join(f"{f['name']} ({f['sources']} sources, {f['cachedBytes']} cached)"
+                                                 for f in v) or "none"))
+            elif key == "upload":
+                threading.Thread(target=self.upload, args=(v,), daemon=True).start()
+            elif key == "uploadCancel":
+                log(f"upload {v.get('id')} cancelled")
+            elif key == "jellyfin":
+                log(f"jellyfin: {v}")
+            elif key == "jellyfinAuthorize":
+                log(f"Quick Connect {v.get('code')}: {'approved' if v.get('ok') else v.get('error')}")
+
+    def http_url(self, path):
+        return f"http://{self.host}:{self.port}{path}"
+
+    def upload(self, req):
+        path = self.offered.get((req.get("size"), req.get("quickHash")))
+        if not path:
+            self.send({"Yarmiplay": {"uploadFailed": {"id": req["id"], "error": "not offered"}}})
+            return
+        with open(path, "rb") as f:
+            f.seek(req["offset"])
+            data = f.read(req["length"])
+        r = urllib.request.Request(self.http_url(f"/yarmiplay/upload/{req['id']}"), data=data, method="PUT",
+                                   headers={"Authorization": f"Bearer {self.token}"})
+        try:
+            with urllib.request.urlopen(r, timeout=60) as resp:
+                log(f"uploaded {len(data)} bytes at {req['offset']} (HTTP {resp.status})")
+        except Exception as e:  # the server may cancel; it re-requests elsewhere
+            log(f"upload {req['id']} failed: {e}")
 
     def handle_set(self, val):
         for key, v in val.items():
@@ -293,6 +376,25 @@ class Peer:
             return self.expect_user(name, cond)
         elif cmd == "expect-room":
             return self.expect_room(arg)
+        elif cmd == "offer":
+            files = []
+            for p in (p.strip() for p in arg.split("|") if p.strip()):
+                size, qh = os.path.getsize(p), quick_hash(p)
+                self.offered[(size, qh)] = p
+                files.append({"name": os.path.basename(p), "size": size, "duration": 0.0, "quickHash": qh})
+            self.send({"Yarmiplay": {"offer": {"files": files}}})
+            log(f"offered {len(files)} file(s)")
+        elif cmd == "expect-files":
+            return self.expect_files(arg)
+        elif cmd == "fetch":
+            return self.fetch(*arg.split())
+        elif cmd == "expect-same":
+            a, b = arg.split()
+            if file_sha256(a) == file_sha256(b):
+                log(f"PASS {a} matches {b}")
+            else:
+                log(f"FAIL {a} differs from {b}")
+                self.failed = True
         elif cmd == "quit":
             return False
         else:
@@ -328,6 +430,44 @@ class Peer:
                 return True
         log(f"FAIL user {name} {key}: wanted {want}, got {got}")
         self.failed = True
+        return True
+
+    def expect_files(self, arg):
+        bits = arg.split()
+        want = int(bits[0])
+        within = float(next((b.split("=", 1)[1] for b in bits[1:] if b.startswith("within=")), 10))
+        deadline = time.time() + within
+        while time.time() < deadline:
+            with self.lock:
+                n = len(self.relay_files)
+            if n >= want:
+                log(f"PASS relay lists {n} file(s)")
+                return True
+            time.sleep(0.25)
+        log(f"FAIL relay lists {len(self.relay_files)} file(s), wanted {want}")
+        self.failed = True
+        return True
+
+    def fetch(self, name, out, mode="stream"):
+        with self.lock:
+            f = next((f for f in self.relay_files if f["name"] == name), None)
+        if f is None or not self.token:
+            log(f"FAIL no relayed file named {name}")
+            self.failed = True
+            return True
+        url = self.http_url(f"/yarmiplay/files/{f['id']}?mode={mode}")
+        r = urllib.request.Request(url, headers={"Authorization": f"Bearer {self.token}"})
+        start = time.time()
+        got = 0
+        with urllib.request.urlopen(r, timeout=120) as resp, open(out, "wb") as dst:
+            for block in iter(lambda: resp.read(MIB), b""):
+                dst.write(block)
+                got += len(block)
+        secs = max(time.time() - start, 1e-3)
+        log(f"fetched {got} bytes of {name} in {secs:.1f}s ({got * 8 / secs / 1e6:.1f} Mbit/s)")
+        if got != f["size"]:
+            log(f"FAIL fetched {got} bytes, expected {f['size']}")
+            self.failed = True
         return True
 
     def expect_room(self, arg):
@@ -376,9 +516,10 @@ def main():
     ap.add_argument("--duration", type=float, default=0.0)
     ap.add_argument("--script", help="commands separated by ';' (otherwise read from stdin)")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--yarmiplay", action="store_true", help="declare the YarmiplayServerTV extensions")
     args = ap.parse_args()
 
-    peer = Peer(args.host, args.port, args.name, args.room, args.password, args.verbose)
+    peer = Peer(args.host, args.port, args.name, args.room, args.password, args.verbose, args.yarmiplay)
     if args.file:
         peer.file = (args.file, args.size, args.duration)
     peer.connect()

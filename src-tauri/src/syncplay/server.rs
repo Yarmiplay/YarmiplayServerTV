@@ -1,15 +1,23 @@
 //! TCP listener for the Syncplay server, with optional STARTTLS using the
 //! current certificate from the [`CertStore`] (read per connection, so a
 //! renewed certificate applies to new connections without a restart).
+//! Unless vanilla mode is on, the same port also answers HTTP(S) for the
+//! YarmiplayTV extensions (see [`super::mux`]).
 
+use super::ext::{Effect, JellyfinShare};
+use super::mux::{self, ConnMeta, HttpSender, Sniff};
 use super::protocol::{line, now_secs, MAX_LINE_LENGTH};
 use super::room::{ConnId, Out, RoomInfo, ServerState, SyncplayOptions};
+use crate::jellyfin::proxy::JellyfinProxy;
+use crate::relay::Relay;
 use crate::tls::CertStore;
+use futures_util::future::BoxFuture;
 use parking_lot::Mutex;
 use serde_json::{json, Map, Value};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::unbounded_channel;
@@ -17,12 +25,24 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 pub type ChangeNotify = Arc<dyn Fn() + Send + Sync>;
+/// Approve a Jellyfin Quick Connect code for the guest account.
+pub type AuthorizeFn = Arc<dyn Fn(String) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
+
+/// The async parts behind the YarmiplayTV extensions. All optional: without
+/// them the server is a plain Syncplay server.
+#[derive(Clone, Default)]
+pub struct Extensions {
+    pub relay: Option<Relay>,
+    pub proxy: Option<Arc<JellyfinProxy>>,
+    pub authorize: Option<AuthorizeFn>,
+}
 
 pub struct SyncplayServer {
     pub port: u16,
-    state: Arc<Mutex<ServerState>>,
+    shared: Arc<Shared>,
     accept: JoinHandle<()>,
     heartbeat: JoinHandle<()>,
+    http: JoinHandle<()>,
 }
 
 struct Shared {
@@ -30,6 +50,49 @@ struct Shared {
     tls: CertStore,
     next_id: AtomicU64,
     notify: ChangeNotify,
+    ext: Extensions,
+    http: HttpSender,
+}
+
+impl Shared {
+    fn relay_on(&self, opts: &SyncplayOptions) {
+        if let Some(r) = &self.ext.relay {
+            r.set_enabled(opts.file_relay && !opts.vanilla_mode);
+        }
+    }
+
+    /// Hand queued [`Effect`]s to the relay and Jellyfin.
+    fn dispatch(self: &Arc<Self>) {
+        let effects = self.state.lock().take_effects();
+        for effect in effects {
+            match effect {
+                Effect::AuthorizeJellyfin { conn, code } => {
+                    let shared = self.clone();
+                    tokio::spawn(async move { shared.authorize(conn, code).await });
+                }
+                other => {
+                    if let Some(r) = &self.ext.relay {
+                        r.handle(&other);
+                    }
+                }
+            }
+        }
+    }
+
+    async fn authorize(&self, conn: ConnId, code: String) {
+        let result = match &self.ext.authorize {
+            Some(f) => f(code.clone()).await,
+            None => Err("Jellyfin sharing is off on this server".into()),
+        };
+        let reply = match result {
+            Ok(()) => json!({ "code": code, "ok": true }),
+            Err(e) => {
+                debug!(error = %e, "Quick Connect approval failed");
+                json!({ "code": code, "ok": false, "error": e })
+            }
+        };
+        self.state.lock().send_ext(conn, "jellyfinAuthorize", reply);
+    }
 }
 
 impl SyncplayServer {
@@ -38,16 +101,27 @@ impl SyncplayServer {
         opts: SyncplayOptions,
         tls: CertStore,
         notify: ChangeNotify,
+        ext: Extensions,
     ) -> std::io::Result<Self> {
         let listener = TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], port))).await?;
-        let port = listener.local_addr()?.port();
-        let state = Arc::new(Mutex::new(ServerState::new(opts)));
+        let local = listener.local_addr()?;
+        let port = local.port();
+        let mut st = ServerState::new(opts.clone());
+        st.set_https(tls.read().is_some());
+        let state = Arc::new(Mutex::new(st));
+        if let Some(r) = &ext.relay {
+            r.attach(Arc::downgrade(&state));
+        }
+        let (http_tx, http) = mux::start_http(Arc::downgrade(&state), ext.clone(), local);
         let shared = Arc::new(Shared {
             state: state.clone(),
             tls,
             next_id: AtomicU64::new(1),
             notify: notify.clone(),
+            ext,
+            http: http_tx,
         });
+        shared.relay_on(&opts);
 
         let accept = {
             let shared = shared.clone();
@@ -68,12 +142,18 @@ impl SyncplayServer {
         };
 
         let heartbeat = {
-            let state = state.clone();
+            let shared = shared.clone();
             tokio::spawn(async move {
-                let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+                let mut tick = tokio::time::interval(Duration::from_secs(1));
                 loop {
                     tick.tick().await;
-                    let dropped = state.lock().tick(now_secs());
+                    let https = shared.tls.read().is_some();
+                    let dropped = {
+                        let mut st = shared.state.lock();
+                        st.set_https(https);
+                        st.tick(now_secs())
+                    };
+                    shared.dispatch();
                     if !dropped.is_empty() {
                         notify();
                     }
@@ -84,36 +164,51 @@ impl SyncplayServer {
         info!(port, "Syncplay server listening");
         Ok(Self {
             port,
-            state,
+            shared,
             accept,
             heartbeat,
+            http,
         })
     }
 
     pub fn set_options(&self, opts: SyncplayOptions) {
-        self.state.lock().set_options(opts);
+        self.shared.state.lock().set_options(opts.clone());
+        self.shared.relay_on(&opts);
+        self.shared.dispatch();
+    }
+
+    /// What extension sessions are told about the shared Jellyfin.
+    pub fn set_jellyfin(&self, share: Option<JellyfinShare>) {
+        self.shared.state.lock().set_jellyfin(share);
     }
 
     pub fn user_count(&self) -> usize {
-        self.state.lock().user_count()
+        self.shared.state.lock().user_count()
     }
 
     pub fn rooms(&self) -> Vec<RoomInfo> {
-        self.state.lock().rooms()
+        self.shared.state.lock().rooms()
     }
 
     pub fn stop(self) {
+        self.abort_tasks();
+        self.shared.state.lock().close_all();
+        info!(port = self.port, "Syncplay server stopped");
+    }
+
+    fn abort_tasks(&self) {
         self.accept.abort();
         self.heartbeat.abort();
-        self.state.lock().close_all();
-        info!(port = self.port, "Syncplay server stopped");
+        self.http.abort();
+        if let Some(r) = &self.shared.ext.relay {
+            r.detach();
+        }
     }
 }
 
 impl Drop for SyncplayServer {
     fn drop(&mut self) {
-        self.accept.abort();
-        self.heartbeat.abort();
+        self.abort_tasks();
     }
 }
 
@@ -149,7 +244,45 @@ async fn read_line<R: AsyncRead + Unpin>(
     }
 }
 
+/// What the first byte says, unless vanilla mode keeps the port Syncplay-only.
+async fn sniff_http(stream: TcpStream, peer: SocketAddr, shared: &Shared) -> Option<TcpStream> {
+    if shared.state.lock().vanilla() {
+        return Some(stream);
+    }
+    let mut first = [0u8; 1];
+    match tokio::time::timeout(Duration::from_secs(15), stream.peek(&mut first)).await {
+        Ok(Ok(1)) => {}
+        _ => return None,
+    }
+    match mux::sniff(first[0]) {
+        Sniff::Syncplay => Some(stream),
+        Sniff::Http => {
+            let meta = ConnMeta { peer, tls: false };
+            let _ = shared.http.send((Box::new(stream), meta)).await;
+            None
+        }
+        Sniff::Tls => {
+            let bundle = shared.tls.read().clone()?;
+            let mut config = (*bundle.config).clone();
+            config.alpn_protocols = vec![b"http/1.1".to_vec()];
+            let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+            match tokio::time::timeout(Duration::from_secs(15), acceptor.accept(stream)).await {
+                Ok(Ok(tls)) => {
+                    let meta = ConnMeta { peer, tls: true };
+                    let _ = shared.http.send((Box::new(tls), meta)).await;
+                }
+                Ok(Err(e)) => debug!(%peer, error = %e, "HTTPS handshake failed"),
+                Err(_) => debug!(%peer, "HTTPS handshake timed out"),
+            }
+            None
+        }
+    }
+}
+
 async fn serve_conn(stream: TcpStream, peer: SocketAddr, shared: Arc<Shared>) {
+    let Some(stream) = sniff_http(stream, peer, &shared).await else {
+        return;
+    };
     let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     debug!(%peer, id, "Syncplay connection");
     let mut reader = BufReader::new(stream);
@@ -269,16 +402,19 @@ async fn run_session<S>(
                 Ok(()) => {
                     logged = true;
                     debug!(%peer, tls, "Syncplay client logged in");
+                    shared.dispatch();
                     (shared.notify)();
                     let rest: Map<String, Value> = obj
                         .iter()
                         .filter(|(k, _)| k.as_str() != "Hello")
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect();
-                    if !rest.is_empty()
-                        && !shared.state.lock().handle_message(id, &rest, now_secs())
-                    {
-                        break;
+                    if !rest.is_empty() {
+                        let keep = shared.state.lock().handle_message(id, &rest, now_secs());
+                        shared.dispatch();
+                        if !keep {
+                            break;
+                        }
                     }
                 }
                 Err(msg) => {
@@ -299,6 +435,7 @@ async fn run_session<S>(
             let keep = state.handle_message(id, obj, now_secs());
             (keep, keep && state.rooms() != before)
         };
+        shared.dispatch();
         if rooms_changed {
             (shared.notify)();
         }
@@ -309,6 +446,7 @@ async fn run_session<S>(
 
     let was_logged = shared.state.lock().is_logged(id);
     shared.state.lock().remove(id);
+    shared.dispatch();
     if was_logged {
         (shared.notify)();
     }
@@ -352,6 +490,7 @@ mod tests {
             SyncplayOptions::default(),
             Arc::default(),
             Arc::new(|| {}),
+            Extensions::default(),
         )
         .await
         .unwrap();
@@ -409,6 +548,7 @@ mod tests {
             SyncplayOptions::default(),
             Arc::default(),
             Arc::new(|| {}),
+            Extensions::default(),
         )
         .await
         .unwrap();
@@ -449,9 +589,15 @@ mod tests {
                 config,
             },
         ))));
-        let server = SyncplayServer::start(0, SyncplayOptions::default(), store, Arc::new(|| {}))
-            .await
-            .unwrap();
+        let server = SyncplayServer::start(
+            0,
+            SyncplayOptions::default(),
+            store,
+            Arc::new(|| {}),
+            Extensions::default(),
+        )
+        .await
+        .unwrap();
 
         let mut tcp = TcpStream::connect(("127.0.0.1", server.port))
             .await
@@ -502,6 +648,7 @@ mod tests {
             SyncplayOptions::default(),
             Arc::default(),
             Arc::new(|| {}),
+            Extensions::default(),
         )
         .await
         .unwrap();

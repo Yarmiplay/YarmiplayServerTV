@@ -122,6 +122,12 @@ pub async fn jellyfin_rescan(app: AppState<'_>) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn clear_relay_cache(app: AppState<'_>) -> Snapshot {
+    app.relay.clear_cache();
+    app.snapshot()
+}
+
+#[tauri::command]
 pub fn get_logs() -> Vec<LogLine> {
     logs::snapshot()
 }

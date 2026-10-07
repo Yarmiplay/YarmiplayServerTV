@@ -295,6 +295,77 @@ impl JellyfinApi {
         .map(|_| ())
     }
 
+    /// Every user, hidden and disabled ones included: `(id, name)`.
+    pub async fn users(&self) -> Result<Vec<(String, String)>, String> {
+        let r = Self::send(self.req(reqwest::Method::GET, "/Users"), "users").await?;
+        let v: Vec<Value> = r.json().await.map_err(|e| e.to_string())?;
+        Ok(v.into_iter()
+            .filter_map(|u| {
+                Some((
+                    u["Id"].as_str()?.to_string(),
+                    u["Name"].as_str().unwrap_or_default().to_string(),
+                ))
+            })
+            .collect())
+    }
+
+    /// Returns the new user's id.
+    pub async fn create_user(&self, name: &str, password: &str) -> Result<String, String> {
+        let r = Self::send(
+            self.req(reqwest::Method::POST, "/Users/New")
+                .json(&json!({ "Name": name, "Password": password })),
+            "create user",
+        )
+        .await?;
+        let v: Value = r.json().await.map_err(|e| e.to_string())?;
+        v["Id"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| "create user: no id in reply".into())
+    }
+
+    pub async fn user_policy(&self, user_id: &str) -> Result<Value, String> {
+        let r = Self::send(
+            self.req(reqwest::Method::GET, &format!("/Users/{user_id}")),
+            "user",
+        )
+        .await?;
+        let v: Value = r.json().await.map_err(|e| e.to_string())?;
+        Ok(v["Policy"].clone())
+    }
+
+    pub async fn set_policy(&self, user_id: &str, policy: &Value) -> Result<(), String> {
+        Self::send(
+            self.req(reqwest::Method::POST, &format!("/Users/{user_id}/Policy"))
+                .json(policy),
+            "user policy",
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Approve a Quick Connect code on behalf of `user_id` (needs an admin token).
+    pub async fn quick_connect_authorize(&self, code: &str, user_id: &str) -> Result<(), String> {
+        let r = Self::send(
+            self.req(reqwest::Method::POST, "/QuickConnect/Authorize")
+                .query(&[("code", code), ("userId", user_id)]),
+            "Quick Connect",
+        )
+        .await
+        .map_err(|e| {
+            if e.contains("404") || e.contains("Not Found") {
+                "Unknown or expired Quick Connect code".to_string()
+            } else {
+                e
+            }
+        })?;
+        let ok: Value = r.json().await.unwrap_or(Value::Bool(true));
+        if ok.as_bool() == Some(false) {
+            return Err("Jellyfin refused the Quick Connect code".into());
+        }
+        Ok(())
+    }
+
     pub async fn shutdown(&self) -> Result<(), String> {
         Self::send(
             self.req(reqwest::Method::POST, "/System/Shutdown"),

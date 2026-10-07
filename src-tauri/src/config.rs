@@ -51,6 +51,19 @@ pub struct SyncplaySettings {
     pub max_chat_message_length: u32,
     pub max_username_length: u32,
     pub upnp: bool,
+    /// Behave exactly like the official server: no YarmiplayTV extensions,
+    /// no file relay, no Jellyfin on the Syncplay port.
+    pub vanilla_mode: bool,
+    /// Let YarmiplayTV clients stream each other's files through this server.
+    pub file_relay: bool,
+    /// Disk space the relay cache may use, in GB.
+    pub relay_cache_gb: u32,
+}
+
+impl SyncplaySettings {
+    pub fn relay_effective(&self) -> bool {
+        self.file_relay && !self.vanilla_mode
+    }
 }
 
 impl Default for SyncplaySettings {
@@ -66,6 +79,9 @@ impl Default for SyncplaySettings {
             max_chat_message_length: 150,
             max_username_length: 150,
             upnp: false,
+            vanilla_mode: false,
+            file_relay: true,
+            relay_cache_gb: 10,
         }
     }
 }
@@ -83,6 +99,11 @@ pub struct JellyfinSettings {
     pub admin_user_id: Option<String>,
     /// Stable id this app uses when it talks to the Jellyfin API.
     pub device_id: String,
+    /// Offer this Jellyfin to YarmiplayTV users on the Syncplay server, signed
+    /// in as a hidden guest account.
+    pub share_with_syncplay: bool,
+    /// The guest account's Jellyfin user id; managed by the app.
+    pub guest_user_id: Option<String>,
 }
 
 impl Default for JellyfinSettings {
@@ -96,7 +117,16 @@ impl Default for JellyfinSettings {
             admin_user: None,
             admin_user_id: None,
             device_id: String::new(),
+            share_with_syncplay: false,
+            guest_user_id: None,
         }
+    }
+}
+
+impl Settings {
+    /// Jellyfin sharing as configured; it still needs Jellyfin running and signed in.
+    pub fn share_effective(&self) -> bool {
+        self.jellyfin.share_with_syncplay && !self.syncplay.vanilla_mode
     }
 }
 
@@ -148,6 +178,9 @@ impl Settings {
         if self.syncplay.max_chat_message_length == 0 || self.syncplay.max_username_length == 0 {
             return Err("length limits must be at least 1".into());
         }
+        if !(1..=2000).contains(&self.syncplay.relay_cache_gb) {
+            return Err("the relay cache must be between 1 and 2000 GB".into());
+        }
         Ok(())
     }
 }
@@ -172,6 +205,18 @@ mod tests {
         assert_eq!(s.syncplay.max_chat_message_length, 150);
         assert!(s.browser.enabled);
         assert!(!s.updates.auto);
+        assert!(s.syncplay.file_relay && !s.syncplay.vanilla_mode);
+        assert_eq!(s.syncplay.relay_cache_gb, 10);
+        assert!(!s.jellyfin.share_with_syncplay);
+    }
+
+    #[test]
+    fn vanilla_mode_turns_the_extensions_off() {
+        let mut s = Settings::default();
+        s.jellyfin.share_with_syncplay = true;
+        assert!(s.syncplay.relay_effective() && s.share_effective());
+        s.syncplay.vanilla_mode = true;
+        assert!(!s.syncplay.relay_effective() && !s.share_effective());
     }
 
     #[test]

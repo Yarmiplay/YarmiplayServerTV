@@ -4,8 +4,13 @@
 //! YarmiplayTV see exactly what they expect, including message order.
 //!
 //! Pure and synchronous: callers pass the current time, and outgoing lines go
-//! to each connection's channel.
+//! to each connection's channel. Work for the async side (file relay,
+//! Jellyfin) is queued as [`Effect`]s.
+//!
+//! The YarmiplayTV extensions ([`super::ext`]) only exist for clients that ask
+//! for them; everyone else sees the official server.
 
+use super::ext::{self, Effect, ExtSession, JellyfinShare};
 use super::protocol::{
     self, line, truncate, PingService, MAX_FILENAME_LENGTH, MAX_ROOM_NAME_LENGTH,
 };
@@ -31,6 +36,10 @@ pub struct SyncplayOptions {
     pub disable_ready: bool,
     pub max_chat_message_length: usize,
     pub max_username_length: usize,
+    /// No extension sessions at all; turning it on revokes the existing ones.
+    pub vanilla_mode: bool,
+    /// Advertise the file relay to extension sessions.
+    pub file_relay: bool,
 }
 
 impl Default for SyncplayOptions {
@@ -43,6 +52,8 @@ impl Default for SyncplayOptions {
             disable_ready: false,
             max_chat_message_length: 150,
             max_username_length: 150,
+            vanilla_mode: false,
+            file_relay: false,
         }
     }
 }
@@ -61,12 +72,22 @@ struct Watcher {
     client_latency_arrival: f64,
     server_ignoring: u32,
     client_ignoring: u32,
+    ext: Option<ExtSession>,
     tx: UnboundedSender<Out>,
 }
 
 impl Watcher {
     fn send(&self, value: Value) {
         let _ = self.tx.send(Out::Line(line(&value)));
+    }
+
+    /// Peer `features` as this watcher may see them.
+    fn view_features(&self, features: &Value) -> Value {
+        if self.ext.is_some() {
+            features.clone()
+        } else {
+            ext::without_ext(features)
+        }
     }
 
     fn send_set(&self, setting: Value) {
@@ -171,6 +192,9 @@ pub struct ServerState {
     password_md5: Option<String>,
     watchers: HashMap<ConnId, Watcher>,
     rooms: HashMap<String, Room>,
+    jellyfin: Option<JellyfinShare>,
+    https: bool,
+    effects: Vec<Effect>,
 }
 
 impl ServerState {
@@ -180,6 +204,9 @@ impl ServerState {
             password_md5: None,
             watchers: HashMap::new(),
             rooms: HashMap::new(),
+            jellyfin: None,
+            https: false,
+            effects: Vec::new(),
         };
         s.set_options(opts);
         s
@@ -187,7 +214,130 @@ impl ServerState {
 
     pub fn set_options(&mut self, opts: SyncplayOptions) {
         self.password_md5 = (!opts.password.is_empty()).then(|| protocol::md5_hex(&opts.password));
+        let revoke = opts.vanilla_mode && !self.opts.vanilla_mode;
+        let before = self.capabilities();
         self.opts = opts;
+        if revoke {
+            self.revoke_sessions();
+        } else if self.capabilities() != before {
+            self.broadcast_ext_state();
+        }
+    }
+
+    pub fn vanilla(&self) -> bool {
+        self.opts.vanilla_mode
+    }
+
+    /// What extension sessions are told about the shared Jellyfin.
+    pub fn set_jellyfin(&mut self, share: Option<JellyfinShare>) {
+        if self.jellyfin != share {
+            self.jellyfin = share;
+            self.broadcast_ext_state();
+        }
+    }
+
+    /// Whether the Syncplay port answers TLS directly (a certificate is loaded).
+    pub fn set_https(&mut self, https: bool) {
+        if self.https != https {
+            self.https = https;
+            self.broadcast_ext_state();
+        }
+    }
+
+    /// `GET /yarmiplay/info`: what a client would see in Hello, without logging in.
+    pub fn ext_info(&self) -> Value {
+        json!({
+            "server": "YarmiplayServerTV",
+            "version": env!("CARGO_PKG_VERSION"),
+            "protocol": ext::PROTOCOL,
+            "capabilities": self.capabilities(),
+        })
+    }
+
+    pub fn take_effects(&mut self) -> Vec<Effect> {
+        std::mem::take(&mut self.effects)
+    }
+
+    fn capabilities(&self) -> Value {
+        let on = !self.opts.vanilla_mode;
+        json!({
+            "fileRelay": on && self.opts.file_relay,
+            "jellyfin": on && self.jellyfin.is_some(),
+            "https": on && self.https,
+        })
+    }
+
+    fn jellyfin_message(&self) -> Value {
+        match (&self.jellyfin, self.opts.vanilla_mode) {
+            (Some(j), false) => {
+                let mut v = serde_json::to_value(j).unwrap_or_else(|_| json!({}));
+                v["available"] = json!(true);
+                v
+            }
+            _ => json!({ "available": false }),
+        }
+    }
+
+    fn broadcast_ext_state(&self) {
+        let caps = self.capabilities();
+        let jf = self.jellyfin_message();
+        for w in self.watchers.values().filter(|w| w.ext.is_some()) {
+            w.send(json!({ "Yarmiplay": { "capabilities": caps, "jellyfin": jf } }));
+        }
+    }
+
+    /// Vanilla mode switched on: tell every session the extensions are gone,
+    /// then forget their tokens.
+    fn revoke_sessions(&mut self) {
+        let caps = self.capabilities();
+        let mut ids: Vec<ConnId> = self
+            .watchers
+            .iter()
+            .filter(|(_, w)| w.ext.is_some())
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort_unstable();
+        for id in ids {
+            let w = self.watchers.get_mut(&id).unwrap();
+            w.send(json!({ "Yarmiplay": { "capabilities": caps } }));
+            w.ext = None;
+            ext::normalize_features(&mut w.features, None);
+            self.effects.push(Effect::Left { conn: id });
+        }
+    }
+
+    /// Send `{"Yarmiplay": {sub: value}}` to `id` if it has a session.
+    pub fn send_ext(&self, id: ConnId, sub: &str, value: Value) -> bool {
+        match self.watchers.get(&id) {
+            Some(w) if w.ext.is_some() => {
+                w.send(json!({ "Yarmiplay": { sub: value } }));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Send to every session in `room`.
+    pub fn send_ext_room(&self, room: &str, sub: &str, value: &Value) {
+        let Some(r) = self.rooms.get(room) else {
+            return;
+        };
+        for id in &r.members {
+            self.send_ext(*id, sub, value.clone());
+        }
+    }
+
+    /// The connection and room a session token belongs to.
+    pub fn session_for_token(&self, token: &str) -> Option<(ConnId, String)> {
+        if token.is_empty() {
+            return None;
+        }
+        self.watchers.iter().find_map(|(id, w)| {
+            w.ext
+                .as_ref()
+                .filter(|s| s.token == token)
+                .map(|_| (*id, w.room.clone()))
+        })
     }
 
     pub fn is_logged(&self, id: ConnId) -> bool {
@@ -217,8 +367,8 @@ impl ServerState {
         rooms
     }
 
-    fn features(&self) -> Value {
-        json!({
+    fn features(&self, session: Option<&ExtSession>) -> Value {
+        let mut f = json!({
             "isolateRooms": self.opts.isolate_rooms,
             "readiness": !self.opts.disable_ready,
             "managedRooms": false,
@@ -228,7 +378,16 @@ impl ServerState {
             "maxUsernameLength": self.opts.max_username_length,
             "maxRoomNameLength": MAX_ROOM_NAME_LENGTH,
             "maxFilenameLength": MAX_FILENAME_LENGTH,
-        })
+        });
+        if let Some(s) = session {
+            f["yarmiplay"] = json!({
+                "server": "YarmiplayServerTV",
+                "version": env!("CARGO_PKG_VERSION"),
+                "protocol": s.protocol,
+                "capabilities": self.capabilities(),
+            });
+        }
+        f
     }
 
     /// Watchers that `sender` "sees": its room when rooms are isolated, else everyone.
@@ -329,11 +488,15 @@ impl ServerState {
             }
         }
         let name = self.free_username(username);
-        let features = hello
+        let mut features = hello
             .get("features")
             .cloned()
             .filter(Value::is_object)
             .unwrap_or_else(|| json!({}));
+        let session = ext::requested_protocol(&features)
+            .filter(|_| !self.opts.vanilla_mode)
+            .map(|p| ExtSession::new(p.min(ext::PROTOCOL)));
+        ext::normalize_features(&mut features, session.as_ref());
         self.watchers.insert(
             id,
             Watcher {
@@ -350,6 +513,7 @@ impl ServerState {
                 client_latency_arrival: 0.0,
                 server_ignoring: 0,
                 client_ignoring: 0,
+                ext: session,
                 tx,
             },
         );
@@ -363,10 +527,17 @@ impl ServerState {
                 "version": w.version,
                 "realversion": protocol::SERVER_VERSION,
                 "motd": self.opts.motd,
-                "features": self.features(),
+                "features": self.features(w.ext.as_ref()),
             }
         }));
-        tracing::info!(user = %name, room = %w.room, client = %version, "Syncplay user joined");
+        if let Some(s) = &w.ext {
+            w.send(json!({ "Yarmiplay": {
+                "session": { "token": s.token, "protocol": s.protocol },
+                "capabilities": self.capabilities(),
+                "jellyfin": self.jellyfin_message(),
+            } }));
+        }
+        tracing::info!(user = %name, room = %w.room, client = %version, ext = w.ext.is_some(), "Syncplay user joined");
         Ok(())
     }
 
@@ -412,10 +583,14 @@ impl ServerState {
         self.move_watcher(id, &room_name, now);
         if as_join {
             let w = &self.watchers[&id];
-            let event = json!({ "joined": true, "version": w.version, "features": w.features });
-            let msg = self.user_setting(id, None, Some(event));
             let others: Vec<ConnId> = self.audience(id).into_iter().filter(|m| *m != id).collect();
-            self.send_to(&others, &msg);
+            for other in others {
+                let Some(o) = self.watchers.get(&other) else {
+                    continue;
+                };
+                let event = json!({ "joined": true, "version": w.version, "features": o.view_features(&w.features) });
+                o.send(self.user_setting(id, None, Some(event)));
+            }
         } else {
             let msg = self.user_setting(id, None, None);
             self.send_to(&self.audience(id), &msg);
@@ -429,6 +604,12 @@ impl ServerState {
         w.send_set(
             json!({ "playlistIndex": { "user": room.set_by, "index": room.playlist_index } }),
         );
+        if w.ext.is_some() {
+            self.effects.push(Effect::Joined {
+                conn: id,
+                room: room_name,
+            });
+        }
     }
 
     /// Room position, re-anchored on the furthest-behind watcher at most once per second.
@@ -496,6 +677,7 @@ impl ServerState {
                 "State" => self.handle_state(id, value, now),
                 "List" => self.send_list(id),
                 "Chat" => self.handle_chat(id, value),
+                "Yarmiplay" => self.handle_ext(id, value, now),
                 "Error" => {
                     tracing::debug!(error = %value, "Syncplay client reported an error");
                     return false;
@@ -508,6 +690,75 @@ impl ServerState {
             }
         }
         true
+    }
+
+    /// `{"Yarmiplay": {...}}` from a client. Without a session it is ignored,
+    /// as the official server ignores unknown commands.
+    fn handle_ext(&mut self, id: ConnId, value: &Value, now: f64) {
+        let Some(commands) = value.as_object() else {
+            return;
+        };
+        if self.watchers.get(&id).is_none_or(|w| w.ext.is_none()) {
+            return;
+        }
+        for (command, value) in commands {
+            match command.as_str() {
+                "offer" => {
+                    let room = self.watchers[&id].room.clone();
+                    self.effects.push(Effect::Offer {
+                        conn: id,
+                        room,
+                        files: ext::parse_offer(value),
+                    });
+                }
+                "jellyfinAuthorize" => {
+                    let code: String = value
+                        .get("code")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .chars()
+                        .filter(char::is_ascii_alphanumeric)
+                        .take(32)
+                        .collect();
+                    let refuse = if self.jellyfin.is_none() {
+                        Some("Jellyfin sharing is off on this server")
+                    } else if code.is_empty() {
+                        Some("No Quick Connect code")
+                    } else if !self
+                        .watchers
+                        .get_mut(&id)
+                        .and_then(|w| w.ext.as_mut())
+                        .is_some_and(|s| s.allow_authorize(now))
+                    {
+                        Some("Too many attempts; wait a minute")
+                    } else {
+                        None
+                    };
+                    match refuse {
+                        Some(error) => {
+                            self.send_ext(
+                                id,
+                                "jellyfinAuthorize",
+                                json!({ "code": code, "ok": false, "error": error }),
+                            );
+                        }
+                        None => self
+                            .effects
+                            .push(Effect::AuthorizeJellyfin { conn: id, code }),
+                    }
+                }
+                "uploadFailed" => {
+                    let upload = value.get("id").and_then(Value::as_str).unwrap_or("");
+                    let error = value.get("error").and_then(Value::as_str).unwrap_or("");
+                    self.effects.push(Effect::UploadFailed {
+                        conn: id,
+                        upload: upload.to_string(),
+                        error: truncate(error, 200),
+                    });
+                }
+                other => tracing::debug!(command = other, "ignoring unknown Yarmiplay command"),
+            }
+        }
     }
 
     fn handle_set(&mut self, id: ConnId, settings: &Value, now: f64) {
@@ -557,7 +808,9 @@ impl ServerState {
                 }
                 "features" => {
                     if value.is_object() {
-                        self.watchers.get_mut(&id).unwrap().features = value.clone();
+                        let w = self.watchers.get_mut(&id).unwrap();
+                        w.features = value.clone();
+                        ext::normalize_features(&mut w.features, w.ext.as_ref());
                     }
                 }
                 "controllerAuth" => {
@@ -644,6 +897,7 @@ impl ServerState {
         } else {
             self.audience(id)
         };
+        let me = &self.watchers[&id];
         let mut list = Map::new();
         for wid in ids {
             let Some(w) = self.watchers.get(&wid) else {
@@ -654,10 +908,10 @@ impl ServerState {
                 "file": w.file.clone().unwrap_or_else(|| json!({})),
                 "controller": false,
                 "isReady": w.ready,
-                "features": w.features,
+                "features": me.view_features(&w.features),
             });
         }
-        self.watchers[&id].send(json!({ "List": list }));
+        me.send(json!({ "List": list }));
     }
 
     fn handle_state(&mut self, id: ConnId, state: &Value, now: f64) {
@@ -791,8 +1045,23 @@ impl ServerState {
         self.send_to(&others, &msg);
         self.detach(id);
         if let Some(w) = self.watchers.remove(&id) {
+            if w.ext.is_some() {
+                self.effects.push(Effect::Left { conn: id });
+            }
             tracing::info!(user = %w.name, room = %w.room, "Syncplay user left");
         }
+    }
+
+    /// Connections with an extension session, and their rooms.
+    pub fn ext_rooms(&self) -> Vec<(ConnId, String)> {
+        let mut v: Vec<(ConnId, String)> = self
+            .watchers
+            .iter()
+            .filter(|(_, w)| w.ext.is_some())
+            .map(|(id, w)| (*id, w.room.clone()))
+            .collect();
+        v.sort_unstable();
+        v
     }
 
     /// Close every connection (server stopping).
@@ -1038,5 +1307,174 @@ mod tests {
         s.handle_message(1, &msg(json!({ "List": null })), 0.0);
         let list = drain(&mut a)[0]["List"].clone();
         assert!(list.get("two").is_none());
+    }
+
+    fn join_ext(s: &mut ServerState, id: ConnId, name: &str, room: &str) -> UnboundedReceiver<Out> {
+        let (tx, rx) = unbounded_channel();
+        let mut h = hello(name, room);
+        h["features"]["yarmiplay"] = json!({ "protocol": 3 });
+        s.handle_hello(id, &h, tx, 0.0).unwrap();
+        rx
+    }
+
+    fn relay_opts() -> SyncplayOptions {
+        SyncplayOptions {
+            file_relay: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn extension_handshake_only_for_clients_that_ask() {
+        let mut s = ServerState::new(relay_opts());
+        let mut v = join(&mut s, 1, "vanilla", "movie", 0.0);
+        let out = drain(&mut v);
+        assert!(out[3]["Hello"]["features"].get("yarmiplay").is_none());
+        assert_eq!(out.len(), 4);
+
+        let mut y = join_ext(&mut s, 2, "yarmi", "movie");
+        let out = drain(&mut y);
+        let f = &out[3]["Hello"]["features"]["yarmiplay"];
+        assert_eq!(f["server"], "YarmiplayServerTV");
+        assert_eq!(f["protocol"], 1, "the lower protocol wins");
+        assert_eq!(f["capabilities"]["fileRelay"], true);
+        assert_eq!(f["capabilities"]["jellyfin"], false);
+        let session = &out[4]["Yarmiplay"]["session"];
+        let token = session["token"].as_str().unwrap();
+        assert_eq!(token.len(), 48);
+        assert_eq!(out[4]["Yarmiplay"]["jellyfin"]["available"], false);
+        assert_eq!(s.session_for_token(token), Some((2, "movie".into())));
+        assert_eq!(s.session_for_token(""), None);
+        assert_eq!(
+            s.take_effects(),
+            vec![Effect::Joined {
+                conn: 2,
+                room: "movie".into()
+            }]
+        );
+
+        // The vanilla peer never sees the extension in features.
+        let joined = &drain(&mut v)[0]["Set"]["user"]["yarmi"]["event"];
+        assert_eq!(
+            joined["features"],
+            json!({ "sharedPlaylists": true, "chat": true })
+        );
+        s.handle_message(1, &msg(json!({ "List": null })), 0.0);
+        assert!(drain(&mut v)[0]["List"]["movie"]["yarmi"]["features"]
+            .get("yarmiplay")
+            .is_none());
+        s.handle_message(2, &msg(json!({ "List": null })), 0.0);
+        assert_eq!(
+            drain(&mut y)[0]["List"]["movie"]["yarmi"]["features"]["yarmiplay"],
+            json!({ "protocol": 1 })
+        );
+
+        // A vanilla client's Yarmiplay commands do nothing.
+        s.handle_message(
+            1,
+            &msg(json!({ "Yarmiplay": { "offer": { "files": [] } } })),
+            0.0,
+        );
+        assert!(s.take_effects().is_empty());
+        assert!(drain(&mut v).is_empty());
+        s.handle_message(
+            2,
+            &msg(json!({ "Yarmiplay": { "offer": { "files": [] } } })),
+            0.0,
+        );
+        assert_eq!(
+            s.take_effects(),
+            vec![Effect::Offer {
+                conn: 2,
+                room: "movie".into(),
+                files: vec![]
+            }]
+        );
+    }
+
+    #[test]
+    fn vanilla_mode_refuses_and_revokes_sessions() {
+        let mut s = ServerState::new(relay_opts());
+        let mut y = join_ext(&mut s, 1, "yarmi", "movie");
+        let token = drain(&mut y)[4]["Yarmiplay"]["session"]["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        s.take_effects();
+
+        s.set_options(SyncplayOptions {
+            vanilla_mode: true,
+            ..relay_opts()
+        });
+        let out = drain(&mut y);
+        assert_eq!(out[0]["Yarmiplay"]["capabilities"]["fileRelay"], false);
+        assert_eq!(s.session_for_token(&token), None);
+        assert_eq!(s.take_effects(), vec![Effect::Left { conn: 1 }]);
+        s.handle_message(
+            1,
+            &msg(json!({ "Yarmiplay": { "offer": { "files": [] } } })),
+            0.0,
+        );
+        assert!(s.take_effects().is_empty());
+
+        let mut late = join_ext(&mut s, 2, "late", "movie");
+        let out = drain(&mut late);
+        assert!(out[3]["Hello"]["features"].get("yarmiplay").is_none());
+        assert_eq!(out.len(), 4);
+    }
+
+    #[test]
+    fn capability_changes_reach_sessions() {
+        let mut s = ServerState::new(SyncplayOptions::default());
+        let mut y = join_ext(&mut s, 1, "yarmi", "movie");
+        let mut v = join(&mut s, 2, "vanilla", "movie", 0.0);
+        drain(&mut y);
+        drain(&mut v);
+        s.set_jellyfin(Some(JellyfinShare {
+            server_id: "abc".into(),
+            server_name: "Home".into(),
+            proxy: true,
+            addresses: vec!["http://192.168.1.2:8096".into()],
+        }));
+        let out = drain(&mut y);
+        assert_eq!(out[0]["Yarmiplay"]["capabilities"]["jellyfin"], true);
+        assert_eq!(out[0]["Yarmiplay"]["jellyfin"]["serverId"], "abc");
+        assert_eq!(out[0]["Yarmiplay"]["jellyfin"]["available"], true);
+        assert!(drain(&mut v).is_empty());
+        s.set_jellyfin(s.jellyfin.clone());
+        assert!(drain(&mut y).is_empty(), "no news, no message");
+    }
+
+    #[test]
+    fn jellyfin_authorize_is_gated_and_rate_limited() {
+        let mut s = ServerState::new(SyncplayOptions::default());
+        let mut y = join_ext(&mut s, 1, "yarmi", "movie");
+        drain(&mut y);
+        s.take_effects();
+        let ask = msg(json!({ "Yarmiplay": { "jellyfinAuthorize": { "code": "123456" } } }));
+        s.handle_message(1, &ask, 0.0);
+        assert_eq!(
+            drain(&mut y)[0]["Yarmiplay"]["jellyfinAuthorize"]["ok"],
+            false
+        );
+        assert!(s.take_effects().is_empty());
+
+        s.set_jellyfin(Some(JellyfinShare {
+            server_id: "abc".into(),
+            server_name: "Home".into(),
+            proxy: false,
+            addresses: vec![],
+        }));
+        drain(&mut y);
+        for i in 0..5 {
+            s.handle_message(1, &ask, i as f64);
+        }
+        assert_eq!(s.take_effects().len(), 5);
+        s.handle_message(1, &ask, 10.0);
+        assert!(s.take_effects().is_empty());
+        assert!(drain(&mut y)[0]["Yarmiplay"]["jellyfinAuthorize"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("wait"));
     }
 }

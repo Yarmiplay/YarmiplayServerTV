@@ -3,22 +3,27 @@
 
 use crate::config::Settings;
 use crate::jellyfin::api::JellyfinApi;
+use crate::jellyfin::proxy::JellyfinProxy;
 use crate::jellyfin::{JellyfinDesired, JellyfinManager, JellyfinStatus};
 use crate::net::acme::DuckDns;
 use crate::net::upnp::{UpnpManager, UpnpStatus};
 use crate::paths::AppPaths;
+use crate::relay::{Relay, RelayStatus};
 use crate::secrets::{self, Secrets};
-use crate::syncplay::{RoomInfo, SyncplayOptions, SyncplayServer};
+use crate::syncplay::ext::JellyfinShare;
+use crate::syncplay::{AuthorizeFn, Extensions, RoomInfo, SyncplayOptions, SyncplayServer};
 use crate::tls::{IpSource, Notify, TlsManager, TlsRequest, TlsStatus};
 use crate::updates::{UpdateStatus, Updates};
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 const UPNP_RECHECK: Duration = Duration::from_secs(10 * 60);
+/// After a failed guest-account update, wait this long before trying again.
+const SHARE_RETRY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +34,24 @@ pub struct SyncplayStatus {
     pub users: usize,
     pub rooms: Vec<RoomInfo>,
     pub tls: bool,
+    pub relay: RelayStatus,
+}
+
+/// Jellyfin sharing with Syncplay users, as it actually is right now.
+#[derive(Debug, Clone, Serialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareStatus {
+    /// Offered to Syncplay users (sharing on, Jellyfin running, signed in, guest ready).
+    pub active: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Default)]
+struct ShareState {
+    /// The guest account's enabled flag as last set in Jellyfin.
+    applied: Option<bool>,
+    failed_at: Option<Instant>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -57,6 +80,7 @@ pub struct Snapshot {
     pub upnp: UpnpStatus,
     pub addresses: Addresses,
     pub update: UpdateStatus,
+    pub jellyfin_share: ShareStatus,
 }
 
 struct PfxState {
@@ -81,6 +105,10 @@ pub struct App {
     pfx: Mutex<Option<PfxState>>,
     applied_fingerprint: Mutex<Option<String>>,
     notify: Notify,
+    pub relay: Relay,
+    proxy: Arc<JellyfinProxy>,
+    share: Mutex<ShareState>,
+    share_lock: tokio::sync::Mutex<()>,
 }
 
 impl App {
@@ -97,7 +125,16 @@ impl App {
         let duckdns_token = secrets.get(secrets::DUCKDNS_TOKEN);
         let jellyfin_token = secrets.get(secrets::JELLYFIN_TOKEN);
         let jellyfin = JellyfinManager::new(paths.jellyfin_root(), notify.clone());
+        let relay = Relay::new(
+            paths.relay_cache_dir(),
+            u64::from(settings.syncplay.relay_cache_gb) << 30,
+            settings.syncplay.relay_effective(),
+        );
         Arc::new(Self {
+            relay,
+            proxy: Arc::new(JellyfinProxy::new()),
+            share: Mutex::new(ShareState::default()),
+            share_lock: tokio::sync::Mutex::new(()),
             tls: TlsManager::new(paths.acme_dir()),
             jellyfin,
             upnp: Arc::new(UpnpManager::default()),
@@ -146,6 +183,7 @@ impl App {
             next.jellyfin.admin_user = cur.jellyfin.admin_user.clone();
             next.jellyfin.admin_user_id = cur.jellyfin.admin_user_id.clone();
             next.jellyfin.device_id = cur.jellyfin.device_id.clone();
+            next.jellyfin.guest_user_id = cur.jellyfin.guest_user_id.clone();
         }
         next.tls.duckdns_domain = next.tls.duckdns_domain.trim().to_string();
         next.tls.email = next.tls.email.trim().to_string();
@@ -222,8 +260,33 @@ impl App {
 
     /// Bring every service in line with the current settings.
     pub async fn reconcile(self: &Arc<Self>) {
+        self.reconcile_services().await;
+        self.sync_share().await;
+    }
+
+    fn extensions(self: &Arc<Self>) -> Extensions {
+        let weak = Arc::downgrade(self);
+        let authorize: AuthorizeFn = Arc::new(move |code: String| {
+            let weak = weak.clone();
+            Box::pin(async move {
+                match weak.upgrade() {
+                    Some(app) => app.authorize_guest(&code).await,
+                    None => Err("The server is shutting down".into()),
+                }
+            })
+        });
+        Extensions {
+            relay: Some(self.relay.clone()),
+            proxy: Some(self.proxy.clone()),
+            authorize: Some(authorize),
+        }
+    }
+
+    async fn reconcile_services(self: &Arc<Self>) {
         let _guard = self.reconcile_lock.lock().await;
         let s = self.settings();
+        self.relay
+            .set_limit(u64::from(s.syncplay.relay_cache_gb) << 30);
 
         // TLS first so Syncplay and Jellyfin see the right certificate.
         let token = self.duckdns_token.read().clone();
@@ -268,7 +331,14 @@ impl App {
                 }
             }
             Some(port) => {
-                match SyncplayServer::start(port, opts, self.tls.store(), self.notify.clone()).await
+                match SyncplayServer::start(
+                    port,
+                    opts,
+                    self.tls.store(),
+                    self.notify.clone(),
+                    self.extensions(),
+                )
+                .await
                 {
                     Ok(srv) => {
                         *self.syncplay.lock() = Some(srv);
@@ -353,35 +423,121 @@ impl App {
         if *self.applied_fingerprint.lock() != current {
             info!("certificate changed, updating services");
             self.reconcile().await;
+        } else {
+            self.sync_share().await;
         }
     }
 
-    pub fn snapshot(&self) -> Snapshot {
+    /// Keep the guest account, the proxy and what Syncplay clients are told
+    /// in line with "share Jellyfin" and Jellyfin's state.
+    async fn sync_share(self: &Arc<Self>) {
+        let _guard = self.share_lock.lock().await;
         let s = self.settings();
-        let syncplay = {
-            let guard = self.syncplay.lock();
-            match guard.as_ref() {
-                Some(srv) => SyncplayStatus {
-                    running: true,
-                    port: Some(srv.port),
-                    error: None,
-                    users: srv.user_count(),
-                    rooms: srv.rooms(),
-                    tls: self.tls.current().is_some(),
-                },
-                None => SyncplayStatus {
-                    error: self.syncplay_error.read().clone(),
-                    ..Default::default()
-                },
+        let want = s.share_effective();
+        let ready = s.jellyfin.enabled
+            && self.jellyfin.is_running()
+            && self.jellyfin_token.read().is_some();
+        if !ready {
+            // Re-apply once Jellyfin is reachable again.
+            *self.share.lock() = ShareState::default();
+        } else {
+            let pending = {
+                let st = self.share.lock();
+                st.applied != Some(want) && st.failed_at.is_none_or(|t| t.elapsed() >= SHARE_RETRY)
+            };
+            if pending {
+                let result = match self.jellyfin_api() {
+                    Ok(api) => {
+                        if want {
+                            if let Err(e) = api.enable_quick_connect().await {
+                                warn!(error = %e, "could not enable Quick Connect");
+                            }
+                        }
+                        let res = crate::jellyfin::share::ensure_guest(
+                            &api,
+                            s.jellyfin.guest_user_id.as_deref(),
+                            s.jellyfin.admin_user_id.as_deref(),
+                            want,
+                        )
+                        .await;
+                        self.with_auth(res).await
+                    }
+                    Err(e) => Err(e),
+                };
+                match result {
+                    Ok(id) => {
+                        if id.is_some() && id != s.jellyfin.guest_user_id {
+                            let _ = self.modify_settings(|n| n.jellyfin.guest_user_id = id.clone());
+                        }
+                        info!(sharing = want, "Jellyfin guest account updated");
+                        *self.share.lock() = ShareState {
+                            applied: Some(want),
+                            ..Default::default()
+                        };
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "could not update the Jellyfin guest account");
+                        let mut st = self.share.lock();
+                        st.failed_at = Some(Instant::now());
+                        st.error = Some(e);
+                    }
+                }
             }
-        };
-        let tls = self.tls.status();
-        let upnp = self.upnp.status();
-        let jellyfin = self.jellyfin.status();
+        }
 
+        let active = want
+            && ready
+            && self.share.lock().applied == Some(true)
+            && self.settings.read().jellyfin.guest_user_id.is_some();
+        self.proxy
+            .set_target(active.then_some(s.jellyfin.http_port));
+        let info = active.then(|| {
+            let j = self.jellyfin.status();
+            let a = self.addresses(&s, &j);
+            JellyfinShare {
+                server_id: j.server_id.unwrap_or_default(),
+                server_name: j.server_name.unwrap_or_default(),
+                proxy: true,
+                addresses: [a.jellyfin_public, a.jellyfin_lan]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+            }
+        });
+        if let Some(srv) = self.syncplay.lock().as_ref() {
+            srv.set_jellyfin(info);
+        }
+    }
+
+    /// Approve a Quick Connect code from a Syncplay user for the guest account.
+    async fn authorize_guest(&self, code: &str) -> Result<(), String> {
+        let s = self.settings();
+        let guest = s
+            .jellyfin
+            .guest_user_id
+            .clone()
+            .filter(|_| s.share_effective() && self.share.lock().applied == Some(true))
+            .ok_or("Jellyfin sharing is off on this server")?;
+        let api = self.jellyfin_api()?;
+        let res = api.quick_connect_authorize(code, &guest).await;
+        self.with_auth(res).await?;
+        info!("approved a Jellyfin Quick Connect sign-in for a Syncplay guest");
+        Ok(())
+    }
+
+    pub fn share_status(&self) -> ShareStatus {
+        let s = self.settings.read();
+        let st = self.share.lock();
+        ShareStatus {
+            active: self.proxy.target().is_some(),
+            error: s.share_effective().then(|| st.error.clone()).flatten(),
+        }
+    }
+
+    fn addresses(&self, s: &Settings, jellyfin: &JellyfinStatus) -> Addresses {
         let lan_ip = crate::net::ip::primary_lan_ipv4().map(|ip| ip.to_string());
         let cert_host = self.tls.current().map(|c| c.host.clone());
-        let public_host = cert_host.clone().or_else(|| upnp.external_ip.clone());
+        let public_host = cert_host.clone().or_else(|| self.upnp.status().external_ip);
         let mut addresses = Addresses {
             lan_ip: lan_ip.clone(),
             public_host: public_host.clone(),
@@ -407,8 +563,37 @@ impl App {
                     .map(|h| format!("http://{h}:{}", s.jellyfin.http_port)),
             };
         }
+        addresses
+    }
+
+    pub fn snapshot(&self) -> Snapshot {
+        let s = self.settings();
+        let syncplay = {
+            let guard = self.syncplay.lock();
+            match guard.as_ref() {
+                Some(srv) => SyncplayStatus {
+                    running: true,
+                    port: Some(srv.port),
+                    error: None,
+                    users: srv.user_count(),
+                    rooms: srv.rooms(),
+                    tls: self.tls.current().is_some(),
+                    relay: self.relay.status(),
+                },
+                None => SyncplayStatus {
+                    error: self.syncplay_error.read().clone(),
+                    relay: self.relay.status(),
+                    ..Default::default()
+                },
+            }
+        };
+        let tls = self.tls.status();
+        let upnp = self.upnp.status();
+        let jellyfin = self.jellyfin.status();
+        let addresses = self.addresses(&s, &jellyfin);
 
         Snapshot {
+            jellyfin_share: self.share_status(),
             version: env!("CARGO_PKG_VERSION"),
             duckdns_token_set: self.duckdns_token.read().is_some(),
             jellyfin_signed_in: self.jellyfin_token.read().is_some(),

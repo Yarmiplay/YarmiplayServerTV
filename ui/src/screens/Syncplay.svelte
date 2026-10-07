@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snapshot } from "../lib/api";
+  import { api, formatBytes } from "../lib/api";
   import { store } from "../lib/store.svelte";
   import { useDraft } from "../lib/draft.svelte";
   import { syncplayPill } from "../lib/status";
@@ -9,9 +10,10 @@
   let { snap }: { snap: Snapshot } = $props();
 
   const form = useDraft(() => {
-    const { enabled, upnp, ...rest } = snap.settings.syncplay;
+    const { enabled, upnp, vanillaMode, fileRelay, relayCacheGb, ...rest } = snap.settings.syncplay;
     return rest;
   });
+  const cache = useDraft(() => ({ relayCacheGb: snap.settings.syncplay.relayCacheGb }));
   let showPassword = $state(false);
   let saving = $state(false);
 
@@ -21,7 +23,19 @@
     saving = false;
   }
 
+  async function clearCache() {
+    const next = await store.run(() => api.clearRelayCache(), "Relay cache cleared");
+    if (next) store.snap = next;
+  }
+
   const pill = $derived(syncplayPill(snap));
+  const vanilla = $derived(snap.settings.syncplay.vanillaMode);
+  const relay = $derived(snap.syncplay.relay);
+  const OFF_IN_VANILLA = "Off in vanilla Syncplay mode";
+
+  function rate(bytesPerSecond: number): string {
+    return bytesPerSecond > 0 ? `${((bytesPerSecond * 8) / 1e6).toFixed(1)} Mbit/s` : "idle";
+  }
 </script>
 
 <div class="stack">
@@ -101,6 +115,46 @@
   </section>
 
   <section class="card">
+    <h2>YarmiplayTV extras</h2>
+    <p class="sub">Extra features for YarmiplayTV clients. Official Syncplay clients never see them.</p>
+    <Toggle
+      label="Vanilla Syncplay mode"
+      hint="Behave exactly like the official server: no file relay and no Jellyfin on the Syncplay port"
+      checked={vanilla}
+      onchange={(v) => store.save((s) => (s.syncplay.vanillaMode = v))}
+    />
+    <Toggle
+      label="File relay"
+      hint={vanilla
+        ? OFF_IN_VANILLA
+        : "People in a room can play each other's video files, streamed through this PC and cached on its disk for a day"}
+      disabled={vanilla}
+      checked={snap.settings.syncplay.fileRelay && !vanilla}
+      onchange={(v) => store.save((s) => (s.syncplay.fileRelay = v))}
+    />
+    <div class="cache" class:off={vanilla || !snap.settings.syncplay.fileRelay}>
+      <label class="field">
+        Cache size (GB)
+        <span class="row">
+          <input type="number" min="1" max="2000" bind:value={cache.draft.relayCacheGb} disabled={vanilla} />
+          <button
+            class="small"
+            disabled={!cache.dirty || vanilla}
+            onclick={() => store.save((s) => Object.assign(s.syncplay, cache.draft), "Cache size saved")}>Save</button
+          >
+        </span>
+      </label>
+      <p class="muted note">
+        {formatBytes(relay.cacheBytes)} of {formatBytes(relay.cacheLimitBytes)} used. The cache is emptied when the app
+        starts, and at least 2 GB of the disk always stays free.
+      </p>
+      <div class="row">
+        <button class="small" onclick={clearCache} disabled={relay.cacheBytes === 0}>Clear cache</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
     <Toggle
       label="Forward the port with UPnP"
       hint={`Asks your router to forward TCP ${snap.settings.syncplay.port} to this PC`}
@@ -124,6 +178,14 @@
               <span class="pill">{room.paused ? "Paused" : "Playing"}</span>
             </div>
             <div class="muted selectable">{room.users.join(", ")}</div>
+            {#each relay.active.filter((a) => a.room === room.name) as a (a.name)}
+              <div class="relay muted">
+                Relaying <strong class="selectable">{a.name}</strong>: {formatBytes(a.cachedBytes)} of {formatBytes(a.size)}
+                cached, {a.sources}
+                {a.sources === 1 ? "source" : "sources"}, {a.readers}
+                {a.readers === 1 ? "viewer" : "viewers"}, {rate(a.rate)}
+              </div>
+            {/each}
           </li>
         {/each}
       </ul>
@@ -194,5 +256,20 @@
   }
   .notice {
     margin-top: 8px;
+  }
+  .cache {
+    margin-top: 10px;
+    border-top: 1px solid var(--line);
+    padding-top: 10px;
+  }
+  .cache.off {
+    opacity: 0.6;
+  }
+  .cache input {
+    width: 110px;
+  }
+  .relay {
+    font-size: 0.9em;
+    margin-top: 4px;
   }
 </style>

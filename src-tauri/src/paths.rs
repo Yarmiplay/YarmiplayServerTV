@@ -60,6 +60,11 @@ impl AppPaths {
         self.data.join("logs")
     }
 
+    /// File relay chunks; wiped at startup.
+    pub fn relay_cache_dir(&self) -> PathBuf {
+        self.data.join("relay-cache")
+    }
+
     pub fn ensure(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.config)?;
         std::fs::create_dir_all(&self.data)?;
@@ -110,11 +115,9 @@ pub fn managed_by() -> Option<&'static str> {
     static MANAGED: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     MANAGED
         .get_or_init(|| {
-            managed_by_from(
-                package_family(),
-                std::env::var_os("SNAP").is_some(),
-                || std::fs::read_to_string(MANAGED_BY_FILE).ok(),
-            )
+            managed_by_from(package_family(), std::env::var_os("SNAP").is_some(), || {
+                std::fs::read_to_string(MANAGED_BY_FILE).ok()
+            })
         })
         .as_deref()
 }
@@ -137,7 +140,11 @@ fn managed_by_from(
     let valid = !name.is_empty()
         && name.len() <= 32
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-    Some(if valid { name } else { "package-manager".into() })
+    Some(if valid {
+        name
+    } else {
+        "package-manager".into()
+    })
 }
 
 /// The Snap carries the pinned Jellyfin itself, so nothing executable is

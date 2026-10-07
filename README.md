@@ -9,6 +9,9 @@ gives your friends a room to watch in sync and a media library to stream from.
 
 - A Syncplay 1.7-compatible server built in: rooms, passwords, chat, readiness, shared playlists, and
   encrypted connections (TLS) when a certificate is available.
+- Extras for YarmiplayTV on the same port: a file relay, so everyone in a room can play the file one
+  person has, and one-tap access to your Jellyfin for the people on your Syncplay server. Official
+  Syncplay clients see a normal server, and **Vanilla Syncplay mode** turns the extras off entirely.
 - Jellyfin, downloaded and set up for you. The first-run setup and library management happen in the
   control panel, so you don't need Jellyfin's own setup wizard.
 - Optional UPnP port forwarding, so friends outside your home network can connect. It's off by default.
@@ -66,6 +69,27 @@ Connect from YarmiplayTV or any Syncplay client with `address:port`, for example
 DuckDNS and HTTPS are set up, connect with the DuckDNS name (`myname.duckdns.org:8999`) so clients can
 verify the certificate and use an encrypted connection.
 
+#### YarmiplayTV extras
+
+YarmiplayTV clients announce themselves when they join and get a few extras. Other Syncplay clients never
+see them. All of it runs on the Syncplay port: no extra port to forward.
+
+- **File relay** (on by default): when someone in the room has the file that's playing and you don't,
+  YarmiplayTV streams it from them through this computer. Each part is cached on this computer's disk, so it
+  is sent only once however many people watch, and people who join later are served from the cache. Set
+  the cache size on the **Syncplay** page (10 GB by default; at least 2 GB of the disk always stays free).
+  The cache is emptied when the app starts, files unused for a day are dropped, and **Clear cache** empties
+  it now. The **Rooms** list shows what's being relayed.
+- **Jellyfin sharing** (off by default, on the **Jellyfin** page): YarmiplayTV users on the Syncplay
+  server can add your Jellyfin with one tap. The app signs them in through Quick Connect as a hidden
+  "Syncplay guests" account that can watch but can't delete or manage anything, and Jellyfin is reachable
+  through the Syncplay port too. Switching sharing off disables that account, which signs every guest out.
+  Set a Syncplay password before you share, or anyone who finds the server can watch your libraries.
+- **Vanilla Syncplay mode** makes the server behave exactly like the official one for everyone: no file
+  relay, no Jellyfin sharing, and nothing but Syncplay on its port. Switching it on takes effect right away.
+
+The protocol is described in [docs/client-integration-prompt.md](docs/client-integration-prompt.md).
+
 ### Jellyfin
 
 The first time you switch Jellyfin on, the app downloads Jellyfin (about 150–250 MB, checked against
@@ -117,8 +141,8 @@ certificates per week, so switch staging off once everything works.
 
 ## Where things are stored
 
-Settings, the ACME account, certificates and Jellyfin (program, database, cache and logs) are kept in the
-per-user app-data folder; **Open data folder** on the dashboard opens it.
+Settings, the ACME account, certificates, Jellyfin (program, database, cache and logs) and the file relay
+cache (`relay-cache`) are kept in the per-user app-data folder; **Open data folder** on the dashboard opens it.
 
 - Windows: `%APPDATA%\Yarmiplay\YarmiplayServerTV` (settings) and `%LOCALAPPDATA%\Yarmiplay\YarmiplayServerTV` (data)
 - Windows, Microsoft Store copy: `%LOCALAPPDATA%\Packages\Yarmiplay.YarmiplayServerTV_<id>\LocalState`, which
@@ -169,9 +193,10 @@ npx tauri dev      # run with hot reload
 npx tauri build    # installers in src-tauri/target/release/bundle
 ```
 
-Tests: `cd src-tauri && cargo test` for the Rust side (Syncplay protocol and rooms, UPnP, ACME, Jellyfin
-installer and configuration), `npm run check` for the UI. CI also runs two scripted Syncplay clients
-(`scripts/fake_peer.py`) against the built-in server.
+Tests: `cd src-tauri && cargo test` for the Rust side (Syncplay protocol and rooms, the YarmiplayTV
+extensions and file relay, UPnP, ACME, Jellyfin installer, configuration and sharing), `npm run check` for the
+UI. CI also runs scripted clients (`scripts/fake_peer.py`) against the built-in server: two plain Syncplay
+clients, and a seeder and a viewer (`--yarmiplay`) that pass a file through the relay.
 
 `YARMIPLAYSERVERTV_HOME=<folder>` keeps all settings and data in another folder, which is handy for
 testing. The Jellyfin version and checksums are pinned in `src-tauri/jellyfin-manifest.json`; regenerate
@@ -179,8 +204,11 @@ it with `python scripts/update_jellyfin_manifest.py`.
 
 ### Project layout
 
-- `src-tauri/src/syncplay/`: the Syncplay server (protocol, rooms, TCP/STARTTLS listener).
-- `src-tauri/src/jellyfin/`: Jellyfin download, process supervision, `network.xml` and the REST API client.
+- `src-tauri/src/syncplay/`: the Syncplay server (protocol, rooms, TCP/STARTTLS listener), the YarmiplayTV
+  extensions (`ext.rs`) and the first-byte switch that serves HTTP on the same port (`mux.rs`).
+- `src-tauri/src/relay/`: the file relay (offers, chunk cache, scheduler, HTTP endpoints).
+- `src-tauri/src/jellyfin/`: Jellyfin download, process supervision, `network.xml`, the REST API client,
+  and sharing with Syncplay users (guest account and reverse proxy).
 - `src-tauri/src/net/`: UPnP port mapping, DuckDNS and ACME.
 - `src-tauri/src/orchestrator.rs`: keeps every service in line with the settings.
 - `ui/`: the control panel (Svelte).
@@ -242,6 +270,9 @@ server and network feature is off until you switch it on, and each one only talk
   and [Cloudflare DNS](https://developers.cloudflare.com/1.1.1.1/privacy/public-dns-resolver/).
 - **Syncplay server:** people you give the address to connect to it. File names, playback and chat are
   passed between them and not stored; the app's log on your computer notes who joined and left which room.
+- **File relay:** relayed video files pass through your computer and are cached on its disk until they go
+  unused for a day, and never past a restart.
+- **Jellyfin sharing:** when you switch it on, Syncplay users can sign in to your Jellyfin as a guest.
 
 The full privacy policy is [docs/privacy.md](docs/privacy.md), published at
 <https://servertv.yarmiplay.com/privacy/>.

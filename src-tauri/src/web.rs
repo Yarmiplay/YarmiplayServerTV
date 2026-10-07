@@ -332,6 +332,7 @@ async fn dispatch(h: &AppHandle, command: &str, a: &Value) -> Result<Value, Stri
             ok(cmd::jellyfin_remove_path(app(), arg(a, "library")?, arg(a, "path")?).await?)
         }
         "jellyfin_rescan" => ok(cmd::jellyfin_rescan(app()).await?),
+        "clear_relay_cache" => ok(cmd::clear_relay_cache(app())),
         "get_logs" => ok(cmd::get_logs()),
         "clear_logs" => {
             cmd::clear_logs();

@@ -280,6 +280,38 @@
   {/if}
 
   <section class="card">
+    <Toggle
+      label="Share with Syncplay users"
+      hint={snap.settings.syncplay.vanillaMode
+        ? "Off in vanilla Syncplay mode"
+        : "People on your Syncplay server can add this Jellyfin in YarmiplayTV with one tap, signed in as a hidden guest account that can watch but not change anything"}
+      disabled={snap.settings.syncplay.vanillaMode}
+      checked={snap.settings.jellyfin.shareWithSyncplay && !snap.settings.syncplay.vanillaMode}
+      onchange={(v) => store.save((s) => (s.jellyfin.shareWithSyncplay = v))}
+    />
+    {#if snap.settings.jellyfin.shareWithSyncplay && !snap.settings.syncplay.vanillaMode}
+      {#if !snap.settings.syncplay.password}
+        <div class="notice warn">
+          The Syncplay server has no password, so anyone who finds it can watch your libraries. Set a password on the
+          Syncplay page.
+        </div>
+      {/if}
+      {#if snap.jellyfinShare.error}<div class="notice err">{snap.jellyfinShare.error}</div>{/if}
+      <p class="muted note">
+        {#if snap.jellyfinShare.active}
+          Shared. Turning this off signs every guest out.
+        {:else if !snap.settings.syncplay.enabled}
+          Turn on the Syncplay server to share Jellyfin with its users.
+        {:else if !signedIn}
+          Sharing starts once Jellyfin is running and you're signed in here.
+        {:else}
+          Setting up the guest account…
+        {/if}
+      </p>
+    {/if}
+  </section>
+
+  <section class="card">
     <h2>Ports</h2>
     <p class="sub">Changing a port restarts Jellyfin.</p>
     <div class="fields">

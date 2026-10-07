@@ -72,6 +72,21 @@ jobs:
           cat "$RUNNER_TEMP/bob.log"
           grep -q "RESULT: OK" "$RUNNER_TEMP/bob.log"
 
+      - name: File relay between two YarmiplayTV-style peers
+        run: |
+          src-tauri/target/debug/examples/syncplay_server 18998 > "$RUNNER_TEMP/relay-server.log" 2>&1 &
+          for i in $(seq 1 30); do nc -z 127.0.0.1 18998 && break; sleep 1; done
+          head -c 50000123 /dev/urandom > "$RUNNER_TEMP/Movie.mkv"
+          python scripts/fake_peer.py --host 127.0.0.1 --port 18998 --name Seeder --room relay --yarmiplay \
+            --script "offer $RUNNER_TEMP/Movie.mkv; wait 40; quit" > "$RUNNER_TEMP/seeder.log" 2>&1 &
+          SEEDER=$!
+          sleep 2
+          python scripts/fake_peer.py --host 127.0.0.1 --port 18998 --name Leecher --room relay --yarmiplay \
+            --script "expect-files 1 within=10; fetch Movie.mkv $RUNNER_TEMP/got.mkv stream; expect-same $RUNNER_TEMP/got.mkv $RUNNER_TEMP/Movie.mkv; quit" \
+            | tee "$RUNNER_TEMP/leecher.log"
+          grep -q "RESULT: OK" "$RUNNER_TEMP/leecher.log"
+          kill $SEEDER || true
+
       - uses: actions/upload-artifact@v7
         if: failure()
         with:

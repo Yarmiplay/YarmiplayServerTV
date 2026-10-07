@@ -4,6 +4,8 @@ pub mod api;
 pub mod installer;
 pub mod netconfig;
 pub mod process;
+pub mod proxy;
+pub mod share;
 
 use crate::tls::Notify;
 use installer::Progress;
@@ -39,6 +41,7 @@ pub struct JellyfinStatus {
     pub https: bool,
     pub wizard_completed: Option<bool>,
     pub server_name: Option<String>,
+    pub server_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
@@ -137,6 +140,7 @@ impl JellyfinManager {
             self.set(|s| {
                 s.wizard_completed = Some(info.startup_wizard_completed);
                 s.server_name = Some(info.server_name);
+                s.server_id = Some(info.id).filter(|id| !id.is_empty());
             });
         }
     }

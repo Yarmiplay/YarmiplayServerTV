@@ -10,6 +10,7 @@ pub mod logs;
 pub mod net;
 pub mod orchestrator;
 pub mod paths;
+pub mod relay;
 pub mod secrets;
 pub mod syncplay;
 pub mod tls;
@@ -142,6 +143,7 @@ pub fn run() {
             commands::jellyfin_add_path,
             commands::jellyfin_remove_path,
             commands::jellyfin_rescan,
+            commands::clear_relay_cache,
             commands::get_logs,
             commands::clear_logs,
             commands::open_url,

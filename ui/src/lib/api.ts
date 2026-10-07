@@ -74,6 +74,10 @@ export interface SyncplaySettings {
   maxChatMessageLength: number;
   maxUsernameLength: number;
   upnp: boolean;
+  /** Exactly like the official server: no YarmiplayTV extensions, relay or Jellyfin sharing. */
+  vanillaMode: boolean;
+  fileRelay: boolean;
+  relayCacheGb: number;
 }
 
 export interface JellyfinSettings {
@@ -85,6 +89,9 @@ export interface JellyfinSettings {
   adminUser: string | null;
   adminUserId: string | null;
   deviceId: string;
+  shareWithSyncplay: boolean;
+  /** Managed by the app. */
+  guestUserId: string | null;
 }
 
 export interface TlsSettings {
@@ -131,6 +138,24 @@ export interface RoomInfo {
   paused: boolean;
 }
 
+export interface RelayActivity {
+  room: string;
+  name: string;
+  size: number;
+  cachedBytes: number;
+  sources: number;
+  readers: number;
+  /** Bytes per second arriving from the sources. */
+  rate: number;
+}
+
+export interface RelayStatus {
+  enabled: boolean;
+  cacheBytes: number;
+  cacheLimitBytes: number;
+  active: RelayActivity[];
+}
+
 export interface SyncplayStatus {
   running: boolean;
   port: number | null;
@@ -138,6 +163,13 @@ export interface SyncplayStatus {
   users: number;
   rooms: RoomInfo[];
   tls: boolean;
+  relay: RelayStatus;
+}
+
+export interface ShareStatus {
+  /** Offered to Syncplay users right now. */
+  active: boolean;
+  error: string | null;
 }
 
 export interface JellyfinStatus {
@@ -150,6 +182,7 @@ export interface JellyfinStatus {
   https: boolean;
   wizardCompleted: boolean | null;
   serverName: string | null;
+  serverId: string | null;
 }
 
 export interface TlsStatus {
@@ -200,6 +233,7 @@ export interface Snapshot {
   upnp: UpnpStatus;
   addresses: Addresses;
   update: UpdateStatus;
+  jellyfinShare: ShareStatus;
 }
 
 export interface LogLine {
@@ -234,6 +268,7 @@ export const api = {
   jellyfinAddPath: (library: string, path: string) => invoke<void>("jellyfin_add_path", { library, path }),
   jellyfinRemovePath: (library: string, path: string) => invoke<void>("jellyfin_remove_path", { library, path }),
   jellyfinRescan: () => invoke<void>("jellyfin_rescan"),
+  clearRelayCache: () => invoke<Snapshot>("clear_relay_cache"),
   getLogs: () => invoke<LogLine[]>("get_logs"),
   clearLogs: () => invoke<void>("clear_logs"),
   openUrl: async (url: string) => {
