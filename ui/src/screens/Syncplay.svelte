@@ -195,7 +195,15 @@
             <div class="spread">
               {#if renaming === d.fingerprint}
                 <span class="row">
-                  <input bind:value={newName} maxlength="60" onkeydown={(e) => e.key === "Enter" && rename()} />
+                  <input
+                    bind:value={newName}
+                    maxlength="60"
+                    aria-label="Device name"
+                    onkeydown={(e) => {
+                      if (e.key === "Enter") rename();
+                      else if (e.key === "Escape") renaming = null;
+                    }}
+                  />
                   <button class="small primary" onclick={rename}>Save</button>
                   <button class="small" onclick={() => (renaming = null)}>Cancel</button>
                 </span>
@@ -207,12 +215,14 @@
             <div class="muted selectable">
               Last seen {formatDateTime(d.lastSeen)}{d.lastUsername ? ` as ${d.lastUsername}` : ""}
             </div>
-            <div class="row">
-              <button class="small" onclick={() => startRename(d.fingerprint, d.name)}>Rename</button>
-              <button class="small" onclick={() => device(() => api.removeDevice(d.fingerprint), `${d.name} removed`)}>
-                Remove
-              </button>
-            </div>
+            {#if renaming !== d.fingerprint}
+              <div class="row">
+                <button class="small" onclick={() => startRename(d.fingerprint, d.name)}>Rename</button>
+                <button class="small" onclick={() => device(() => api.removeDevice(d.fingerprint), `${d.name} removed`)}>
+                  Remove
+                </button>
+              </div>
+            {/if}
           </li>
         {/each}
       </ul>
