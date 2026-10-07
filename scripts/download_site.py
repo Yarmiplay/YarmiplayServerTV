@@ -188,11 +188,12 @@ def render_page(downloads, version, built, windows_signed=False, privacy=False, 
             steps = "".join(f"<li>{WINDOWS_SIGNED if windows_signed and s == WINDOWS_UNSIGNED else s}</li>"
                             for s in steps)
             sums = "".join(f"<div>{html.escape(d.href)}<br><code>{d.sha256}</code></div>" for d in files if d.sha256)
-            body = (f'<div class="dl">{buttons}</div><ol>{steps}</ol>'
-                    f'<p class="uninstall"><b>Uninstall:</b> {uninstall} Settings and Jellyfin data stay in your '
-                    f'<a href="{REPO_URL}#uninstalling">app-data folder</a>'
+            body = (f'<div class="dl">{buttons}</div>'
+                    f'<details><summary>Installation guide</summary><ol>{steps}</ol></details>'
+                    f'<details><summary>Uninstall guide</summary><p class="uninstall">{uninstall} Settings and '
+                    f'Jellyfin data stay in your <a href="{REPO_URL}#uninstalling">app-data folder</a>'
                     + (f' (the {html.escape(store[0])} copy removes them with the app)'
-                       if p.key in STORE_LINKS else '') + '.</p>'
+                       if p.key in STORE_LINKS else '') + '.</p></details>'
                     + (f"<details><summary>SHA-256</summary>{sums}</details>" if sums else ""))
         else:
             body = (f'<p class="none">No package for this platform yet. Build it from source '
@@ -247,8 +248,8 @@ def render_page(downloads, version, built, windows_signed=False, privacy=False, 
  code {{ background:var(--bg); padding:.1em .35em; border-radius:4px; color:var(--text); overflow-wrap:anywhere; }}
  pre {{ background:var(--bg); padding:.7em 1em; border-radius:8px; overflow-x:auto; color:var(--text); margin:.3em 0 0; }}
  .none {{ margin:0 0 .3em; }}
- details {{ margin-top:.8em; font-size:.85em; }} details div {{ margin-top:.5em; }}
- summary {{ cursor:pointer; }}
+ details {{ margin-top:.6em; }} details div {{ margin-top:.5em; font-size:.85em; }}
+ summary {{ cursor:pointer; font-size:.85em; }}
  .client {{ margin-top:1.6em; text-align:center; background:var(--card); border:1px solid var(--line); border-radius:16px; padding:1.2em 1.5em; }}
  .client p {{ color:var(--muted); margin:.3em 0 0; }}
  footer {{ text-align:center; color:var(--muted); margin-top:3em; font-size:.95em; }}
