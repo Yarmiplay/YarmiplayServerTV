@@ -75,6 +75,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.6.2" date="2026-10-10">
+      <description>
+        <p>The Syncplay server can now require the password from everyone, including approved devices, the message of the day is now a welcome message clients show when they join, and the server reports itself as Syncplay 1.7.6.</p>
+      </description>
+    </release>
     <release version="1.6.1" date="2026-10-08">
       <description>
         <p>The Jellyfin page no longer warns about a missing Syncplay password when only approved devices can join, and renaming an approved device is tidier.</p>

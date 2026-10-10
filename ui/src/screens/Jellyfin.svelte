@@ -293,7 +293,7 @@
       {#if snap.settings.syncplay.access === "open"}
         <div class="notice warn">
           Anyone can join the Syncplay server, so anyone who finds it can watch your libraries. On the Syncplay page,
-          choose a password or approved devices only under "Who can join".
+          choose a password option or approved devices only under "Who can join".
         </div>
       {/if}
       {#if snap.jellyfinShare.error}<div class="notice err">{snap.jellyfinShare.error}</div>{/if}

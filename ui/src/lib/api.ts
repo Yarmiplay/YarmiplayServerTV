@@ -63,15 +63,23 @@ export function copyText(text: string): Promise<void> {
   return inApp ? writeText(text) : navigator.clipboard.writeText(text);
 }
 
-/** Who may join: anyone, the password (or an approved device), or approved devices only. */
-export type SyncplayAccess = "open" | "password" | "approved";
+/**
+ * Who may join: anyone, the password for everyone, the password or an approved device, or approved
+ * devices only.
+ */
+export type SyncplayAccess = "open" | "passwordOnly" | "password" | "approved";
+
+export function usesPassword(access: SyncplayAccess): boolean {
+  return access === "passwordOnly" || access === "password";
+}
 
 export interface SyncplaySettings {
   enabled: boolean;
   port: number;
   access: SyncplayAccess;
-  /** Used in password mode only. */
+  /** Used in the two password modes only. */
   password: string;
+  /** Welcome message shown to clients when they join. */
   motd: string;
   isolateRooms: boolean;
   disableChat: boolean;

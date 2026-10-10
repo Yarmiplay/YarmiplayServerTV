@@ -45,6 +45,7 @@ pub struct SyncplayOptions {
     pub access: SyncplayAccess,
     /// Checked whenever it is set, except in `approved` mode.
     pub password: String,
+    /// Welcome message sent in the Hello reply.
     pub motd: String,
     pub isolate_rooms: bool,
     pub disable_chat: bool,
@@ -256,8 +257,9 @@ impl ServerState {
     pub fn set_options(&mut self, opts: SyncplayOptions) {
         self.password_md5 = (!opts.password.is_empty()).then(|| protocol::md5_hex(&opts.password));
         let revoke = opts.vanilla_mode && !self.opts.vanilla_mode;
-        let approved_only =
-            opts.access == SyncplayAccess::Approved && self.opts.access != SyncplayAccess::Approved;
+        let switched_to = |mode| opts.access == mode && self.opts.access != mode;
+        let approved_only = switched_to(SyncplayAccess::Approved);
+        let password_only = switched_to(SyncplayAccess::PasswordOnly);
         let before = self.capabilities();
         self.opts = opts;
         if revoke {
@@ -266,15 +268,22 @@ impl ServerState {
             self.broadcast_ext_state();
         }
         if approved_only {
-            let ids: Vec<ConnId> = self
-                .watchers
-                .iter()
-                .filter(|(_, w)| w.device.is_none())
-                .map(|(id, _)| *id)
-                .collect();
-            for id in ids {
-                self.drop_watcher(id, None, APPROVED_ONLY);
-            }
+            self.drop_where(|w| w.device.is_none(), APPROVED_ONLY);
+        }
+        if password_only {
+            self.drop_where(|w| w.device.is_some(), "Password required");
+        }
+    }
+
+    fn drop_where(&mut self, pred: impl Fn(&Watcher) -> bool, message: &str) {
+        let ids: Vec<ConnId> = self
+            .watchers
+            .iter()
+            .filter(|(_, w)| pred(w))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            self.drop_watcher(id, None, message);
         }
     }
 
@@ -341,7 +350,8 @@ impl ServerState {
         if mode == SyncplayAccess::Approved && (self.opts.vanilla_mode || !devices) {
             return Access::Reject(APPROVED_ONLY.into());
         }
-        if devices && mode != SyncplayAccess::Open && self.extended(hello) {
+        let challenges = matches!(mode, SyncplayAccess::Password | SyncplayAccess::Approved);
+        if devices && challenges && self.extended(hello) {
             return Access::Challenge(mode);
         }
         if mode == SyncplayAccess::Approved {
@@ -645,7 +655,7 @@ impl ServerState {
                 "room": { "name": w.room },
                 "version": w.version,
                 "realversion": protocol::SERVER_VERSION,
-                "motd": self.opts.motd,
+                "motd": truncate(&self.opts.motd, protocol::MAX_MOTD_LENGTH),
                 "features": self.features(w.ext.as_ref(), w.device.is_some()),
             }
         }));
@@ -1607,7 +1617,7 @@ mod tests {
     fn access_opts(access: SyncplayAccess, vanilla_mode: bool) -> SyncplayOptions {
         SyncplayOptions {
             access,
-            password: if access == SyncplayAccess::Password {
+            password: if access.uses_password() {
                 "pw".into()
             } else {
                 String::new()
@@ -1639,6 +1649,27 @@ mod tests {
         // Without a device store, YarmiplayTV uses the password like everyone else.
         assert_eq!(
             s.check_access(&ext, false),
+            Access::Reject("Password required".into())
+        );
+
+        // Password only: no challenge, even for YarmiplayTV.
+        let s = ServerState::new(access_opts(PasswordOnly, false));
+        assert_eq!(
+            s.check_access(&ext, true),
+            Access::Reject("Password required".into())
+        );
+        let mut ext_wrong = ext.clone();
+        ext_wrong["password"] = json!(protocol::md5_hex("nope"));
+        assert_eq!(
+            s.check_access(&ext_wrong, true),
+            Access::Reject("Wrong password supplied".into())
+        );
+        let mut ext_pw = ext.clone();
+        ext_pw["password"] = json!(protocol::md5_hex("pw"));
+        assert_eq!(s.check_access(&ext_pw, true), Access::Admit);
+        assert_eq!(s.check_access(&plain_pw, true), Access::Admit);
+        assert_eq!(
+            s.check_access(&plain, true),
             Access::Reject("Password required".into())
         );
 
@@ -1740,5 +1771,51 @@ mod tests {
             .unwrap()
             .contains("removed"));
         assert!(!s.is_logged(1));
+    }
+
+    #[test]
+    fn password_only_drops_device_logins_and_marks_the_mode() {
+        let mut s = ServerState::new(access_opts(SyncplayAccess::Password, false));
+        let (tx, mut d) = unbounded_channel();
+        s.login(1, &ext_hello("dev"), tx, 0.0, Some("AAAA-BBBB-CCCC-DDDD".into()))
+            .unwrap();
+        let (tx, mut p) = unbounded_channel();
+        s.login(2, &ext_hello("pw"), tx, 0.0, None).unwrap();
+        drain(&mut d);
+        drain(&mut p);
+
+        s.set_options(access_opts(SyncplayAccess::PasswordOnly, false));
+        let mut out = Vec::new();
+        let mut closed = false;
+        while let Ok(o) = d.try_recv() {
+            match o {
+                Out::Line(l) => out.push(serde_json::from_str::<Value>(l.trim_end()).unwrap()),
+                Out::Close => closed = true,
+            }
+        }
+        assert_eq!(out[0]["Error"]["message"], "Password required");
+        assert!(closed);
+        assert!(!s.is_logged(1) && s.is_logged(2));
+
+        let (tx, mut n) = unbounded_channel();
+        s.login(3, &ext_hello("new"), tx, 0.0, None).unwrap();
+        let hello = drain(&mut n)
+            .into_iter()
+            .find(|m| m.get("Hello").is_some())
+            .unwrap();
+        assert_eq!(hello["Hello"]["features"]["yarmiplay"]["access"], "passwordOnly");
+        assert_eq!(hello["Hello"]["features"]["yarmiplay"]["device"], "none");
+    }
+
+    #[test]
+    fn long_welcome_messages_are_cut() {
+        let mut s = ServerState::new(SyncplayOptions {
+            motd: "é".repeat(protocol::MAX_MOTD_LENGTH + 10),
+            ..Default::default()
+        });
+        let out = drain(&mut join(&mut s, 1, "alice", "movie", 0.0));
+        let hello = out.iter().find(|m| m.get("Hello").is_some()).unwrap();
+        let motd = hello["Hello"]["motd"].as_str().unwrap();
+        assert_eq!(motd.chars().count(), protocol::MAX_MOTD_LENGTH);
     }
 }

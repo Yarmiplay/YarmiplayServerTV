@@ -13,9 +13,10 @@ pub use server::{AuthorizeFn, Extensions, SyncplayServer};
 
 impl From<&crate::config::SyncplaySettings> for SyncplayOptions {
     fn from(s: &crate::config::SyncplaySettings) -> Self {
-        let password = match s.access {
-            SyncplayAccess::Password => s.password.clone(),
-            _ => String::new(),
+        let password = if s.access.uses_password() {
+            s.password.clone()
+        } else {
+            String::new()
         };
         Self {
             access: s.access,

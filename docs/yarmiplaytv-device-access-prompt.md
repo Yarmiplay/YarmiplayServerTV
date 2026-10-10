@@ -10,9 +10,11 @@ the line into the agent.
 
 ## Goal
 
-YarmiplayServerTV is a Syncplay 1.7 server. Its host chooses who can join:
+YarmiplayServerTV is a Syncplay 1.7 server (it reports `realversion` 1.7.6). Its host chooses who can join:
 
 - **open:** anyone.
+- **passwordOnly:** the Syncplay password, for everyone. Device keys aren't checked, so there is no
+  challenge; an approved device needs the password too.
 - **password:** the Syncplay password, or a device the host approved.
 - **approved:** only devices the host approved. Official Syncplay clients are refused.
 
@@ -44,7 +46,7 @@ Add the opt-in to the Hello `features` (the same entry the relay work uses):
 
 ```json
 {"Hello": {"username": "ana", "password": "<md5 hex, if the user entered one>",
-  "room": {"name": "movie night"}, "version": "1.2.255", "realversion": "1.7.4",
+  "room": {"name": "movie night"}, "version": "1.2.255", "realversion": "1.7.6",
   "features": {"sharedPlaylists": true, "chat": true,
                "yarmiplay": {"protocol": 1, "client": "YarmiplayTV", "version": "<app version>"}}}}
 ```
@@ -57,8 +59,9 @@ The server answers a Hello with a challenge instead of the Hello reply only when
 - the access mode is `password` or `approved`,
 - the Hello carried `features.yarmiplay`.
 
-Otherwise it answers as it does today: in `open` mode, the Hello reply comes straight away, and in `password`
-mode a stock-style password check applies.
+Otherwise it answers as it does today: in `open` mode, the Hello reply comes straight away, and in
+`passwordOnly` mode (or `password` mode without the opt-in) a stock-style password check applies: the Hello
+reply, or `Password required` / `Wrong password supplied` and a closed connection.
 
 ```mermaid
 sequenceDiagram
@@ -156,8 +159,12 @@ include:
   "access": "password", "device": "approved"}
 ```
 
-`access` is `open`, `password` or `approved`; `device` is `approved` when this login used an approved key and
-`none` otherwise. Vanilla clients and vanilla mode never get this entry.
+`access` is `open`, `passwordOnly`, `password` or `approved`; `device` is `approved` when this login used an
+approved key and `none` otherwise (always `none` in `passwordOnly`). Vanilla clients and vanilla mode never
+get this entry.
+
+When the host switches to `passwordOnly`, logins that used an approved key instead of the password get
+`Password required` and the connection closes. Logins that used the password stay.
 
 ## Telling the servers apart
 
@@ -169,7 +176,8 @@ Keep a `serverKind` per connection: `Unknown` until the server answers, then:
 
 With `Syncplay`, hide all device UI, use only the password flow, and never send a `Yarmiplay` command.
 Remember the last kind and `serverId` per saved server profile, so the connect screen can show the right
-fields next time (for example, hide the password field for a server known to be in `approved` mode).
+fields next time (for example, hide the password field for a server known to be in `approved` mode, and
+keep it visible for `passwordOnly`).
 
 ## Client changes
 
@@ -213,8 +221,8 @@ fields next time (for example, hide the password field for a server known to be 
   with `requestAccess: true`).
 - **Denied / Expired / Revoked:** a clear message and a manual **Try again**.
 - Hide the password field once the server is known to be in `approved` mode.
-- A status line on the room screen: "YarmiplayServerTV · approved device", "YarmiplayServerTV · password",
-  or nothing for stock servers.
+- A status line on the room screen: "YarmiplayServerTV · approved device", "YarmiplayServerTV · password"
+  (both password modes), or nothing for stock servers.
 - Profile settings: **Forget this device's key**.
 
 **Docs:** update `docs/privacy.md` in YarmiplayTV: the app creates a key per server, and sends the server its
@@ -235,8 +243,10 @@ public key, the device name and the username. The private key stays on the devic
   - **Approved devices only:** connect, see the pending screen and the same code in the panel, approve, and
     land in the room. Reconnect: no approval needed. Deny a second device. Remove the first device while it's
     in a room: it sees "revoked".
-  - **Password:** an approved device joins without the password; an unapproved one joins with the right
-    password; with a wrong password and **Request access** it goes to pending.
+  - **Password or approved devices:** an approved device joins without the password; an unapproved one
+    joins with the right password; with a wrong password and **Request access** it goes to pending.
+  - **Password only:** no challenge; an approved device without the password gets `Password required`, and
+    with it joins with `"device": "none"`.
   - **Anyone:** no challenge; the marker shows `"access": "open"`.
 - **Against the same server with vanilla mode on:** YarmiplayTV must see a plain Syncplay server (no device UI,
   password only), and must never send a `Yarmiplay` command.

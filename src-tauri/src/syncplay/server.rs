@@ -881,7 +881,7 @@ mod tests {
     ) -> SyncplayServer {
         let opts = SyncplayOptions {
             access,
-            password: if access == SyncplayAccess::Password {
+            password: if access.uses_password() {
                 "pw".into()
             } else {
                 String::new()
@@ -1021,6 +1021,29 @@ mod tests {
         send(&mut c, hello_with("di", true, Some("nope"))).await;
         answer(&mut c, &other, true, "password").await;
         expect_status(&mut c, "pending", &other).await;
+        server.stop();
+    }
+
+    #[tokio::test]
+    async fn password_only_needs_the_password_from_approved_devices_too() {
+        let store = Arc::new(DeviceStore::in_memory());
+        let key = DeviceKey::new();
+        approve(&store, &key);
+        let server = start_with(SyncplayAccess::PasswordOnly, false, &store).await;
+
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("ana", true, None)).await;
+        let out = rest(&mut c).await;
+        assert!(out.iter().all(|m| m.get("Yarmiplay").is_none()), "no challenge");
+        assert_eq!(error_of(&out), "Password required");
+
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("ana", true, Some("pw"))).await;
+        let h = read_until_key(&mut c, "Hello").await;
+        let marker = &h["Hello"]["features"]["yarmiplay"];
+        assert_eq!(marker["access"], "passwordOnly");
+        assert_eq!(marker["device"], "none");
+        assert!(store.status().pending.is_empty());
         server.stop();
     }
 

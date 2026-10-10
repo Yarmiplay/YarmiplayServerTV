@@ -50,7 +50,7 @@ Declare the extension in the client Hello's `features`, next to the existing key
 
 ```json
 {"Hello": {"username": "ana", "room": {"name": "movie night"}, "version": "1.2.255",
-  "realversion": "1.7.4",
+  "realversion": "1.7.6",
   "features": {"sharedPlaylists": true, "chat": true, "yarmiplay": {"protocol": 1}}}}
 ```
 
@@ -67,10 +67,12 @@ A YarmiplayServerTV that has the extensions on answers with a Hello whose `featu
 
 If `features.yarmiplay` is missing, the server is stock Syncplay (or vanilla mode): turn all of
 this off for the connection. The session protocol is `min(client, server)`; this document is
-protocol 1.
+protocol 1. The server reports Syncplay `realversion` 1.7.6.
 
-When the host only admits approved devices or uses a password, the server first answers the Hello
-with a `Yarmiplay.challenge` that the client must sign before it gets the Hello reply. That part of
+When the host only admits approved devices, or accepts the password or an approved device, the
+server first answers the Hello with a `Yarmiplay.challenge` that the client must sign before it
+gets the Hello reply. In "password only" mode there is no challenge: the password is checked as on
+a stock server. That part of
 protocol 1 is in [yarmiplaytv-device-access-prompt.md](yarmiplaytv-device-access-prompt.md); a client
 that declares `features.yarmiplay` must implement it too.
 

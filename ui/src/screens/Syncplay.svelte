@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snapshot } from "../lib/api";
-  import { api, formatBytes, formatDateTime } from "../lib/api";
+  import { api, formatBytes, formatDateTime, usesPassword } from "../lib/api";
   import { store } from "../lib/store.svelte";
   import { useDraft } from "../lib/draft.svelte";
   import { syncplayPill } from "../lib/status";
@@ -84,7 +84,9 @@
         {:else}
           Connections are unencrypted. Set up DuckDNS on the Network page to enable TLS.
         {/if}
-        {#if access === "password"}
+        {#if access === "passwordOnly"}
+          Every client needs the server password, including approved YarmiplayTV devices.
+        {:else if access === "password"}
           Clients need the server password{vanilla ? "." : ", except YarmiplayTV devices you approved."}
         {:else if access === "approved"}
           Only YarmiplayTV devices you approve can join; official Syncplay clients are turned away.
@@ -104,11 +106,12 @@
         Who can join
         <select bind:value={form.draft.access}>
           <option value="open">Anyone</option>
-          <option value="password">Password</option>
+          <option value="passwordOnly">Password only</option>
+          <option value="password">Password or approved devices</option>
           <option value="approved" disabled={vanilla}>Approved devices only</option>
         </select>
       </label>
-      {#if form.draft.access === "password"}
+      {#if usesPassword(form.draft.access)}
         <label class="field">
           Server password
           <span class="secret">
@@ -126,8 +129,13 @@
       <label class="field">Max username length<input type="number" min="1" bind:value={form.draft.maxUsernameLength} /></label>
     </div>
     <label class="field motd">
-      Message of the day
-      <textarea rows="3" bind:value={form.draft.motd} placeholder="Shown to everyone who joins"></textarea>
+      Welcome message
+      <textarea
+        rows="3"
+        maxlength="2000"
+        bind:value={form.draft.motd}
+        placeholder="Syncplay clients show this when they join"
+      ></textarea>
     </label>
     <div class="toggles">
       <Toggle
@@ -160,6 +168,10 @@
       <div class="notice">The list isn't in use while vanilla Syncplay mode is on.</div>
     {:else if access === "open"}
       <div class="notice">Devices are only checked when joining needs a password or approval.</div>
+    {:else if access === "passwordOnly"}
+      <div class="notice">
+        Approvals aren't used to join while "Password only" is chosen. The list is kept for when you switch back.
+      </div>
     {/if}
 
     {#if devices.pending.length > 0}

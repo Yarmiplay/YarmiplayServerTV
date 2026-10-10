@@ -4,8 +4,10 @@ use serde_json::Value;
 
 /// Reported to clients as the server's `realversion`; clients gate features
 /// (shared playlists >= 1.4.0, chat and feature lists >= 1.5.0) on it.
-pub const SERVER_VERSION: &str = "1.7.4";
+pub const SERVER_VERSION: &str = "1.7.6";
 pub const MAX_ROOM_NAME_LENGTH: usize = 35;
+/// Keeps the Hello reply well under [`MAX_LINE_LENGTH`].
+pub const MAX_MOTD_LENGTH: usize = 2000;
 pub const MAX_FILENAME_LENGTH: usize = 250;
 pub const PLAYLIST_MAX_CHARACTERS: usize = 10_000;
 pub const PLAYLIST_MAX_ITEMS: usize = 250;

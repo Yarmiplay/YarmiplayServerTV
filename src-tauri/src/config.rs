@@ -43,6 +43,9 @@ impl Default for BrowserSettings {
 pub enum SyncplayAccess {
     #[default]
     Open,
+    /// The password, for everyone; device keys aren't checked.
+    #[serde(rename = "passwordOnly")]
+    PasswordOnly,
     /// The password, or a device the host approved.
     Password,
     /// Only devices the host approved (YarmiplayTV).
@@ -53,9 +56,14 @@ impl SyncplayAccess {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Open => "open",
+            Self::PasswordOnly => "passwordOnly",
             Self::Password => "password",
             Self::Approved => "approved",
         }
+    }
+
+    pub fn uses_password(self) -> bool {
+        matches!(self, Self::PasswordOnly | Self::Password)
     }
 }
 
@@ -66,8 +74,9 @@ pub struct SyncplaySettings {
     pub port: u16,
     pub access: SyncplayAccess,
     /// Plain text; shown in the UI so it can be shared with friends. Used in
-    /// `password` mode only.
+    /// the `passwordOnly` and `password` modes only.
     pub password: String,
+    /// Welcome message, sent to clients as the Hello reply's `motd`.
     pub motd: String,
     pub isolate_rooms: bool,
     pub disable_chat: bool,
@@ -218,7 +227,7 @@ impl Settings {
             return Err("the relay cache must be between 1 and 2000 GB".into());
         }
         match self.syncplay.access {
-            SyncplayAccess::Password if self.syncplay.password.is_empty() => {
+            a if a.uses_password() && self.syncplay.password.is_empty() => {
                 return Err("Enter a Syncplay password, or choose who can join another way".into())
             }
             SyncplayAccess::Approved if self.syncplay.vanilla_mode => {
@@ -284,6 +293,9 @@ mod tests {
         assert_eq!(s.syncplay.access, SyncplayAccess::Open);
         let s = Settings::parse(r#"{"syncplay":{"access":"approved"}}"#).unwrap();
         assert_eq!(s.syncplay.access, SyncplayAccess::Approved);
+        let s = Settings::parse(r#"{"syncplay":{"access":"passwordOnly"}}"#).unwrap();
+        assert_eq!(s.syncplay.access, SyncplayAccess::PasswordOnly);
+        assert!(serde_json::to_string(&s).unwrap().contains(r#""access":"passwordOnly""#));
     }
 
     #[test]
@@ -291,7 +303,11 @@ mod tests {
         let mut s = Settings::default();
         s.syncplay.access = SyncplayAccess::Password;
         assert!(s.validate().is_err());
+        s.syncplay.access = SyncplayAccess::PasswordOnly;
+        assert!(s.validate().is_err());
         s.syncplay.password = "pw".into();
+        assert!(s.validate().is_ok());
+        s.syncplay.access = SyncplayAccess::Password;
         assert!(s.validate().is_ok());
         s.syncplay.access = SyncplayAccess::Approved;
         assert!(s.validate().is_ok());

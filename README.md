@@ -62,14 +62,18 @@ it installs. Versions before 1.1.0 can't update themselves; install 1.1.0 or lat
 
 ### Syncplay
 
-The default port is 8999. On the **Syncplay** page you choose who can join, and set a message of the day,
-isolated rooms (users only see their own room), and switch off chat or readiness. Changing the port
-restarts the server and disconnects everyone.
+The default port is 8999. On the **Syncplay** page you choose who can join, and set a welcome message
+(Syncplay clients show it when they join, up to 2000 characters), isolated rooms (users only see their own
+room), and switch off chat or readiness. Changing the port restarts the server and disconnects everyone.
+The server reports itself as Syncplay 1.7.6.
 
 **Who can join:**
 
 - **Anyone** who has the address.
-- **Password:** clients need the server password, except YarmiplayTV devices you approved.
+- **Password only:** every client needs the server password, including YarmiplayTV devices you approved.
+  Switching to this mode disconnects anyone who got in with an approved device instead of the password.
+- **Password or approved devices:** clients need the server password, except YarmiplayTV devices you
+  approved.
 - **Approved devices only:** only YarmiplayTV devices you approved. Official Syncplay clients are turned
   away with a message saying so. Switching to this mode disconnects everyone who isn't on an approved device.
 
@@ -98,7 +102,7 @@ see them. All of it runs on the Syncplay port: no extra port to forward.
   server can add your Jellyfin with one tap. The app signs them in through Quick Connect as a hidden
   "Syncplay guests" account that can watch but can't delete or manage anything, and Jellyfin is reachable
   through the Syncplay port too. Switching sharing off disables that account, which signs every guest out.
-  Set "Who can join" to a password or approved devices only before you share, or anyone who finds the
+  Set "Who can join" to a password option or approved devices only before you share, or anyone who finds the
   server can watch your libraries.
 - **Vanilla Syncplay mode** makes the server behave exactly like the official one for everyone: no file
   relay, no Jellyfin sharing, no device approvals (approved devices need the password like everyone else),
