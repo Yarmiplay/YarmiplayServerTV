@@ -10,6 +10,7 @@ pub mod logs;
 pub mod net;
 pub mod orchestrator;
 pub mod paths;
+pub mod plex;
 pub mod relay;
 pub mod secrets;
 pub mod syncplay;
@@ -143,6 +144,17 @@ pub fn run() {
             commands::jellyfin_add_path,
             commands::jellyfin_remove_path,
             commands::jellyfin_rescan,
+            commands::plex_link_start,
+            commands::plex_link_cancel,
+            commands::plex_logout,
+            commands::plex_refresh,
+            commands::plex_libraries,
+            commands::plex_add_library,
+            commands::plex_remove_library,
+            commands::plex_add_path,
+            commands::plex_remove_path,
+            commands::plex_rescan,
+            commands::plex_remove_invite,
             commands::clear_relay_cache,
             commands::syncplay_device_approve,
             commands::syncplay_device_deny,

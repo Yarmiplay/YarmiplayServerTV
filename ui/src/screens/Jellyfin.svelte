@@ -6,6 +6,7 @@
   import { jellyfinPill } from "../lib/status";
   import Toggle from "../lib/Toggle.svelte";
   import Address from "../lib/Address.svelte";
+  import Libraries from "../lib/Libraries.svelte";
 
   let { snap }: { snap: Snapshot } = $props();
 
@@ -63,10 +64,6 @@
   // Libraries
   let libraries = $state<Library[] | null>(null);
   let libError = $state<string | null>(null);
-  let newName = $state("");
-  let newType = $state("movies");
-  let newPath = $state("");
-  let confirmRemove = $state<string | null>(null);
 
   async function loadLibraries() {
     libError = null;
@@ -81,22 +78,13 @@
     if (signedIn && libraries === null) loadLibraries();
   });
 
-  function pickFolder(): Promise<string | null> {
-    return api.pickFolder();
+  async function addLibrary(name: string, type: string, path: string): Promise<boolean> {
+    const ok = await store.run(() => api.jellyfinAddLibrary(name, type, path), `Added ${name}`);
+    await loadLibraries();
+    return ok !== undefined;
   }
 
-  async function addLibrary() {
-    const ok = await store.run(() => api.jellyfinAddLibrary(newName, newType, newPath), `Added ${newName}`);
-    if (ok !== undefined) {
-      newName = "";
-      newPath = "";
-      await loadLibraries();
-    }
-  }
-
-  async function addPath(lib: string) {
-    const dir = await pickFolder();
-    if (!dir) return;
+  async function addPath(lib: string, dir: string) {
     await store.run(() => api.jellyfinAddPath(lib, dir), "Folder added");
     await loadLibraries();
   }
@@ -107,7 +95,6 @@
   }
 
   async function removeLibrary(name: string) {
-    confirmRemove = null;
     await store.run(() => api.jellyfinRemoveLibrary(name), `Removed ${name}`);
     await loadLibraries();
   }
@@ -119,7 +106,7 @@
     ["homevideos", "Home videos & photos"],
     ["mixed", "Mixed movies & shows"],
   ];
-  const typeLabel = (t: string | null) => types.find(([k]) => k === t)?.[1] ?? "Mixed";
+  const typeLabel = (t: string) => types.find(([k]) => k === t)?.[1] ?? "Mixed";
 </script>
 
 <div class="stack">
@@ -225,57 +212,15 @@
         </div>
       </div>
       {#if libError}<div class="notice err">{libError}</div>{/if}
-      {#if libraries === null}
-        <p class="muted">Loading…</p>
-      {:else if libraries.length === 0}
-        <p class="muted">No libraries yet. Add a folder with your movies or shows below.</p>
-      {:else}
-        <ul class="libs">
-          {#each libraries as lib (lib.name)}
-            <li>
-              <div class="spread">
-                <div><strong>{lib.name}</strong> <span class="pill">{typeLabel(lib.collectionType)}</span></div>
-                <div class="row">
-                  <button class="small" onclick={() => addPath(lib.name)}>Add folder</button>
-                  {#if confirmRemove === lib.name}
-                    <button class="small danger" onclick={() => removeLibrary(lib.name)}>Really remove?</button>
-                    <button class="small" onclick={() => (confirmRemove = null)}>Cancel</button>
-                  {:else}
-                    <button class="small danger" onclick={() => (confirmRemove = lib.name)}>Remove</button>
-                  {/if}
-                </div>
-              </div>
-              {#each lib.locations as loc (loc)}
-                <div class="loc spread">
-                  <code>{loc}</code>
-                  <button class="small" onclick={() => removePath(lib.name, loc)} disabled={lib.locations.length < 2} title={lib.locations.length < 2 ? "A library needs at least one folder" : ""}>Remove folder</button>
-                </div>
-              {/each}
-            </li>
-          {/each}
-        </ul>
-      {/if}
-
-      <h3>Add a library</h3>
-      <div class="fields">
-        <label class="field">Name<input bind:value={newName} placeholder="Movies" /></label>
-        <label class="field">
-          Content
-          <select bind:value={newType}>
-            {#each types as [k, label] (k)}<option value={k}>{label}</option>{/each}
-          </select>
-        </label>
-        <label class="field">
-          Folder
-          <span class="row">
-            <input bind:value={newPath} placeholder="Choose a folder" style="flex:1" />
-            <button class="small" onclick={async () => (newPath = (await pickFolder()) ?? newPath)}>Browse</button>
-          </span>
-        </label>
-      </div>
-      <div class="row buttons">
-        <button class="primary" disabled={!newName.trim() || !newPath.trim()} onclick={addLibrary}>Add library</button>
-      </div>
+      <Libraries
+        libraries={libraries?.map((l) => ({ id: l.name, name: l.name, kind: l.collectionType ?? "mixed", locations: l.locations })) ?? null}
+        kinds={types}
+        kindLabel={typeLabel}
+        onAdd={addLibrary}
+        onAddPath={addPath}
+        onRemovePath={removePath}
+        onRemove={(name) => removeLibrary(name)}
+      />
     </section>
   {/if}
 
@@ -337,10 +282,6 @@
   h1 {
     font-size: 1.6em;
   }
-  h3 {
-    font-size: 1em;
-    margin: 20px 0 10px;
-  }
   .note {
     font-size: 0.9em;
     margin: 8px 0;
@@ -370,25 +311,6 @@
     height: 100%;
     background: var(--accent);
     transition: width 0.3s;
-  }
-  .libs {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .libs li {
-    background: var(--card-high);
-    border-radius: 10px;
-    padding: 10px 14px;
-  }
-  .libs li button {
-    background: var(--card);
-  }
-  .loc {
-    margin-top: 6px;
   }
   .notice {
     margin-top: 10px;

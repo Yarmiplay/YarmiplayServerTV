@@ -5,6 +5,7 @@ use crate::config::Settings;
 use crate::jellyfin::api::Library;
 use crate::logs::{self, LogLine};
 use crate::orchestrator::{App, Snapshot};
+use crate::plex::api::Library as PlexLibrary;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -119,6 +120,66 @@ pub async fn jellyfin_remove_path(
 #[tauri::command]
 pub async fn jellyfin_rescan(app: AppState<'_>) -> Result<(), String> {
     app.jellyfin_rescan().await
+}
+
+#[tauri::command]
+pub async fn plex_link_start(app: AppState<'_>) -> Result<Snapshot, String> {
+    app.inner().plex_link_start().await
+}
+
+#[tauri::command]
+pub fn plex_link_cancel(app: AppState<'_>) -> Snapshot {
+    app.plex_link_cancel()
+}
+
+#[tauri::command]
+pub async fn plex_logout(app: AppState<'_>) -> Result<Snapshot, String> {
+    app.inner().plex_logout().await
+}
+
+#[tauri::command]
+pub fn plex_refresh(app: AppState<'_>) {
+    app.plex_refresh();
+}
+
+#[tauri::command]
+pub async fn plex_libraries(app: AppState<'_>) -> Result<Vec<PlexLibrary>, String> {
+    app.plex_libraries().await
+}
+
+#[tauri::command]
+pub async fn plex_add_library(
+    app: AppState<'_>,
+    name: String,
+    kind: String,
+    path: String,
+) -> Result<(), String> {
+    app.plex_add_library(name, kind, path).await
+}
+
+#[tauri::command]
+pub async fn plex_remove_library(app: AppState<'_>, key: String) -> Result<(), String> {
+    app.plex_remove_library(key).await
+}
+
+#[tauri::command]
+pub async fn plex_add_path(app: AppState<'_>, key: String, path: String) -> Result<(), String> {
+    app.plex_add_path(key, path).await
+}
+
+#[tauri::command]
+pub async fn plex_remove_path(app: AppState<'_>, key: String, path: String) -> Result<(), String> {
+    app.plex_remove_path(key, path).await
+}
+
+#[tauri::command]
+pub async fn plex_rescan(app: AppState<'_>) -> Result<(), String> {
+    app.plex_rescan().await
+}
+
+#[tauri::command]
+pub async fn plex_remove_invite(app: AppState<'_>, share_id: String) -> Result<Snapshot, String> {
+    app.plex_remove_invite(share_id).await
 }
 
 #[tauri::command]

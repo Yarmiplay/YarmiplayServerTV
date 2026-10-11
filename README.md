@@ -15,6 +15,8 @@ gives your friends a room to watch in sync and a media library to stream from.
   Syncplay clients see a normal server, and **Vanilla Syncplay mode** turns the extras off entirely.
 - Jellyfin, downloaded and set up for you. The first-run setup and library management happen in the
   control panel, so you don't need Jellyfin's own setup wizard.
+- Works with your own Plex Media Server: manage its libraries from the control panel and share it with the
+  people on your Syncplay server. You install Plex yourself from plex.tv; the app never installs or runs it.
 - Optional UPnP port forwarding, so friends outside your home network can connect. It's off by default.
 - Optional free HTTPS: a [DuckDNS](https://www.duckdns.org) name that follows your home IP, with a
   Let's Encrypt certificate that is renewed automatically.
@@ -104,13 +106,21 @@ see them. All of it runs on the Syncplay port: no extra port to forward.
   through the Syncplay port too. Switching sharing off disables that account, which signs every guest out.
   Set "Who can join" to a password option or approved devices only before you share, or anyone who finds the
   server can watch your libraries.
+- **Plex sharing** (off by default, on the **Plex** page): YarmiplayTV users on the Syncplay server can ask
+  for your Plex. Each one gets a normal Plex friend invite, to the libraries you pick, for their own plex.tv
+  account; the app never sees their password or token. They reach Plex directly, not through the Syncplay
+  port, so Plex needs its own port forward (Plex's **Remote Access**, or UPnP for Plex here) and Plex's rules
+  for streaming outside your home apply as usual. The
+  **Plex** page lists the people invited this way, and switching sharing off removes those invites (friends you
+  added in Plex yourself are never touched).
 - **Vanilla Syncplay mode** makes the server behave exactly like the official one for everyone: no file
-  relay, no Jellyfin sharing, no device approvals (approved devices need the password like everyone else),
+  relay, no Jellyfin or Plex sharing, no device approvals (approved devices need the password like everyone else),
   and nothing but Syncplay on its port. It can't be combined with **Approved devices only**. Switching it on
   takes effect right away.
 
-The protocol is described in [docs/client-integration-prompt.md](docs/client-integration-prompt.md) and
-[docs/yarmiplaytv-device-access-prompt.md](docs/yarmiplaytv-device-access-prompt.md).
+The protocol is described in [docs/client-integration-prompt.md](docs/client-integration-prompt.md),
+[docs/yarmiplaytv-device-access-prompt.md](docs/yarmiplaytv-device-access-prompt.md) and
+[docs/yarmiplaytv-plex-sharing-prompt.md](docs/yarmiplaytv-plex-sharing-prompt.md).
 
 ### Jellyfin
 
@@ -128,6 +138,27 @@ administrator account.
 
 Default ports: 8096 for HTTP, 8920 for HTTPS (HTTPS is only used once a DuckDNS certificate is ready).
 
+### Plex
+
+Plex Media Server isn't part of this app: Plex's terms don't allow it to be bundled, so install it yourself
+from [plex.tv](https://www.plex.tv/media-server-downloads/) and keep it updated through Plex. The app works the
+same with every copy (download page, Microsoft Store and Snap) and only ever talks to Plex over HTTP on this
+computer, so it never changes Plex's own files.
+
+1. Switch on **Plex Media Server** on the **Plex** page. The page tells you if Plex isn't installed or isn't
+   running, and checks again on its own once it is.
+2. If Plex is new, finish its own setup first: **Finish setup in Plex** opens it in your browser to sign in to
+   your Plex account and name the server.
+3. **Link your Plex account**: the app shows a code to enter at [plex.tv/link](https://plex.tv/link), the same
+   way Plex apps on a TV sign in. Link the account that owns the server.
+4. Add libraries: a name, the kind of content (movies, TV shows, music, photos, other videos) and a folder. Plex
+   has to be able to read the folder; on Linux, Plex runs as its own `plex` user.
+
+Plex listens on port 32400. If you changed it in Plex, change it on the **Plex** page too. To reach Plex from
+outside your network, use either Plex's own **Remote Access** setting or **UPnP** for Plex here, not both.
+Streaming from outside your home network follows Plex's own rules (a Plex Pass or Remote Watch Pass may be
+needed); sharing through this app doesn't change that.
+
 ## Internet access
 
 At home, friends can always connect with the LAN address. For friends elsewhere, your router has to
@@ -136,7 +167,7 @@ forward the server ports to your computer.
 ### Port forwarding
 
 Either forward the ports yourself in your router's settings (TCP, to this computer's LAN address shown on
-the **Network** page), or switch on **UPnP** for Syncplay and/or Jellyfin on the **Network** page. With UPnP
+the **Network** page), or switch on **UPnP** for Syncplay, Jellyfin and/or Plex on the **Network** page. With UPnP
 the app asks the router to add the forwards, checks them every 10 minutes, and removes them again when you
 switch UPnP off or quit. A forward you already made by hand is detected and left alone.
 
@@ -175,6 +206,8 @@ folder; **Open data folder** on the dashboard opens it.
 - Linux: `~/.config/yarmiplayservertv` and `~/.local/share/yarmiplayservertv`
 - Linux, Snap: the same two under `~/snap/yarmiplayservertv/current/`
 
+Plex keeps its own settings and data where its installer put them; the app stores only its settings for Plex.
+
 Tokens and passwords never appear in the logs; the **Logs** page shows the app's activity and Jellyfin's
 warnings.
 
@@ -189,13 +222,14 @@ warnings.
      `sudo snap remove yarmiplayservertv`.
 4. To remove your settings, certificates and Jellyfin (with its library database) too, delete the folders
    listed in [Where things are stored](#where-things-are-stored) (the Microsoft Store copy's folder is deleted
-   with the app). The DuckDNS token and Jellyfin sign-in are
+   with the app). The DuckDNS token and the Jellyfin and Plex sign-ins are
    kept in the system credential store under `YarmiplayServerTV`; **Remove** next to the DuckDNS token on the
    Network page and
-   **Sign out** on the Jellyfin page delete them, or remove them in Windows Credential Manager, Keychain Access
+   **Sign out** on the Jellyfin and Plex pages delete them, or remove them in Windows Credential Manager, Keychain Access
    (macOS) or your Linux keyring app.
 
-Your media folders are never changed or deleted.
+Your media folders are never changed or deleted. Plex Media Server stays installed; remove it separately if
+you want to.
 
 ## Building from source
 
@@ -232,8 +266,11 @@ it with `python scripts/update_jellyfin_manifest.py`.
   port (`mux.rs`).
 - `src-tauri/src/relay/`: the file relay (offers, chunk cache, scheduler, HTTP endpoints).
 - `src-tauri/src/jellyfin/`: Jellyfin download, process supervision, `network.xml`, the REST API client,
-  and sharing with Syncplay users (guest account and reverse proxy).
-- `src-tauri/src/net/`: UPnP port mapping, DuckDNS and ACME.
+  and sharing with Syncplay users (guest account).
+- `src-tauri/src/plex/`: watching the user's own Plex Media Server, its local API, plex.tv (account linking
+  and friend invites) and sharing with Syncplay users.
+- `src-tauri/src/net/`: UPnP port mapping, DuckDNS and ACME, and the reverse proxy that serves Jellyfin on
+  the Syncplay port.
 - `src-tauri/src/orchestrator.rs`: keeps every service in line with the settings.
 - `ui/`: the control panel (Svelte).
 
@@ -301,6 +338,9 @@ server and network feature is off until you switch it on, and each one only talk
 - **File relay:** relayed video files pass through your computer and are cached on its disk until they go
   unused for a day, and never past a restart.
 - **Jellyfin sharing:** when you switch it on, Syncplay users can sign in to your Jellyfin as a guest.
+- **Plex:** talks to your Plex Media Server on this computer. Linking your Plex account, and sharing, talk to
+  [plex.tv](https://www.plex.tv/about/privacy-legal/) on your account's behalf: when someone on your Syncplay
+  server asks for your Plex, their plex.tv username is sent to plex.tv to invite them.
 
 The full privacy policy is [docs/privacy.md](docs/privacy.md), published at
 <https://servertv.yarmiplay.com/privacy/>.
@@ -308,4 +348,5 @@ The full privacy policy is [docs/privacy.md](docs/privacy.md), published at
 ## License
 
 GPL-3.0-or-later. Syncplay and Jellyfin are separate projects by their respective authors; this app
-speaks the Syncplay protocol and downloads unmodified Jellyfin releases.
+speaks the Syncplay protocol and downloads unmodified Jellyfin releases. Plex is a trademark of Plex, Inc.;
+this app works with a Plex Media Server you install yourself and isn't made or endorsed by Plex.

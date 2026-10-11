@@ -248,7 +248,7 @@
       label="Vanilla Syncplay mode"
       hint={access === "approved" && !vanilla
         ? "Choose another way to join first: approved devices need YarmiplayTV features"
-        : "Behave exactly like the official Syncplay server. YarmiplayTV features such as approved devices, the file relay and Jellyfin sharing are off."}
+        : "Behave exactly like the official Syncplay server. YarmiplayTV features such as approved devices, the file relay, and Jellyfin and Plex sharing are off."}
       disabled={access === "approved" && !vanilla}
       checked={vanilla}
       onchange={(v) => store.save((s) => (s.syncplay.vanillaMode = v))}

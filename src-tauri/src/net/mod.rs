@@ -1,5 +1,6 @@
 pub mod acme;
 pub mod ip;
+pub mod proxy;
 pub mod upnp;
 
 #[cfg(test)]

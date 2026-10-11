@@ -3,11 +3,11 @@
   import type { Snapshot } from "../lib/api";
   import { api, formatDate, inApp } from "../lib/api";
   import { store } from "../lib/store.svelte";
-  import { jellyfinPill, syncplayPill, tlsPill, updatedBy, updatePill, upnpPill } from "../lib/status";
+  import { jellyfinPill, plexPill, syncplayPill, tlsPill, updatedBy, updatePill, upnpPill } from "../lib/status";
   import Toggle from "../lib/Toggle.svelte";
   import Address from "../lib/Address.svelte";
 
-  type Screen = "dashboard" | "syncplay" | "jellyfin" | "network" | "logs" | "about";
+  type Screen = "dashboard" | "syncplay" | "jellyfin" | "plex" | "network" | "logs" | "about";
   let { snap, go }: { snap: Snapshot; go: (s: Screen) => void } = $props();
 
   let autostart = $state(false);
@@ -23,6 +23,10 @@
 
   const sp = $derived(syncplayPill(snap));
   const jf = $derived(jellyfinPill(snap));
+  const px = $derived(plexPill(snap));
+  const plexNeedsYou = $derived(
+    snap.settings.plex.enabled && (snap.plex.phase !== "running" || !snap.plexAccount.signedIn || snap.plexAccount.ownsServer === false),
+  );
   const tls = $derived(tlsPill(snap));
   const upnp = $derived(upnpPill(snap));
   const upd = $derived(updatePill(snap));
@@ -34,7 +38,9 @@
 <div class="stack">
   <header>
     <h1>Dashboard</h1>
-    <p class="muted">Host a Syncplay server and a Jellyfin server for YarmiplayTV and other Syncplay clients.</p>
+    <p class="muted">
+      Host a Syncplay server and a Jellyfin server, and share your Plex, for YarmiplayTV and other Syncplay clients.
+    </p>
   </header>
 
   <div class="grid2">
@@ -90,6 +96,28 @@
       <div class="actions">
         <button class:primary={needsJellyfinSetup} onclick={() => go("jellyfin")}>
           {needsJellyfinSetup ? "Set up Jellyfin" : "Jellyfin settings"}
+        </button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="spread">
+        <h2>Plex</h2>
+        <span class="pill {px.kind}">{px.text}</span>
+      </div>
+      <p class="sub">Your own Plex Media Server, shared with your Syncplay users.</p>
+      <Toggle
+        label="Plex Media Server"
+        hint="Works with the Plex you installed from plex.tv"
+        checked={snap.settings.plex.enabled}
+        onchange={(v) => store.save((s) => (s.plex.enabled = v))}
+      />
+      {#if snap.settings.plex.enabled && snap.plex.phase === "running"}
+        <Address label="This PC" value={snap.addresses.plexLocal} link />
+      {/if}
+      <div class="actions">
+        <button class:primary={plexNeedsYou} onclick={() => go("plex")}>
+          {plexNeedsYou ? "Set up Plex" : "Plex settings"}
         </button>
       </div>
     </section>

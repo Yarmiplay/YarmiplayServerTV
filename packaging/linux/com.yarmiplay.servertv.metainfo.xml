@@ -19,12 +19,14 @@
     <ul>
       <li>A Syncplay 1.7 compatible server with rooms, an optional password, chat and a shared playlist</li>
       <li>A Jellyfin media server, set up from the control panel</li>
+      <li>Works with a Plex Media Server you install yourself: manage its libraries and share it with your Syncplay users</li>
       <li>Optional UPnP port forwarding so people outside your home network can connect</li>
       <li>Free encrypted connections with a DuckDNS domain and a Let's Encrypt certificate</li>
       <li>Starts with your session and keeps running in the tray</li>
     </ul>
     <p>
-      Jellyfin is developed by the Jellyfin project and included unmodified under its own license.
+      Jellyfin is developed by the Jellyfin project and included unmodified under its own license. Plex is a
+      trademark of Plex, Inc.; Plex Media Server is not included and this app is not made or endorsed by Plex.
     </p>
   </description>
 
@@ -75,6 +77,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.7.0" date="2026-10-11">
+      <description>
+        <p>Works with your own Plex Media Server: manage its libraries from the control panel and share it with your Syncplay users through Plex friend invites. Plex is not included; install it from plex.tv.</p>
+      </description>
+    </release>
     <release version="1.6.2" date="2026-10-10">
       <description>
         <p>The Syncplay server can now require the password from everyone, including approved devices, the message of the day is now a welcome message clients show when they join, and the server reports itself as Syncplay 1.7.6.</p>

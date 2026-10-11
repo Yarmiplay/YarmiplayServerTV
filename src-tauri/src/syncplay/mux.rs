@@ -3,7 +3,8 @@
 //! `0x16` is a TLS handshake for HTTPS, and an uppercase ASCII letter starts
 //! an HTTP request. HTTP connections are handed to an axum router through a
 //! channel-backed [`Listener`]: the relay endpoints, a probe, and the shared
-//! Jellyfin for every other path. Vanilla mode never sniffs.
+//! Jellyfin or Plex for every other path (see [`route`]). Vanilla mode never
+//! sniffs.
 
 use super::room::{ConnId, ServerState};
 use super::server::Extensions;
@@ -201,14 +202,82 @@ async fn upload(
     crate::relay::http::put_upload(relay, conn, &id, body).await
 }
 
+/// Which shared media server a proxied request is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    Jellyfin,
+    Plex,
+}
+
+/// Paths only Plex serves. Jellyfin's own routes are capitalized
+/// (`/Library/...`), so these are compared case-sensitively.
+const PLEX_PATHS: [&str; 7] = [
+    "/identity",
+    "/library",
+    "/:",
+    "/photo",
+    "/hubs",
+    "/video",
+    "/media",
+];
+
+/// Plex clients mark every request with `X-Plex-*` headers or an
+/// `X-Plex-Token` query parameter; Jellyfin clients never do.
+fn looks_like_plex(headers: &HeaderMap, path: &str, query: &str) -> bool {
+    headers.keys().any(|k| k.as_str().starts_with("x-plex-"))
+        || query.split('&').any(|p| {
+            p.split('=')
+                .next()
+                .is_some_and(|k| k.eq_ignore_ascii_case("X-Plex-Token"))
+        })
+        || PLEX_PATHS.iter().any(|p| {
+            path.strip_prefix(p)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        })
+}
+
+/// With one server shared, everything goes to it; with both, Plex's marks
+/// decide.
+fn route(
+    jellyfin: bool,
+    plex: bool,
+    headers: &HeaderMap,
+    path: &str,
+    query: &str,
+) -> Option<Target> {
+    match (jellyfin, plex) {
+        (false, false) => None,
+        (true, false) => Some(Target::Jellyfin),
+        (false, true) => Some(Target::Plex),
+        (true, true) if looks_like_plex(headers, path, query) => Some(Target::Plex),
+        (true, true) => Some(Target::Jellyfin),
+    }
+}
+
 async fn proxy(
     State(ctx): State<Ctx>,
     ConnectInfo(meta): ConnectInfo<ConnMeta>,
     req: Request,
 ) -> Response<Body> {
-    match &ctx.ext.proxy {
-        Some(p) if p.target().is_some() => p.forward(req, meta.peer.ip(), meta.tls).await,
-        _ => reply(StatusCode::NOT_FOUND, "Not found"),
+    let active = |p: &Option<std::sync::Arc<crate::net::proxy::LocalProxy>>| {
+        p.as_ref().filter(|p| p.target().is_some()).cloned()
+    };
+    let (jellyfin, plex) = (active(&ctx.ext.proxy), active(&ctx.ext.plex_proxy));
+    let target = route(
+        jellyfin.is_some(),
+        plex.is_some(),
+        req.headers(),
+        req.uri().path(),
+        req.uri().query().unwrap_or(""),
+    );
+    let proxy = match target {
+        Some(Target::Jellyfin) => jellyfin,
+        Some(Target::Plex) => plex,
+        None => None,
+    };
+    match proxy {
+        Some(p) => p.forward(req, meta.peer.ip(), meta.tls).await,
+        None => reply(StatusCode::NOT_FOUND, "Not found"),
     }
 }
 
@@ -223,5 +292,54 @@ mod tests {
         assert_eq!(sniff(0x16), Sniff::Tls);
         assert_eq!(sniff(b'G'), Sniff::Http);
         assert_eq!(sniff(b'P'), Sniff::Http);
+    }
+
+    #[test]
+    fn requests_are_routed_to_the_right_media_server() {
+        let none = HeaderMap::new();
+        let mut plex_headers = HeaderMap::new();
+        plex_headers.insert("x-plex-client-identifier", HeaderValue::from_static("abc"));
+        let both = |h: &HeaderMap, path: &str, query: &str| route(true, true, h, path, query);
+
+        assert_eq!(route(false, false, &none, "/identity", ""), None);
+        assert_eq!(
+            route(true, false, &none, "/identity", ""),
+            Some(Target::Jellyfin),
+            "with only Jellyfin shared, everything is Jellyfin's"
+        );
+        assert_eq!(
+            route(false, true, &none, "/System/Info/Public", ""),
+            Some(Target::Plex)
+        );
+
+        assert_eq!(both(&none, "/identity", ""), Some(Target::Plex));
+        assert_eq!(both(&none, "/library/sections", ""), Some(Target::Plex));
+        assert_eq!(
+            both(&none, "/library/parts/1/2/file.mkv", ""),
+            Some(Target::Plex)
+        );
+        assert_eq!(both(&none, "/:/timeline", ""), Some(Target::Plex));
+        assert_eq!(
+            both(&plex_headers, "/web/index.html", ""),
+            Some(Target::Plex)
+        );
+        assert_eq!(both(&none, "/x", "a=1&X-Plex-Token=t"), Some(Target::Plex));
+        assert_eq!(both(&none, "/x", "x-plex-token=t"), Some(Target::Plex));
+
+        assert_eq!(
+            both(&none, "/Library/VirtualFolders", ""),
+            Some(Target::Jellyfin)
+        );
+        assert_eq!(
+            both(&none, "/System/Info/Public", ""),
+            Some(Target::Jellyfin)
+        );
+        assert_eq!(both(&none, "/web/index.html", ""), Some(Target::Jellyfin));
+        assert_eq!(both(&none, "/identityx", ""), Some(Target::Jellyfin));
+        assert_eq!(both(&none, "/libraryx/a", ""), Some(Target::Jellyfin));
+        assert_eq!(
+            both(&none, "/Items", "api_key=X-Plex"),
+            Some(Target::Jellyfin)
+        );
     }
 }

@@ -3,16 +3,21 @@
 
 use crate::config::Settings;
 use crate::jellyfin::api::JellyfinApi;
-use crate::jellyfin::proxy::JellyfinProxy;
 use crate::jellyfin::{JellyfinDesired, JellyfinManager, JellyfinStatus};
 use crate::net::acme::DuckDns;
+use crate::net::proxy::LocalProxy;
 use crate::net::upnp::{UpnpManager, UpnpStatus};
 use crate::paths::AppPaths;
+use crate::plex::api::PlexApi;
+use crate::plex::tv::PlexTv;
+use crate::plex::{PlexManager, PlexStatus};
 use crate::relay::{Relay, RelayStatus};
 use crate::secrets::{self, Secrets};
 use crate::syncplay::devices::{DeviceStore, DevicesStatus};
-use crate::syncplay::ext::JellyfinShare;
-use crate::syncplay::{AuthorizeFn, Extensions, RoomInfo, SyncplayOptions, SyncplayServer};
+use crate::syncplay::ext::{JellyfinShare, PlexShare};
+use crate::syncplay::{
+    AuthorizeFn, Extensions, PlexInviteFn, RoomInfo, SyncplayOptions, SyncplayServer,
+};
 use crate::tls::{IpSource, Notify, TlsManager, TlsRequest, TlsStatus};
 use crate::updates::{UpdateStatus, Updates};
 use parking_lot::{Mutex, RwLock};
@@ -25,6 +30,15 @@ use tracing::{info, warn};
 const UPNP_RECHECK: Duration = Duration::from_secs(10 * 60);
 /// After a failed guest-account update, wait this long before trying again.
 const SHARE_RETRY: Duration = Duration::from_secs(30);
+/// How often to ask plex.tv whether the user entered the link code.
+const PLEX_LINK_POLL: Duration = Duration::from_secs(2);
+/// Relay Plex over the Syncplay port. Off: Plex 1.42 reads the relayed
+/// viewer's address from `X-Forwarded-For` but still marks them local
+/// (`Player.local=true`) because the connection comes from 127.0.0.1, so the
+/// relay would sidestep Plex's remote-streaming rules. Only direct
+/// connections are shared until Plex counts relayed viewers as remote (check
+/// with the `plex_spike` test).
+const PLEX_RELAY: bool = false;
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +62,37 @@ pub struct ShareStatus {
     pub error: Option<String>,
 }
 
+/// A plex.tv link code waiting for the user to enter it at plex.tv/link.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlexLink {
+    pub code: String,
+    /// Unix seconds.
+    pub expires_at: u64,
+}
+
+/// The host's plex.tv account as the Plex page shows it.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PlexAccount {
+    pub signed_in: bool,
+    pub link: Option<PlexLink>,
+    /// The running Plex belongs to the linked account; None until checked.
+    pub owns_server: Option<bool>,
+    pub error: Option<String>,
+}
+
+/// What Plex sharing last applied: sharing on/off, the picked libraries and
+/// the relay URLs advertised to plex.tv.
+type PlexApplied = (bool, Option<Vec<String>>, Vec<String>);
+
+#[derive(Default)]
+struct PlexShareState {
+    applied: Option<PlexApplied>,
+    failed_at: Option<Instant>,
+    error: Option<String>,
+}
+
 #[derive(Default)]
 struct ShareState {
     /// The guest account's enabled flag as last set in Jellyfin.
@@ -67,6 +112,9 @@ pub struct Addresses {
     pub jellyfin_local: Option<String>,
     pub jellyfin_lan: Option<String>,
     pub jellyfin_public: Option<String>,
+    pub plex_local: Option<String>,
+    pub plex_lan: Option<String>,
+    pub plex_public: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,6 +131,9 @@ pub struct Snapshot {
     pub addresses: Addresses,
     pub update: UpdateStatus,
     pub jellyfin_share: ShareStatus,
+    pub plex: PlexStatus,
+    pub plex_account: PlexAccount,
+    pub plex_share: ShareStatus,
 }
 
 struct PfxState {
@@ -108,10 +159,19 @@ pub struct App {
     applied_fingerprint: Mutex<Option<String>>,
     notify: Notify,
     pub relay: Relay,
-    proxy: Arc<JellyfinProxy>,
+    proxy: Arc<LocalProxy>,
     share: Mutex<ShareState>,
     share_lock: tokio::sync::Mutex<()>,
     devices: Arc<DeviceStore>,
+    pub plex: Arc<PlexManager>,
+    plex_token: RwLock<Option<String>>,
+    plex_proxy: Arc<LocalProxy>,
+    plex_link: Mutex<Option<(PlexLink, tokio::task::AbortHandle)>>,
+    plex_link_error: Mutex<Option<String>>,
+    /// (machine id, owned by the linked account), checked with plex.tv.
+    plex_owned: Mutex<Option<(String, bool)>>,
+    plex_owned_failed_at: Mutex<Option<Instant>>,
+    plex_share: Mutex<PlexShareState>,
 }
 
 impl App {
@@ -124,9 +184,14 @@ impl App {
             settings.jellyfin.device_id = uuid::Uuid::new_v4().simple().to_string();
             let _ = settings.save(&paths.settings_file());
         }
+        if settings.plex.client_id.is_empty() {
+            settings.plex.client_id = uuid::Uuid::new_v4().to_string();
+            let _ = settings.save(&paths.settings_file());
+        }
         let secrets = Secrets::new(paths.config.clone());
         let duckdns_token = secrets.get(secrets::DUCKDNS_TOKEN);
         let jellyfin_token = secrets.get(secrets::JELLYFIN_TOKEN);
+        let plex_token = secrets.get(secrets::PLEX_TOKEN);
         let jellyfin = JellyfinManager::new(paths.jellyfin_root(), notify.clone());
         let relay = Relay::new(
             paths.relay_cache_dir(),
@@ -137,7 +202,15 @@ impl App {
         Arc::new(Self {
             relay,
             devices,
-            proxy: Arc::new(JellyfinProxy::new()),
+            plex: PlexManager::new(notify.clone()),
+            plex_token: RwLock::new(plex_token),
+            plex_proxy: Arc::new(LocalProxy::new("Plex")),
+            plex_link: Mutex::new(None),
+            plex_link_error: Mutex::new(None),
+            plex_owned: Mutex::new(None),
+            plex_owned_failed_at: Mutex::new(None),
+            plex_share: Mutex::new(PlexShareState::default()),
+            proxy: Arc::new(LocalProxy::new("Jellyfin")),
             share: Mutex::new(ShareState::default()),
             share_lock: tokio::sync::Mutex::new(()),
             tls: TlsManager::new(paths.acme_dir()),
@@ -189,6 +262,11 @@ impl App {
             next.jellyfin.admin_user_id = cur.jellyfin.admin_user_id.clone();
             next.jellyfin.device_id = cur.jellyfin.device_id.clone();
             next.jellyfin.guest_user_id = cur.jellyfin.guest_user_id.clone();
+            next.plex.client_id = cur.plex.client_id.clone();
+            next.plex.account_user = cur.plex.account_user.clone();
+            next.plex.machine_id = cur.plex.machine_id.clone();
+            next.plex.invited = cur.plex.invited.clone();
+            next.plex.saved_custom_connections = cur.plex.saved_custom_connections.clone();
         }
         next.tls.duckdns_domain = next.tls.duckdns_domain.trim().to_string();
         next.tls.email = next.tls.email.trim().to_string();
@@ -267,6 +345,7 @@ impl App {
     pub async fn reconcile(self: &Arc<Self>) {
         self.reconcile_services().await;
         self.sync_share().await;
+        self.sync_plex_share().await;
     }
 
     fn extensions(self: &Arc<Self>) -> Extensions {
@@ -280,11 +359,23 @@ impl App {
                 }
             })
         });
+        let weak = Arc::downgrade(self);
+        let plex_invite: PlexInviteFn = Arc::new(move |username: String, syncplay_name: String| {
+            let weak = weak.clone();
+            Box::pin(async move {
+                match weak.upgrade() {
+                    Some(app) => app.invite_plex_user(&username, &syncplay_name).await,
+                    None => Err("The server is shutting down".into()),
+                }
+            })
+        });
         Extensions {
             relay: Some(self.relay.clone()),
             proxy: Some(self.proxy.clone()),
             authorize: Some(authorize),
             devices: Some(self.devices.clone()),
+            plex_proxy: Some(self.plex_proxy.clone()),
+            plex_invite: Some(plex_invite),
         }
     }
 
@@ -395,6 +486,13 @@ impl App {
             self.jellyfin.apply(None);
         }
 
+        // Plex: only watched, never started or stopped.
+        self.plex.apply(
+            s.plex.enabled.then_some(s.plex.port),
+            &s.plex.client_id,
+            self.plex_token.read().clone(),
+        );
+
         // UPnP runs in the background; the router can be slow.
         let mut desired = BTreeMap::new();
         if s.syncplay.enabled && s.syncplay.upnp {
@@ -405,6 +503,9 @@ impl App {
             if https_on {
                 desired.insert(s.jellyfin.https_port, "Jellyfin HTTPS".to_string());
             }
+        }
+        if s.plex.enabled && s.plex.upnp {
+            desired.insert(s.plex.port, "Plex".to_string());
         }
         let changed = *self.upnp_desired.lock() != desired;
         *self.upnp_desired.lock() = desired.clone();
@@ -431,6 +532,7 @@ impl App {
             self.reconcile().await;
         } else {
             self.sync_share().await;
+            self.sync_plex_share().await;
         }
     }
 
@@ -587,6 +689,17 @@ impl App {
                 .as_ref()
                 .map(|h| format!("{h}:{}", s.syncplay.port));
         }
+        if s.plex.enabled {
+            addresses.plex_local = Some(format!("http://localhost:{}/web", s.plex.port));
+            addresses.plex_lan = lan_ip
+                .as_ref()
+                .map(|ip| format!("http://{ip}:{}", s.plex.port));
+            addresses.plex_public = self
+                .upnp
+                .status()
+                .external_ip
+                .map(|ip| format!("http://{ip}:{}", s.plex.port));
+        }
         if s.jellyfin.enabled {
             addresses.jellyfin_local = Some(format!("http://localhost:{}", s.jellyfin.http_port));
             addresses.jellyfin_lan = lan_ip
@@ -632,6 +745,9 @@ impl App {
 
         Snapshot {
             jellyfin_share: self.share_status(),
+            plex: self.plex.status(),
+            plex_account: self.plex_account(),
+            plex_share: self.plex_share_status(),
             version: env!("CARGO_PKG_VERSION"),
             duckdns_token_set: self.duckdns_token.read().is_some(),
             jellyfin_signed_in: self.jellyfin_token.read().is_some(),
@@ -800,6 +916,458 @@ impl App {
     pub async fn jellyfin_rescan(&self) -> Result<(), String> {
         let api = self.jellyfin_api()?;
         self.with_auth(api.rescan().await).await
+    }
+
+    // ------------------------------------------------------------ Plex
+
+    fn plex_tv(&self) -> Result<PlexTv, String> {
+        let token = self
+            .plex_token
+            .read()
+            .clone()
+            .ok_or("Link your Plex account first")?;
+        Ok(PlexTv::new(
+            &self.settings.read().plex.client_id,
+            Some(token),
+        ))
+    }
+
+    fn plex_api(&self) -> Result<PlexApi, String> {
+        let s = self.settings.read();
+        if !s.plex.enabled {
+            return Err("Plex is switched off here".into());
+        }
+        match self.plex.status().phase {
+            "running" => {}
+            "unclaimed" => return Err("Finish Plex's own setup first".into()),
+            _ => return Err("Plex Media Server is not running".into()),
+        }
+        let token = self
+            .plex_token
+            .read()
+            .clone()
+            .ok_or("Link your Plex account first")?;
+        if self
+            .plex_owned
+            .lock()
+            .as_ref()
+            .is_some_and(|(_, owned)| !owned)
+        {
+            return Err("This Plex server belongs to another plex.tv account".into());
+        }
+        Ok(PlexApi::new(s.plex.port, &s.plex.client_id, Some(token)))
+    }
+
+    /// A 401 from plex.tv or Plex means the account token is gone.
+    async fn with_plex_auth<T>(&self, res: Result<T, String>) -> Result<T, String> {
+        if let Err(e) = &res {
+            if e.contains("(401)") {
+                let _ = self.secrets.delete(secrets::PLEX_TOKEN);
+                *self.plex_token.write() = None;
+                *self.plex_owned.lock() = None;
+                let _ = self.modify_settings(|s| s.plex.account_user = None);
+                (self.notify)();
+                return Err("Your Plex sign-in expired. Link your Plex account again.".into());
+            }
+        }
+        res
+    }
+
+    pub fn plex_account(&self) -> PlexAccount {
+        let s = self.settings.read();
+        let machine = self.plex.status().machine_id;
+        PlexAccount {
+            signed_in: self.plex_token.read().is_some(),
+            link: self.plex_link.lock().as_ref().map(|(l, _)| l.clone()),
+            owns_server: self
+                .plex_owned
+                .lock()
+                .as_ref()
+                .filter(|(m, _)| Some(m) == machine.as_ref())
+                .map(|(_, owned)| *owned)
+                .filter(|_| s.plex.enabled),
+            error: self.plex_link_error.lock().clone(),
+        }
+    }
+
+    pub fn plex_share_status(&self) -> ShareStatus {
+        let s = self.settings.read();
+        let st = self.plex_share.lock();
+        ShareStatus {
+            active: self.plex_proxy.target().is_some()
+                || (s.plex_share_effective() && st.applied.as_ref().is_some_and(|a| a.0)),
+            error: s.plex_share_effective().then(|| st.error.clone()).flatten(),
+        }
+    }
+
+    /// Where friends reach Plex through the Syncplay port.
+    fn plex_relay_urls(&self, s: &Settings) -> Vec<String> {
+        if !s.syncplay.enabled || !PLEX_RELAY {
+            return Vec::new();
+        }
+        let port = s.syncplay.port;
+        let mut urls = Vec::new();
+        match self.tls.current() {
+            Some(cert) => urls.push(format!("https://{}:{port}", cert.host)),
+            None => {
+                if let Some(ip) = self.upnp.status().external_ip {
+                    urls.push(format!("http://{ip}:{port}"));
+                }
+            }
+        }
+        if let Some(ip) = crate::net::ip::primary_lan_ipv4() {
+            urls.push(format!("http://{ip}:{port}"));
+        }
+        urls
+    }
+
+    /// Whether the running Plex belongs to the linked account (asked once per
+    /// server and account).
+    async fn plex_owns(&self, machine_id: &str) -> Option<bool> {
+        if let Some((m, owned)) = self.plex_owned.lock().clone() {
+            if m == machine_id {
+                return Some(owned);
+            }
+        }
+        if self
+            .plex_owned_failed_at
+            .lock()
+            .is_some_and(|t| t.elapsed() < SHARE_RETRY)
+        {
+            return None;
+        }
+        let tv = self.plex_tv().ok()?;
+        match self.with_plex_auth(tv.resources().await).await {
+            Ok(resources) => {
+                let owned = resources.iter().any(|r| {
+                    r.client_identifier == machine_id && r.owned && r.provides.contains("server")
+                });
+                if !owned {
+                    warn!("the local Plex server is not owned by the linked plex.tv account");
+                }
+                *self.plex_owned.lock() = Some((machine_id.to_string(), owned));
+                *self.plex_owned_failed_at.lock() = None;
+                (self.notify)();
+                Some(owned)
+            }
+            Err(e) => {
+                warn!(error = %e, "could not look up the Plex server on plex.tv");
+                *self.plex_owned_failed_at.lock() = Some(Instant::now());
+                None
+            }
+        }
+    }
+
+    /// Keep invites, Plex's advertised connections, the relay and what
+    /// Syncplay clients are told in line with "share Plex" and Plex's state.
+    async fn sync_plex_share(self: &Arc<Self>) {
+        let _guard = self.share_lock.lock().await;
+        let s = self.settings();
+        let want = s.plex_share_effective();
+        let status = self.plex.status();
+        let machine_id = status
+            .machine_id
+            .clone()
+            .filter(|_| status.phase == "running");
+        if let Some(m) = &machine_id {
+            if s.plex.machine_id.as_ref() != Some(m) {
+                let _ = self.modify_settings(|n| n.plex.machine_id = Some(m.clone()));
+            }
+        }
+        let linked = self.plex_token.read().is_some();
+        let owned = match (&machine_id, linked) {
+            (Some(m), true) => self.plex_owns(m).await,
+            _ => None,
+        };
+        let ready = s.plex.enabled && owned == Some(true);
+        let relay = self.plex_relay_urls(&s);
+        let target: PlexApplied = (want, s.plex.shared_sections.clone(), relay.clone());
+
+        let pending = {
+            let st = self.plex_share.lock();
+            st.applied.as_ref() != Some(&target)
+                && st.failed_at.is_none_or(|t| t.elapsed() >= SHARE_RETRY)
+        };
+        // Removing invites only needs plex.tv, so it happens even while Plex is down.
+        let unshare = !want && linked && !s.plex.invited.is_empty();
+        if pending && (ready || unshare) {
+            let result = self.apply_plex_share(&s, want, ready, &relay).await;
+            let mut st = self.plex_share.lock();
+            match result {
+                Ok(()) => {
+                    info!(sharing = want, "Plex sharing updated");
+                    *st = PlexShareState {
+                        applied: ready.then_some(target),
+                        ..Default::default()
+                    };
+                }
+                Err(e) => {
+                    warn!(error = %e, "could not update Plex sharing");
+                    st.failed_at = Some(Instant::now());
+                    st.error = Some(e);
+                }
+            }
+        } else if !ready {
+            // Re-apply once Plex is reachable again.
+            let mut st = self.plex_share.lock();
+            st.applied = None;
+        }
+
+        let active = want && ready && self.plex_share.lock().applied.as_ref().is_some_and(|a| a.0);
+        let relaying = active && PLEX_RELAY && s.syncplay.enabled;
+        self.plex_proxy.set_target(relaying.then_some(s.plex.port));
+        let info = active.then(|| {
+            let a = self.addresses(&s, &self.jellyfin.status());
+            PlexShare {
+                machine_id: status.machine_id.clone().unwrap_or_default(),
+                server_name: status.server_name.clone().unwrap_or_default(),
+                proxy: relaying,
+                addresses: [a.plex_public, a.plex_lan].into_iter().flatten().collect(),
+            }
+        });
+        if let Some(srv) = self.syncplay.lock().as_ref() {
+            srv.set_plex(info);
+        }
+    }
+
+    async fn apply_plex_share(
+        &self,
+        s: &Settings,
+        want: bool,
+        ready: bool,
+        relay: &[String],
+    ) -> Result<(), String> {
+        let tv = self.plex_tv()?;
+        if !want {
+            if !s.plex.invited.is_empty() {
+                let (kept, error) = crate::plex::share::unshare_all(&tv, &s.plex.invited).await;
+                self.modify_settings(|n| n.plex.invited = kept)?;
+                if let Some(e) = error {
+                    return self.with_plex_auth(Err(e)).await;
+                }
+            }
+            if ready {
+                if let Some(original) = &s.plex.saved_custom_connections {
+                    let api = self.plex_api()?;
+                    self.with_plex_auth(api.set_pref("customConnections", original).await)
+                        .await?;
+                    self.modify_settings(|n| n.plex.saved_custom_connections = None)?;
+                }
+            }
+            return Ok(());
+        }
+
+        // Advertise the relay through plex.tv, keeping the host's own entries.
+        let api = self.plex_api()?;
+        let original = match &s.plex.saved_custom_connections {
+            Some(o) => o.clone(),
+            None => {
+                let current = self
+                    .with_plex_auth(api.pref("customConnections").await)
+                    .await?
+                    .unwrap_or_default();
+                self.modify_settings(|n| n.plex.saved_custom_connections = Some(current.clone()))?;
+                current
+            }
+        };
+        let value = crate::plex::share::with_relay(&original, relay);
+        self.with_plex_auth(api.set_pref("customConnections", &value).await)
+            .await?;
+
+        // People already invited follow the picked libraries.
+        let sections_changed = self
+            .plex_share
+            .lock()
+            .applied
+            .as_ref()
+            .is_none_or(|a| a.1 != s.plex.shared_sections);
+        if sections_changed && !s.plex.invited.is_empty() {
+            let machine_id = s.plex.machine_id.clone().unwrap_or_default();
+            let ids = self
+                .with_plex_auth(tv.section_ids(&machine_id).await)
+                .await?;
+            let sections = crate::plex::share::section_ids(s.plex.shared_sections.as_deref(), &ids);
+            for i in &s.plex.invited {
+                self.with_plex_auth(tv.update_share(&machine_id, &i.share_id, &sections).await)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A YarmiplayTV user asked for the host's Plex with their plex.tv username.
+    async fn invite_plex_user(&self, username: &str, syncplay_name: &str) -> Result<(), String> {
+        let s = self.settings();
+        let active = s.plex_share_effective()
+            && self.plex_share.lock().applied.as_ref().is_some_and(|a| a.0);
+        if !active {
+            return Err("Plex sharing is off on this server".into());
+        }
+        let machine_id = s.plex.machine_id.clone().ok_or("Plex is not running")?;
+        let tv = self.plex_tv()?;
+        let ids = self
+            .with_plex_auth(tv.section_ids(&machine_id).await)
+            .await?;
+        let sections = crate::plex::share::section_ids(s.plex.shared_sections.as_deref(), &ids);
+        let invite = crate::plex::share::invite(
+            &tv,
+            &machine_id,
+            &sections,
+            username,
+            syncplay_name,
+            &s.plex.invited,
+        )
+        .await;
+        let invite = self.with_plex_auth(invite).await?;
+        if !s.plex.invited.iter().any(|i| i.share_id == invite.share_id) {
+            info!(user = %invite.username, syncplay = %syncplay_name, "invited a Syncplay user to Plex");
+            self.modify_settings(|n| n.plex.invited.push(invite))?;
+            (self.notify)();
+        }
+        Ok(())
+    }
+
+    pub async fn plex_remove_invite(&self, share_id: String) -> Result<Snapshot, String> {
+        let tv = self.plex_tv()?;
+        self.with_plex_auth(tv.unshare(&share_id).await).await?;
+        self.modify_settings(|n| n.plex.invited.retain(|i| i.share_id != share_id))?;
+        (self.notify)();
+        Ok(self.snapshot())
+    }
+
+    /// Ask plex.tv for a link code and wait (in the background) until the
+    /// user enters it at plex.tv/link.
+    pub async fn plex_link_start(self: &Arc<Self>) -> Result<Snapshot, String> {
+        if self.plex_link.lock().is_some() {
+            return Ok(self.snapshot());
+        }
+        let client_id = self.settings.read().plex.client_id.clone();
+        let anon = PlexTv::new(&client_id, None);
+        let pin = anon.create_pin().await?;
+        let expires_in = Duration::from_secs(pin.expires_in.clamp(60, 1800));
+        let link = PlexLink {
+            code: pin.code.clone(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+                + expires_in.as_secs(),
+        };
+        let me = Arc::downgrade(self);
+        let task = tokio::spawn(async move {
+            let deadline = Instant::now() + expires_in;
+            let result = loop {
+                tokio::time::sleep(PLEX_LINK_POLL).await;
+                if Instant::now() >= deadline {
+                    break Err("The link code expired. Get a new one.".to_string());
+                }
+                match anon.check_pin(pin.id).await {
+                    Ok(Some(token)) => break Ok(token),
+                    Ok(None) => {}
+                    Err(e) => warn!(error = %e, "Plex link check failed"),
+                }
+            };
+            let Some(app) = me.upgrade() else { return };
+            *app.plex_link.lock() = None;
+            match result {
+                Ok(token) => {
+                    if let Err(e) = app.store_plex_token(token).await {
+                        *app.plex_link_error.lock() = Some(e);
+                    }
+                    app.reconcile().await;
+                }
+                Err(e) => *app.plex_link_error.lock() = Some(e),
+            }
+            (app.notify)();
+        });
+        *self.plex_link_error.lock() = None;
+        *self.plex_link.lock() = Some((link, task.abort_handle()));
+        (self.notify)();
+        Ok(self.snapshot())
+    }
+
+    async fn store_plex_token(&self, token: String) -> Result<(), String> {
+        let client_id = self.settings.read().plex.client_id.clone();
+        let account = PlexTv::new(&client_id, Some(token.clone()))
+            .account()
+            .await?;
+        self.secrets.set(secrets::PLEX_TOKEN, &token)?;
+        *self.plex_token.write() = Some(token);
+        *self.plex_owned.lock() = None;
+        info!(user = %account.username, "linked a plex.tv account");
+        self.modify_settings(|s| s.plex.account_user = Some(account.username))
+    }
+
+    pub fn plex_link_cancel(&self) -> Snapshot {
+        if let Some((_, task)) = self.plex_link.lock().take() {
+            task.abort();
+        }
+        *self.plex_link_error.lock() = None;
+        (self.notify)();
+        self.snapshot()
+    }
+
+    pub async fn plex_logout(self: &Arc<Self>) -> Result<Snapshot, String> {
+        self.secrets.delete(secrets::PLEX_TOKEN)?;
+        *self.plex_token.write() = None;
+        *self.plex_owned.lock() = None;
+        self.modify_settings(|s| s.plex.account_user = None)?;
+        self.reconcile().await;
+        Ok(self.snapshot())
+    }
+
+    pub fn plex_refresh(&self) {
+        *self.plex_owned.lock() = None;
+        *self.plex_owned_failed_at.lock() = None;
+        self.plex.refresh();
+    }
+
+    pub async fn plex_libraries(&self) -> Result<Vec<crate::plex::api::Library>, String> {
+        let api = self.plex_api()?;
+        self.with_plex_auth(api.libraries().await).await
+    }
+
+    pub async fn plex_add_library(
+        &self,
+        name: String,
+        kind: String,
+        path: String,
+    ) -> Result<(), String> {
+        if name.trim().is_empty() || path.trim().is_empty() {
+            return Err("A library needs a name and a folder".into());
+        }
+        let kind = crate::plex::api::LibraryKind::parse(&kind)?;
+        let api = self.plex_api()?;
+        self.with_plex_auth(api.add_library(name.trim(), kind, path.trim()).await)
+            .await
+    }
+
+    pub async fn plex_remove_library(&self, key: String) -> Result<(), String> {
+        let api = self.plex_api()?;
+        self.with_plex_auth(api.remove_library(&key).await).await?;
+        let _ = self.modify_settings(|s| {
+            if let Some(picked) = s.plex.shared_sections.as_mut() {
+                picked.retain(|k| *k != key);
+            }
+        });
+        Ok(())
+    }
+
+    pub async fn plex_add_path(&self, key: String, path: String) -> Result<(), String> {
+        let api = self.plex_api()?;
+        self.with_plex_auth(api.add_path(&key, path.trim()).await)
+            .await
+    }
+
+    pub async fn plex_remove_path(&self, key: String, path: String) -> Result<(), String> {
+        let api = self.plex_api()?;
+        self.with_plex_auth(api.remove_path(&key, &path).await)
+            .await
+    }
+
+    pub async fn plex_rescan(&self) -> Result<(), String> {
+        let api = self.plex_api()?;
+        self.with_plex_auth(api.rescan().await).await
     }
 
     // ------------------------------------------------------------ quit

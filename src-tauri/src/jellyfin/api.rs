@@ -376,7 +376,7 @@ impl JellyfinApi {
     }
 }
 
-fn hostname() -> String {
+pub(crate) fn hostname() -> String {
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .ok()

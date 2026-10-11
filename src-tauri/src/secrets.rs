@@ -11,6 +11,8 @@ use std::path::PathBuf;
 const SERVICE: &str = "YarmiplayServerTV";
 pub const DUCKDNS_TOKEN: &str = "duckdns-token";
 pub const JELLYFIN_TOKEN: &str = "jellyfin-token";
+/// The host's plex.tv account token, from linking in the Plex page.
+pub const PLEX_TOKEN: &str = "plex-token";
 
 pub struct Secrets {
     fallback_file: PathBuf,
@@ -21,7 +23,7 @@ impl Secrets {
         let s = Self {
             fallback_file: config_dir.join("secrets.json"),
         };
-        for key in [DUCKDNS_TOKEN, JELLYFIN_TOKEN] {
+        for key in [DUCKDNS_TOKEN, JELLYFIN_TOKEN, PLEX_TOKEN] {
             if let Some(v) = s.get(key) {
                 logs::register_secret(&v);
             }

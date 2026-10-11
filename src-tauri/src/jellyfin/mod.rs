@@ -4,7 +4,6 @@ pub mod api;
 pub mod installer;
 pub mod netconfig;
 pub mod process;
-pub mod proxy;
 pub mod share;
 
 use crate::tls::Notify;

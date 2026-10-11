@@ -107,6 +107,31 @@ export interface JellyfinSettings {
   guestUserId: string | null;
 }
 
+export interface PlexInvite {
+  plexUserId: string;
+  username: string;
+  syncplayName: string;
+  shareId: string;
+  /** Unix seconds. */
+  at: number;
+}
+
+/** A Plex Media Server the user installed; the app never installs or runs it. */
+export interface PlexSettings {
+  enabled: boolean;
+  port: number;
+  upnp: boolean;
+  shareWithSyncplay: boolean;
+  /** Library keys shared with Syncplay users; null shares every library. */
+  sharedSections: string[] | null;
+  /** Managed by the app. */
+  clientId: string;
+  accountUser: string | null;
+  machineId: string | null;
+  invited: PlexInvite[];
+  savedCustomConnections: string | null;
+}
+
 export interface TlsSettings {
   enabled: boolean;
   duckdnsDomain: string;
@@ -125,6 +150,7 @@ export interface UpdateSettings {
 export interface Settings {
   syncplay: SyncplaySettings;
   jellyfin: JellyfinSettings;
+  plex: PlexSettings;
   tls: TlsSettings;
   browser: BrowserSettings;
   updates: UpdateSettings;
@@ -224,6 +250,24 @@ export interface JellyfinStatus {
   serverId: string | null;
 }
 
+export interface PlexStatus {
+  phase: "off" | "notInstalled" | "notRunning" | "unclaimed" | "running";
+  /** null when it can't be known (the Snap can't see installed programs). */
+  installed: boolean | null;
+  version: string | null;
+  machineId: string | null;
+  serverName: string | null;
+}
+
+export interface PlexAccount {
+  signedIn: boolean;
+  /** A code waiting to be entered at plex.tv/link. */
+  link: { code: string; expiresAt: number } | null;
+  /** The running Plex belongs to the linked account; null until checked. */
+  ownsServer: boolean | null;
+  error: string | null;
+}
+
 export interface TlsStatus {
   phase: "off" | "incomplete" | "issuing" | "ready" | "error";
   host: string | null;
@@ -259,6 +303,9 @@ export interface Addresses {
   jellyfinLocal: string | null;
   jellyfinLan: string | null;
   jellyfinPublic: string | null;
+  plexLocal: string | null;
+  plexLan: string | null;
+  plexPublic: string | null;
 }
 
 export interface Snapshot {
@@ -273,6 +320,9 @@ export interface Snapshot {
   addresses: Addresses;
   update: UpdateStatus;
   jellyfinShare: ShareStatus;
+  plex: PlexStatus;
+  plexAccount: PlexAccount;
+  plexShare: ShareStatus;
 }
 
 export interface LogLine {
@@ -288,6 +338,14 @@ export interface Library {
   collectionType: string | null;
   locations: string[];
   itemId: string | null;
+}
+
+export interface PlexLibrary {
+  key: string;
+  name: string;
+  /** movie | show | artist | photo */
+  kind: string;
+  locations: string[];
 }
 
 export const api = {
@@ -307,6 +365,17 @@ export const api = {
   jellyfinAddPath: (library: string, path: string) => invoke<void>("jellyfin_add_path", { library, path }),
   jellyfinRemovePath: (library: string, path: string) => invoke<void>("jellyfin_remove_path", { library, path }),
   jellyfinRescan: () => invoke<void>("jellyfin_rescan"),
+  plexLinkStart: () => invoke<Snapshot>("plex_link_start"),
+  plexLinkCancel: () => invoke<Snapshot>("plex_link_cancel"),
+  plexLogout: () => invoke<Snapshot>("plex_logout"),
+  plexRefresh: () => invoke<void>("plex_refresh"),
+  plexLibraries: () => invoke<PlexLibrary[]>("plex_libraries"),
+  plexAddLibrary: (name: string, kind: string, path: string) => invoke<void>("plex_add_library", { name, kind, path }),
+  plexRemoveLibrary: (key: string) => invoke<void>("plex_remove_library", { key }),
+  plexAddPath: (key: string, path: string) => invoke<void>("plex_add_path", { key, path }),
+  plexRemovePath: (key: string, path: string) => invoke<void>("plex_remove_path", { key, path }),
+  plexRescan: () => invoke<void>("plex_rescan"),
+  plexRemoveInvite: (shareId: string) => invoke<Snapshot>("plex_remove_invite", { shareId }),
   clearRelayCache: () => invoke<Snapshot>("clear_relay_cache"),
   approveDevice: (fingerprint: string) => invoke<Snapshot>("syncplay_device_approve", { fingerprint }),
   denyDevice: (fingerprint: string) => invoke<Snapshot>("syncplay_device_deny", { fingerprint }),

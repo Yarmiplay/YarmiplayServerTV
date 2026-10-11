@@ -1,5 +1,5 @@
 //! User settings, stored as JSON in the OS config folder. Secrets (DuckDNS
-//! token, Jellyfin access token) are not here; see [`crate::secrets`].
+//! token, Jellyfin and Plex access tokens) are not here; see [`crate::secrets`].
 
 use crate::paths::write_atomic;
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,7 @@ use std::path::Path;
 pub struct Settings {
     pub syncplay: SyncplaySettings,
     pub jellyfin: JellyfinSettings,
+    pub plex: PlexSettings,
     pub tls: TlsSettings,
     pub browser: BrowserSettings,
     pub updates: UpdateSettings,
@@ -157,10 +158,75 @@ impl Default for JellyfinSettings {
     }
 }
 
+/// A Plex Media Server the user installed themselves. The app never installs,
+/// starts or stops Plex; it watches it, manages libraries and shares it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PlexSettings {
+    /// Watch and manage the local Plex.
+    pub enabled: bool,
+    /// The port Plex listens on (32400 unless the user changed it in Plex).
+    pub port: u16,
+    pub upnp: bool,
+    /// Stable `X-Plex-Client-Identifier` this app uses with plex.tv and Plex.
+    pub client_id: String,
+    /// The plex.tv account linked in the app; managed by the app.
+    pub account_user: Option<String>,
+    /// The Plex server's machine identifier, once seen; managed by the app.
+    pub machine_id: Option<String>,
+    /// Invite YarmiplayTV users on the Syncplay server as Plex friends.
+    pub share_with_syncplay: bool,
+    /// Library section ids shared with them; None shares every library.
+    pub shared_sections: Option<Vec<String>>,
+    /// People this app invited; the host's own Plex friends are never listed
+    /// or touched. Managed by the app.
+    pub invited: Vec<PlexInvite>,
+    /// Plex's `customConnections` before sharing set it, restored when
+    /// sharing is switched off. Managed by the app.
+    pub saved_custom_connections: Option<String>,
+}
+
+impl Default for PlexSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: 32400,
+            upnp: false,
+            client_id: String::new(),
+            account_user: None,
+            machine_id: None,
+            share_with_syncplay: false,
+            shared_sections: None,
+            invited: Vec::new(),
+            saved_custom_connections: None,
+        }
+    }
+}
+
+/// A Plex friend invite made for a YarmiplayTV user on the Syncplay server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PlexInvite {
+    /// The invitee's plex.tv user id.
+    pub plex_user_id: String,
+    pub username: String,
+    /// Their Syncplay username when they asked.
+    pub syncplay_name: String,
+    /// plex.tv's id for the share, used to update or remove it.
+    pub share_id: String,
+    /// Unix seconds.
+    pub at: u64,
+}
+
 impl Settings {
     /// Jellyfin sharing as configured; it still needs Jellyfin running and signed in.
     pub fn share_effective(&self) -> bool {
         self.jellyfin.share_with_syncplay && !self.syncplay.vanilla_mode
+    }
+
+    /// Plex sharing as configured; it still needs Plex running and a linked account.
+    pub fn plex_share_effective(&self) -> bool {
+        self.plex.enabled && self.plex.share_with_syncplay && !self.syncplay.vanilla_mode
     }
 }
 
@@ -202,23 +268,23 @@ impl Settings {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        let ports = [
+        let mut ports = vec![
             ("Syncplay", self.syncplay.port),
             ("Jellyfin HTTP", self.jellyfin.http_port),
             ("Jellyfin HTTPS", self.jellyfin.https_port),
         ];
-        for (name, port) in ports {
-            if port < 1024 {
+        if self.plex.enabled {
+            ports.push(("Plex", self.plex.port));
+        }
+        for (name, port) in &ports {
+            if *port < 1024 {
                 return Err(format!("{name} port must be between 1024 and 65535"));
             }
         }
-        if self.syncplay.port == self.jellyfin.http_port
-            || self.syncplay.port == self.jellyfin.https_port
-        {
-            return Err("Syncplay and Jellyfin need different ports".into());
-        }
-        if self.jellyfin.http_port == self.jellyfin.https_port {
-            return Err("Jellyfin HTTP and HTTPS ports must differ".into());
+        for (i, (a, pa)) in ports.iter().enumerate() {
+            if let Some((b, _)) = ports[i + 1..].iter().find(|(_, pb)| pb == pa) {
+                return Err(format!("{a} and {b} need different ports"));
+            }
         }
         if self.syncplay.max_chat_message_length == 0 || self.syncplay.max_username_length == 0 {
             return Err("length limits must be at least 1".into());
@@ -281,6 +347,36 @@ mod tests {
         assert!(s.validate().is_err());
         s.syncplay.port = 80;
         assert!(s.validate().is_err());
+
+        let mut s = Settings::default();
+        s.syncplay.port = 32400;
+        assert!(
+            s.validate().is_ok(),
+            "Plex's port only counts while Plex is on"
+        );
+        s.plex.enabled = true;
+        assert_eq!(
+            s.validate().unwrap_err(),
+            "Syncplay and Plex need different ports"
+        );
+        s.syncplay.port = 8999;
+        s.jellyfin.https_port = 8096;
+        assert_eq!(
+            s.validate().unwrap_err(),
+            "Jellyfin HTTP and Jellyfin HTTPS need different ports"
+        );
+    }
+
+    #[test]
+    fn plex_sharing_needs_plex_on_and_vanilla_mode_off() {
+        let mut s = Settings::default();
+        assert_eq!(s.plex.port, 32400);
+        s.plex.share_with_syncplay = true;
+        assert!(!s.plex_share_effective());
+        s.plex.enabled = true;
+        assert!(s.plex_share_effective());
+        s.syncplay.vanilla_mode = true;
+        assert!(!s.plex_share_effective());
     }
 
     #[test]
@@ -295,7 +391,9 @@ mod tests {
         assert_eq!(s.syncplay.access, SyncplayAccess::Approved);
         let s = Settings::parse(r#"{"syncplay":{"access":"passwordOnly"}}"#).unwrap();
         assert_eq!(s.syncplay.access, SyncplayAccess::PasswordOnly);
-        assert!(serde_json::to_string(&s).unwrap().contains(r#""access":"passwordOnly""#));
+        assert!(serde_json::to_string(&s)
+            .unwrap()
+            .contains(r#""access":"passwordOnly""#));
     }
 
     #[test]

@@ -358,7 +358,7 @@ impl Relay {
                         self.fail_upload(&mut st, upload, true);
                     }
                 }
-                Effect::AuthorizeJellyfin { .. } => return,
+                Effect::AuthorizeJellyfin { .. } | Effect::InvitePlex { .. } => return,
             }
         }
         self.flush();

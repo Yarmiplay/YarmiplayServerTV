@@ -332,6 +332,27 @@ async fn dispatch(h: &AppHandle, command: &str, a: &Value) -> Result<Value, Stri
             ok(cmd::jellyfin_remove_path(app(), arg(a, "library")?, arg(a, "path")?).await?)
         }
         "jellyfin_rescan" => ok(cmd::jellyfin_rescan(app()).await?),
+        "plex_link_start" => ok(cmd::plex_link_start(app()).await?),
+        "plex_link_cancel" => ok(cmd::plex_link_cancel(app())),
+        "plex_logout" => ok(cmd::plex_logout(app()).await?),
+        "plex_refresh" => {
+            cmd::plex_refresh(app());
+            Ok(Value::Null)
+        }
+        "plex_libraries" => ok(cmd::plex_libraries(app()).await?),
+        "plex_add_library" => {
+            ok(
+                cmd::plex_add_library(app(), arg(a, "name")?, arg(a, "kind")?, arg(a, "path")?)
+                    .await?,
+            )
+        }
+        "plex_remove_library" => ok(cmd::plex_remove_library(app(), arg(a, "key")?).await?),
+        "plex_add_path" => ok(cmd::plex_add_path(app(), arg(a, "key")?, arg(a, "path")?).await?),
+        "plex_remove_path" => {
+            ok(cmd::plex_remove_path(app(), arg(a, "key")?, arg(a, "path")?).await?)
+        }
+        "plex_rescan" => ok(cmd::plex_rescan(app()).await?),
+        "plex_remove_invite" => ok(cmd::plex_remove_invite(app(), arg(a, "shareId")?).await?),
         "clear_relay_cache" => ok(cmd::clear_relay_cache(app())),
         "syncplay_device_approve" => {
             ok(cmd::syncplay_device_approve(app(), arg(a, "fingerprint")?)?)

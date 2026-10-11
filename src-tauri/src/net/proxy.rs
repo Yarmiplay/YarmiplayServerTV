@@ -1,8 +1,8 @@
-//! Jellyfin on the Syncplay port: a streaming reverse proxy to the local
-//! Jellyfin, so a friend who reaches the Syncplay server also reaches the
-//! shared Jellyfin without another open port. WebSocket upgrades are tunnelled.
-//! Jellyfin trusts the `X-Forwarded-*` headers because 127.0.0.1 is in its
-//! `KnownProxies` (see `netconfig`).
+//! Media servers on the Syncplay port: a streaming reverse proxy to a local
+//! server (Jellyfin or Plex), so a friend who reaches the Syncplay server also
+//! reaches what the host shares without another open port. WebSocket upgrades
+//! are tunnelled. Jellyfin trusts the `X-Forwarded-*` headers because 127.0.0.1
+//! is in its `KnownProxies` (see `jellyfin::netconfig`).
 
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode};
@@ -11,15 +11,11 @@ use std::net::IpAddr;
 use std::time::Duration;
 use tracing::debug;
 
-pub struct JellyfinProxy {
+pub struct LocalProxy {
+    /// Shown in errors and logs, e.g. "Jellyfin".
+    name: &'static str,
     client: reqwest::Client,
     target: RwLock<Option<u16>>,
-}
-
-impl Default for JellyfinProxy {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 const HOP_BY_HOP: [&str; 9] = [
@@ -74,8 +70,8 @@ fn text(status: StatusCode, body: &str) -> Response<Body> {
     r
 }
 
-impl JellyfinProxy {
-    pub fn new() -> Self {
+impl LocalProxy {
+    pub fn new(name: &'static str) -> Self {
         let client = crate::net::client_builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(5))
@@ -83,12 +79,13 @@ impl JellyfinProxy {
             .build()
             .expect("reqwest client");
         Self {
+            name,
             client,
             target: RwLock::new(None),
         }
     }
 
-    /// The local Jellyfin HTTP port while sharing is on; None turns the proxy off.
+    /// The local server's HTTP port while sharing is on; None turns the proxy off.
     pub fn set_target(&self, port: Option<u16>) {
         *self.target.write() = port;
     }
@@ -138,8 +135,11 @@ impl JellyfinProxy {
         let resp = match rb.send().await {
             Ok(r) => r,
             Err(e) => {
-                debug!(error = %e, "Jellyfin proxy: upstream unreachable");
-                return text(StatusCode::BAD_GATEWAY, "Jellyfin is not reachable");
+                debug!(error = %e, server = self.name, "proxy: upstream unreachable");
+                return text(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("{} is not reachable", self.name),
+                );
             }
         };
         let status = resp.status();

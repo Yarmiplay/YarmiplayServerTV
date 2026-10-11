@@ -61,6 +61,10 @@ limited to invited friends" (server password). Everything else is No. The result
 >   for you
 > • Create the administrator account and add libraries right in the control panel
 >
+> WORKS WITH YOUR PLEX
+> • Already run Plex Media Server? Manage its libraries from the control panel and share it with the people on
+>   your Syncplay server. Plex isn't included: install it yourself from plex.tv
+>
 > FRIENDS OUTSIDE YOUR HOME
 > • Optional UPnP port forwarding, off by default
 > • Optional free HTTPS: a DuckDNS name with a Let's Encrypt certificate that renews itself
@@ -75,7 +79,8 @@ limited to invited friends" (server password). Everything else is No. The result
 > jellyfin folder of the app.
 >
 > YarmiplayServerTV is an independent app. It is not affiliated with or endorsed by the Syncplay project,
-> Jellyfin, DuckDNS or Let's Encrypt, which are named only to describe compatibility. It doesn't provide any
+> Jellyfin, Plex, DuckDNS or Let's Encrypt, which are named only to describe compatibility. Plex is a trademark
+> of Plex, Inc. It doesn't provide any
 > videos: you share your own media.
 
 **Product features** (one per line, 200 characters max each):
@@ -83,6 +88,7 @@ limited to invited friends" (server password). Everything else is No. The result
 - Syncplay 1.7-compatible server with rooms, passwords, chat and shared playlists
 - The official Jellyfin server built in, ready to switch on
 - Jellyfin setup and libraries in the control panel
+- Works with your own Plex Media Server: libraries and sharing (Plex not included)
 - Optional UPnP port forwarding for friends outside your home network
 - Optional free HTTPS with DuckDNS and Let's Encrypt
 - Lives in the system tray and can start with Windows

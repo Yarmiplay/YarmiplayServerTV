@@ -10,7 +10,7 @@
 //! The YarmiplayTV extensions ([`super::ext`]) only exist for clients that ask
 //! for them; everyone else sees the official server.
 
-use super::ext::{self, Effect, ExtSession, JellyfinShare};
+use super::ext::{self, Effect, ExtSession, JellyfinShare, PlexShare};
 use super::protocol::{
     self, line, truncate, PingService, MAX_FILENAME_LENGTH, MAX_ROOM_NAME_LENGTH,
 };
@@ -235,6 +235,7 @@ pub struct ServerState {
     watchers: HashMap<ConnId, Watcher>,
     rooms: HashMap<String, Room>,
     jellyfin: Option<JellyfinShare>,
+    plex: Option<PlexShare>,
     https: bool,
     effects: Vec<Effect>,
 }
@@ -247,6 +248,7 @@ impl ServerState {
             watchers: HashMap::new(),
             rooms: HashMap::new(),
             jellyfin: None,
+            plex: None,
             https: false,
             effects: Vec::new(),
         };
@@ -375,6 +377,14 @@ impl ServerState {
         }
     }
 
+    /// What extension sessions are told about the shared Plex.
+    pub fn set_plex(&mut self, share: Option<PlexShare>) {
+        if self.plex != share {
+            self.plex = share;
+            self.broadcast_ext_state();
+        }
+    }
+
     /// Whether the Syncplay port answers TLS directly (a certificate is loaded).
     pub fn set_https(&mut self, https: bool) {
         if self.https != https {
@@ -402,8 +412,20 @@ impl ServerState {
         json!({
             "fileRelay": on && self.opts.file_relay,
             "jellyfin": on && self.jellyfin.is_some(),
+            "plex": on && self.plex.is_some(),
             "https": on && self.https,
         })
+    }
+
+    fn plex_message(&self) -> Value {
+        match (&self.plex, self.opts.vanilla_mode) {
+            (Some(p), false) => {
+                let mut v = serde_json::to_value(p).unwrap_or_else(|_| json!({}));
+                v["available"] = json!(true);
+                v
+            }
+            _ => json!({ "available": false }),
+        }
     }
 
     fn jellyfin_message(&self) -> Value {
@@ -420,8 +442,9 @@ impl ServerState {
     fn broadcast_ext_state(&self) {
         let caps = self.capabilities();
         let jf = self.jellyfin_message();
+        let plex = self.plex_message();
         for w in self.watchers.values().filter(|w| w.ext.is_some()) {
-            w.send(json!({ "Yarmiplay": { "capabilities": caps, "jellyfin": jf } }));
+            w.send(json!({ "Yarmiplay": { "capabilities": caps, "jellyfin": jf, "plex": plex } }));
         }
     }
 
@@ -664,6 +687,7 @@ impl ServerState {
                 "session": { "token": s.token, "protocol": s.protocol },
                 "capabilities": self.capabilities(),
                 "jellyfin": self.jellyfin_message(),
+                "plex": self.plex_message(),
             } }));
         }
         tracing::info!(user = %name, room = %w.room, client = %version, ext = w.ext.is_some(), "Syncplay user joined");
@@ -874,6 +898,40 @@ impl ServerState {
                         None => self
                             .effects
                             .push(Effect::AuthorizeJellyfin { conn: id, code }),
+                    }
+                }
+                "plexInvite" => {
+                    let username = ext::plex_username(value);
+                    let refuse = if self.plex.is_none() {
+                        Some("Plex sharing is off on this server")
+                    } else if username.is_none() {
+                        Some("No plex.tv username")
+                    } else if !self
+                        .watchers
+                        .get_mut(&id)
+                        .and_then(|w| w.ext.as_mut())
+                        .is_some_and(|s| s.allow_invite(now))
+                    {
+                        Some("Too many attempts; wait a minute")
+                    } else {
+                        None
+                    };
+                    match (refuse, username) {
+                        (None, Some(username)) => {
+                            let syncplay_name = self.watchers[&id].name.clone();
+                            self.effects.push(Effect::InvitePlex {
+                                conn: id,
+                                username,
+                                syncplay_name,
+                            });
+                        }
+                        (error, _) => {
+                            self.send_ext(
+                                id,
+                                "plexInvite",
+                                json!({ "ok": false, "error": error.unwrap_or("No plex.tv username") }),
+                            );
+                        }
                     }
                 }
                 "uploadFailed" => {
@@ -1607,6 +1665,84 @@ mod tests {
             .contains("wait"));
     }
 
+    fn plex_share() -> PlexShare {
+        PlexShare {
+            machine_id: "m1".into(),
+            server_name: "Home Plex".into(),
+            proxy: true,
+            addresses: vec!["http://192.168.1.2:32400".into()],
+        }
+    }
+
+    #[test]
+    fn plex_share_reaches_sessions_and_vanilla_mode_hides_it() {
+        let mut s = ServerState::new(SyncplayOptions::default());
+        let mut y = join_ext(&mut s, 1, "yarmi", "movie");
+        let hello = drain(&mut y);
+        assert_eq!(hello[4]["Yarmiplay"]["plex"]["available"], false);
+        assert_eq!(hello[4]["Yarmiplay"]["capabilities"]["plex"], false);
+
+        s.set_plex(Some(plex_share()));
+        let out = drain(&mut y);
+        assert_eq!(out[0]["Yarmiplay"]["capabilities"]["plex"], true);
+        assert_eq!(out[0]["Yarmiplay"]["plex"]["machineId"], "m1");
+        assert_eq!(out[0]["Yarmiplay"]["plex"]["proxy"], true);
+        assert_eq!(out[0]["Yarmiplay"]["plex"]["available"], true);
+        s.set_plex(Some(plex_share()));
+        assert!(drain(&mut y).is_empty(), "no news, no message");
+        assert_eq!(s.ext_info()["capabilities"]["plex"], true);
+
+        s.set_options(SyncplayOptions {
+            vanilla_mode: true,
+            ..SyncplayOptions::default()
+        });
+        assert_eq!(drain(&mut y)[0]["Yarmiplay"]["capabilities"]["plex"], false);
+        assert_eq!(s.ext_info()["capabilities"]["plex"], false);
+    }
+
+    #[test]
+    fn plex_invite_is_gated_and_rate_limited() {
+        let mut s = ServerState::new(SyncplayOptions::default());
+        let mut y = join_ext(&mut s, 1, "yarmi", "movie");
+        drain(&mut y);
+        s.take_effects();
+        let ask = msg(json!({ "Yarmiplay": { "plexInvite": { "username": "alice" } } }));
+        s.handle_message(1, &ask, 0.0);
+        assert_eq!(
+            drain(&mut y)[0]["Yarmiplay"]["plexInvite"]["error"],
+            "Plex sharing is off on this server"
+        );
+        assert!(s.take_effects().is_empty());
+
+        s.set_plex(Some(plex_share()));
+        drain(&mut y);
+        let bad = msg(json!({ "Yarmiplay": { "plexInvite": { "username": "a b" } } }));
+        s.handle_message(1, &bad, 0.0);
+        assert_eq!(
+            drain(&mut y)[0]["Yarmiplay"]["plexInvite"]["error"],
+            "No plex.tv username"
+        );
+        for i in 0..3 {
+            s.handle_message(1, &ask, i as f64);
+        }
+        let effects = s.take_effects();
+        assert_eq!(effects.len(), 3);
+        assert_eq!(
+            effects[0],
+            Effect::InvitePlex {
+                conn: 1,
+                username: "alice".into(),
+                syncplay_name: "yarmi".into(),
+            }
+        );
+        s.handle_message(1, &ask, 10.0);
+        assert!(s.take_effects().is_empty());
+        assert!(drain(&mut y)[0]["Yarmiplay"]["plexInvite"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("wait"));
+    }
+
     fn ext_hello(name: &str) -> Value {
         let mut h = hello(name, "movie");
         h["features"]["yarmiplay"] =
@@ -1777,8 +1913,14 @@ mod tests {
     fn password_only_drops_device_logins_and_marks_the_mode() {
         let mut s = ServerState::new(access_opts(SyncplayAccess::Password, false));
         let (tx, mut d) = unbounded_channel();
-        s.login(1, &ext_hello("dev"), tx, 0.0, Some("AAAA-BBBB-CCCC-DDDD".into()))
-            .unwrap();
+        s.login(
+            1,
+            &ext_hello("dev"),
+            tx,
+            0.0,
+            Some("AAAA-BBBB-CCCC-DDDD".into()),
+        )
+        .unwrap();
         let (tx, mut p) = unbounded_channel();
         s.login(2, &ext_hello("pw"), tx, 0.0, None).unwrap();
         drain(&mut d);
@@ -1803,7 +1945,10 @@ mod tests {
             .into_iter()
             .find(|m| m.get("Hello").is_some())
             .unwrap();
-        assert_eq!(hello["Hello"]["features"]["yarmiplay"]["access"], "passwordOnly");
+        assert_eq!(
+            hello["Hello"]["features"]["yarmiplay"]["access"],
+            "passwordOnly"
+        );
         assert_eq!(hello["Hello"]["features"]["yarmiplay"]["device"], "none");
     }
 

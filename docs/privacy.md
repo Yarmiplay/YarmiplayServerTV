@@ -1,12 +1,12 @@
 # YarmiplayServerTV privacy policy
 
-Effective 7 October 2026. This policy covers the YarmiplayServerTV app for Windows, macOS and Linux, including
+Effective 11 October 2026. This policy covers the YarmiplayServerTV app for Windows, macOS and Linux, including
 the copy from the Microsoft Store.
 
 ## Summary
 
-YarmiplayServerTV doesn't collect any data. It has no accounts, no analytics, no advertising and no crash
-reporting, and the developer runs no servers that the app talks to. Every server and network feature is off
+YarmiplayServerTV doesn't collect any data. It has no accounts of its own, no analytics, no advertising and no
+crash reporting, and the developer runs no servers that the app talks to. Every server and network feature is off
 until you switch it on, and each one only talks to what it needs.
 
 ## What the app sends, and to whom
@@ -47,11 +47,24 @@ until you switch it on, and each one only talks to what it needs.
   that can watch but not change anything. Their Jellyfin traffic can reach Jellyfin through the Syncplay port.
   Switching sharing off disables the guest account, which signs every guest out.
 
+- **Plex** (off until you switch it on): the app talks to the Plex Media Server you installed, on your computer
+  only. When you link your Plex account, the app gets a code from [plex.tv](https://www.plex.tv/about/privacy-legal/)
+  for you to enter there; plex.tv then gives the app a token for your account, and the app uses it to look up
+  your server and, if you share it, to manage invites. Requests to plex.tv carry a random id for this copy of
+  the app and your computer's name, as Plex apps do. Plex itself is a separate program by Plex, Inc.; see its
+  privacy policy for what it does.
+- **Sharing Plex with Syncplay users** (off until you switch it on): the Syncplay server tells YarmiplayTV users
+  that your Plex is available. When one asks for it, they send their plex.tv username, which the app sends to
+  plex.tv to invite them as a Plex friend to the libraries you picked. The app keeps their plex.tv username,
+  the name they used on your Syncplay server and when they asked, on your computer only, until you remove them
+  or switch sharing off (which removes those invites). Their own plex.tv token is never sent to your computer.
+  They then watch from your Plex directly, as with any Plex friend.
+
 ## What stays on your device
 
 Your settings, the approved Syncplay devices, the ACME account and certificates, Jellyfin (program, database,
-cache and logs), the file relay cache and the app's log are stored only on your computer. The DuckDNS token and the Jellyfin sign-in are kept in the system
-credential store (Windows Credential Manager, macOS Keychain or the Secret Service on Linux). Your media folders
+cache and logs), the file relay cache and the app's log are stored only on your computer. The DuckDNS token and the Jellyfin and Plex sign-ins are kept in the
+system credential store (Windows Credential Manager, macOS Keychain or the Secret Service on Linux). Your media folders
 are read by Jellyfin and never changed or uploaded by the app. The control panel can only be reached from your
 own computer.
 

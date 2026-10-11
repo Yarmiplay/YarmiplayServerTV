@@ -35,6 +35,22 @@ export function jellyfinPill(s: Snapshot): Pill {
   }
 }
 
+export function plexPill(s: Snapshot): Pill {
+  switch (s.plex.phase) {
+    case "running":
+      if (s.plexAccount.ownsServer === false) return { kind: "err", text: "Another account's server" };
+      return s.plexAccount.signedIn ? { kind: "ok", text: "Running" } : { kind: "warn", text: "Link your account" };
+    case "unclaimed":
+      return { kind: "warn", text: "Needs setup in Plex" };
+    case "notRunning":
+      return { kind: "warn", text: "Not running" };
+    case "notInstalled":
+      return { kind: "warn", text: "Not installed" };
+    default:
+      return { kind: "", text: "Off" };
+  }
+}
+
 export function tlsPill(s: Snapshot): Pill {
   const t = s.tls;
   switch (t.phase) {

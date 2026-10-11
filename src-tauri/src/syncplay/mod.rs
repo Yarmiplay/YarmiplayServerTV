@@ -9,7 +9,7 @@ pub mod server;
 
 pub use crate::config::SyncplayAccess;
 pub use room::{RoomInfo, SyncplayOptions};
-pub use server::{AuthorizeFn, Extensions, SyncplayServer};
+pub use server::{AuthorizeFn, Extensions, PlexInviteFn, SyncplayServer};
 
 impl From<&crate::config::SyncplaySettings> for SyncplayOptions {
     fn from(s: &crate::config::SyncplaySettings) -> Self {

@@ -5,12 +5,12 @@
 //! YarmiplayTV extensions (see [`super::mux`]).
 
 use super::devices::{self, Decision, DeviceStore};
-use super::ext::{self, Effect, JellyfinShare};
+use super::ext::{self, Effect, JellyfinShare, PlexShare};
 use super::mux::{self, ConnMeta, HttpSender, Sniff};
 use super::protocol::{line, now_secs, MAX_LINE_LENGTH};
 use super::room::{Access, ConnId, Out, RoomInfo, ServerState, SyncplayOptions};
 use crate::config::SyncplayAccess;
-use crate::jellyfin::proxy::JellyfinProxy;
+use crate::net::proxy::LocalProxy;
 use crate::relay::Relay;
 use crate::tls::CertStore;
 use futures_util::future::BoxFuture;
@@ -36,14 +36,19 @@ const AUTH_FAILED: &str = "Device authentication failed";
 pub type ChangeNotify = Arc<dyn Fn() + Send + Sync>;
 /// Approve a Jellyfin Quick Connect code for the guest account.
 pub type AuthorizeFn = Arc<dyn Fn(String) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
+/// Invite a plex.tv user (username or email, Syncplay name) to the host's Plex.
+pub type PlexInviteFn =
+    Arc<dyn Fn(String, String) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
 /// The async parts behind the YarmiplayTV extensions. All optional: without
 /// them the server is a plain Syncplay server.
 #[derive(Clone, Default)]
 pub struct Extensions {
     pub relay: Option<Relay>,
-    pub proxy: Option<Arc<JellyfinProxy>>,
+    pub proxy: Option<Arc<LocalProxy>>,
+    pub plex_proxy: Option<Arc<LocalProxy>>,
     pub authorize: Option<AuthorizeFn>,
+    pub plex_invite: Option<PlexInviteFn>,
     /// Approved device keys; without it nobody gets a device challenge.
     pub devices: Option<Arc<DeviceStore>>,
 }
@@ -72,7 +77,7 @@ impl Shared {
         }
     }
 
-    /// Hand queued [`Effect`]s to the relay and Jellyfin.
+    /// Hand queued [`Effect`]s to the relay, Jellyfin and Plex.
     fn dispatch(self: &Arc<Self>) {
         let effects = self.state.lock().take_effects();
         for effect in effects {
@@ -80,6 +85,16 @@ impl Shared {
                 Effect::AuthorizeJellyfin { conn, code } => {
                     let shared = self.clone();
                     tokio::spawn(async move { shared.authorize(conn, code).await });
+                }
+                Effect::InvitePlex {
+                    conn,
+                    username,
+                    syncplay_name,
+                } => {
+                    let shared = self.clone();
+                    tokio::spawn(
+                        async move { shared.invite_plex(conn, username, syncplay_name).await },
+                    );
                 }
                 other => {
                     if let Some(r) = &self.ext.relay {
@@ -103,6 +118,21 @@ impl Shared {
             }
         };
         self.state.lock().send_ext(conn, "jellyfinAuthorize", reply);
+    }
+
+    async fn invite_plex(&self, conn: ConnId, username: String, syncplay_name: String) {
+        let result = match &self.ext.plex_invite {
+            Some(f) => f(username, syncplay_name).await,
+            None => Err("Plex sharing is off on this server".into()),
+        };
+        let reply = match result {
+            Ok(()) => json!({ "ok": true }),
+            Err(e) => {
+                debug!(error = %e, "Plex invite failed");
+                json!({ "ok": false, "error": e })
+            }
+        };
+        self.state.lock().send_ext(conn, "plexInvite", reply);
     }
 }
 
@@ -191,6 +221,11 @@ impl SyncplayServer {
     /// What extension sessions are told about the shared Jellyfin.
     pub fn set_jellyfin(&self, share: Option<JellyfinShare>) {
         self.shared.state.lock().set_jellyfin(share);
+    }
+
+    /// What extension sessions are told about the shared Plex.
+    pub fn set_plex(&self, share: Option<PlexShare>) {
+        self.shared.state.lock().set_plex(share);
     }
 
     /// Disconnect every login that used this device key.
@@ -1034,7 +1069,10 @@ mod tests {
         let mut c = connect(&server).await;
         send(&mut c, hello_with("ana", true, None)).await;
         let out = rest(&mut c).await;
-        assert!(out.iter().all(|m| m.get("Yarmiplay").is_none()), "no challenge");
+        assert!(
+            out.iter().all(|m| m.get("Yarmiplay").is_none()),
+            "no challenge"
+        );
         assert_eq!(error_of(&out), "Password required");
 
         let mut c = connect(&server).await;

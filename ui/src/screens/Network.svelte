@@ -126,6 +126,14 @@
       checked={snap.settings.jellyfin.upnp}
       onchange={(v) => store.save((s) => (s.jellyfin.upnp = v))}
     />
+    {#if snap.settings.plex.enabled}
+      <Toggle
+        label="Plex"
+        hint={`TCP ${snap.settings.plex.port}`}
+        checked={snap.settings.plex.upnp}
+        onchange={(v) => store.save((s) => (s.plex.upnp = v))}
+      />
+    {/if}
     {#if snap.upnp.active}
       <div class="kv">
         {#if snap.upnp.localIp}<span>This PC</span><code>{snap.upnp.localIp}</code>{/if}

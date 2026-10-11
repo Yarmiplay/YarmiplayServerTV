@@ -14,8 +14,10 @@ pub struct TrayItems {
     open_browser: MenuItem<Wry>,
     syncplay: CheckMenuItem<Wry>,
     jellyfin: CheckMenuItem<Wry>,
+    plex: CheckMenuItem<Wry>,
     copy_syncplay: MenuItem<Wry>,
     open_jellyfin: MenuItem<Wry>,
+    open_plex: MenuItem<Wry>,
     autostart: CheckMenuItem<Wry>,
     update: MenuItem<Wry>,
 }
@@ -55,6 +57,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         false,
         None::<&str>,
     )?;
+    let plex = CheckMenuItem::with_id(app, "plex", "Plex", true, false, None::<&str>)?;
     let copy_syncplay = MenuItem::with_id(
         app,
         "copy-syncplay",
@@ -64,6 +67,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     )?;
     let open_jellyfin =
         MenuItem::with_id(app, "open-jellyfin", "Open Jellyfin", false, None::<&str>)?;
+    let open_plex = MenuItem::with_id(app, "open-plex", "Open Plex", false, None::<&str>)?;
     let autostart = CheckMenuItem::with_id(
         app,
         "autostart",
@@ -90,9 +94,11 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         &sep2,
         &syncplay,
         &jellyfin,
+        &plex,
         &sep3,
         &copy_syncplay,
         &open_jellyfin,
+        &open_plex,
         &sep4,
         &autostart,
     ];
@@ -127,8 +133,10 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         open_browser,
         syncplay,
         jellyfin,
+        plex,
         copy_syncplay,
         open_jellyfin,
+        open_plex,
         autostart,
         update,
     });
@@ -154,14 +162,14 @@ fn on_menu(app: &AppHandle, id: &str) {
                 warn!(error = %e, "could not open the control panel in a browser");
             }
         }
-        "syncplay" | "jellyfin" => {
+        "syncplay" | "jellyfin" | "plex" => {
             let which = id.to_string();
             tauri::async_runtime::spawn(async move {
                 let mut s = state.settings();
-                if which == "syncplay" {
-                    s.syncplay.enabled = !s.syncplay.enabled;
-                } else {
-                    s.jellyfin.enabled = !s.jellyfin.enabled;
+                match which.as_str() {
+                    "syncplay" => s.syncplay.enabled = !s.syncplay.enabled,
+                    "jellyfin" => s.jellyfin.enabled = !s.jellyfin.enabled,
+                    _ => s.plex.enabled = !s.plex.enabled,
                 }
                 if let Err(e) = state.update_settings(s).await {
                     warn!(error = %e, "tray toggle failed");
@@ -180,6 +188,11 @@ fn on_menu(app: &AppHandle, id: &str) {
         }
         "open-jellyfin" => {
             if let Some(url) = state.snapshot().addresses.jellyfin_local {
+                let _ = app.opener().open_url(url, None::<&str>);
+            }
+        }
+        "open-plex" => {
+            if let Some(url) = state.snapshot().addresses.plex_local {
                 let _ = app.opener().open_url(url, None::<&str>);
             }
         }
@@ -232,7 +245,14 @@ fn status_line(snap: &Snapshot) -> String {
         "stopping" => "Jellyfin stopping",
         _ => "Jellyfin error",
     };
-    format!("{syncplay} · {jellyfin}")
+    let plex = match snap.plex.phase {
+        "off" => return format!("{syncplay} · {jellyfin}"),
+        "running" => "Plex on",
+        "unclaimed" => "Plex needs setup",
+        "notInstalled" => "Plex not installed",
+        _ => "Plex not running",
+    };
+    format!("{syncplay} · {jellyfin} · {plex}")
 }
 
 pub fn update(app: &AppHandle, snap: &Snapshot) {
@@ -246,7 +266,11 @@ pub fn update(app: &AppHandle, snap: &Snapshot) {
         .set_enabled(snap.settings.browser.enabled);
     let _ = items.syncplay.set_checked(snap.settings.syncplay.enabled);
     let _ = items.jellyfin.set_checked(snap.settings.jellyfin.enabled);
+    let _ = items.plex.set_checked(snap.settings.plex.enabled);
     let _ = items.copy_syncplay.set_enabled(snap.syncplay.running);
+    let _ = items
+        .open_plex
+        .set_enabled(matches!(snap.plex.phase, "running" | "unclaimed"));
     let _ = items
         .open_jellyfin
         .set_enabled(snap.jellyfin.phase == "running");

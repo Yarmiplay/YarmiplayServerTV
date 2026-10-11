@@ -61,7 +61,7 @@ A YarmiplayServerTV that has the extensions on answers with a Hello whose `featu
   "server": "YarmiplayServerTV",
   "version": "1.6.0",
   "protocol": 1,
-  "capabilities": {"fileRelay": true, "jellyfin": false, "https": true}
+  "capabilities": {"fileRelay": true, "jellyfin": false, "plex": false, "https": true}
 }
 ```
 
@@ -81,11 +81,16 @@ Right after that Hello, the server sends the session:
 ```json
 {"Yarmiplay": {
   "session": {"token": "9f2c…48 hex chars…", "protocol": 1},
-  "capabilities": {"fileRelay": true, "jellyfin": true, "https": true},
+  "capabilities": {"fileRelay": true, "jellyfin": true, "plex": true, "https": true},
   "jellyfin": {"available": true, "serverId": "b7c1…", "serverName": "Yarmi's Jellyfin",
-               "proxy": true, "addresses": ["http://192.168.1.20:8096", "https://yarmi.duckdns.org:8920"]}
+               "proxy": true, "addresses": ["http://192.168.1.20:8096", "https://yarmi.duckdns.org:8920"]},
+  "plex": {"available": true, "machineId": "5f3e…", "serverName": "Yarmi's Plex",
+           "proxy": true, "addresses": ["http://203.0.113.7:32400", "http://192.168.1.20:32400"]}
 }}
 ```
+
+`plex` is only present from YarmiplayServerTV 1.7.0; older servers send no `plex` key and no
+`capabilities.plex`. Treat a missing key as `false` / unavailable.
 
 A `Yarmiplay` message can carry several sub-commands at once (like `Set`); handle every key you
 know and ignore the rest.
@@ -97,10 +102,10 @@ normal use; it's handy for a "test server" button.
 
 ### Mid-session changes
 
-The server re-sends `capabilities` (and `jellyfin`) whenever they change:
+The server re-sends `capabilities` (and `jellyfin` and `plex`) whenever they change:
 
 ```json
-{"Yarmiplay": {"capabilities": {"fileRelay": false, "jellyfin": false, "https": false}}}
+{"Yarmiplay": {"capabilities": {"fileRelay": false, "jellyfin": false, "plex": false, "https": false}}}
 ```
 
 - **Everything `false`** means the host switched vanilla mode on. The token is revoked at the
@@ -111,6 +116,8 @@ The server re-sends `capabilities` (and `jellyfin`) whenever they change:
   UI. When it turns `true` again, the server has forgotten all offers: **send your offer again.**
 - **`jellyfin` turning `false`**: the host stopped sharing Jellyfin (or it isn't running). Don't
   delete the saved server; see the Jellyfin section.
+- **`plex` turning `false`**: the host stopped sharing Plex, or Plex isn't running. Don't delete the
+  saved server; see the Plex section.
 
 ### Peers
 
@@ -309,6 +316,43 @@ Later on:
 - If the saved URL stops answering, re-probe the stored candidates (the proxy URL depends on how
   this device reached the Syncplay server).
 - Shared servers then take part in `MediaLocator` like any other media server.
+
+## Plex sharing
+
+The host runs a Plex Media Server they installed themselves; YarmiplayServerTV never installs or
+runs Plex. When `plex.available` is `true` (same setting as Jellyfin sharing), the host's Plex can
+be added to the user's own plex.tv account as a **Plex friend share**. This needs a plex.tv account
+linked in YarmiplayTV; without one, offer to link it (the existing `plex.tv/link` flow) and stop.
+
+1. **Ask for an invite.** Send the linked account's plex.tv username:
+   `{"Yarmiplay": {"plexInvite": {"username": "ana_watches"}}}`.
+   Never send a plex.tv token. The server invites that account to the libraries the host picked and
+   replies `{"Yarmiplay": {"plexInvite": {"ok": true}}}`, or `"ok": false` with `error`. Asking
+   again for an account that was already invited succeeds without a new invite. You get 3 attempts
+   per minute per connection.
+2. **Accept the invite** with the user's own token. List pending invites
+   (`GET https://plex.tv/api/invites/requests`) and accept the one whose server's
+   `machineIdentifier` equals `plex.machineId`
+   (`PUT https://plex.tv/api/invites/requests/{id}?friend=1&server=1&home=0`). These are the
+   endpoints Plex's own apps use; check them against a live account.
+3. **Find the server** in the user's resources (`GET /api/v2/resources`) by `machineId`. It now
+   comes with its own `accessToken`. Probe its connections as usual; the host also advertises the
+   Syncplay-port URL there.
+4. **Find a working URL.** Like Jellyfin: when `proxy` is `true`, try the Syncplay base URL from
+   the HTTP section first (YarmiplayServerTV 1.7.0 always sends `false`: Plex counts relayed
+   viewers as local, so it doesn't relay Plex), then `addresses`, then plex.tv's connections. `GET /identity` must
+   report `machineIdentifier == machineId`. Use the resource's `accessToken`, never the account
+   token, against the server.
+5. **Save the server** as "<serverName> (via <Syncplay server name>)", marked as shared by a
+   Syncplay host, and keep the candidate URLs.
+
+Later on:
+
+- When the host stops sharing, the share is removed and Plex answers 401. Mark the server
+  "No longer shared" instead of deleting it; if `plex.available` turns `true` again on a later
+  visit, ask for an invite again.
+- If the user had already been given access by the host in Plex itself, the server is simply in
+  their resources: skip the invite and just save it.
 
 ## Tests
 

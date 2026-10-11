@@ -16,6 +16,10 @@ use super::room::ConnId;
 pub const PROTOCOL: u64 = 1;
 /// Jellyfin Quick Connect approvals a connection may ask for per minute.
 pub const AUTHORIZE_PER_MINUTE: usize = 5;
+/// Plex invites a connection may ask for per minute.
+pub const INVITE_PER_MINUTE: usize = 3;
+/// Longest plex.tv username or email accepted in a Plex invite request.
+pub const MAX_PLEX_USERNAME: usize = 100;
 /// Files one client may offer at once.
 pub const MAX_OFFERED_FILES: usize = 200;
 
@@ -31,12 +35,39 @@ pub struct JellyfinShare {
     pub addresses: Vec<String>,
 }
 
+/// The host's Plex Media Server, as shared with the Syncplay clients.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlexShare {
+    /// Plex's `machineIdentifier`; `/identity` must report the same.
+    pub machine_id: String,
+    pub server_name: String,
+    /// Plex answers on the Syncplay port too.
+    pub proxy: bool,
+    /// Direct Plex URLs (LAN, public).
+    pub addresses: Vec<String>,
+}
+
 /// A connection's extension session.
 #[derive(Debug)]
 pub struct ExtSession {
     pub protocol: u64,
     pub token: String,
     authorize_times: VecDeque<f64>,
+    invite_times: VecDeque<f64>,
+}
+
+/// Sliding one-minute window: true (and counted) if fewer than `limit`
+/// requests happened in the last minute.
+fn allow_in_window(times: &mut VecDeque<f64>, now: f64, limit: usize) -> bool {
+    while times.front().is_some_and(|t| now - t >= 60.0) {
+        times.pop_front();
+    }
+    if times.len() >= limit {
+        return false;
+    }
+    times.push_back(now);
+    true
 }
 
 impl ExtSession {
@@ -45,24 +76,31 @@ impl ExtSession {
             protocol,
             token: new_token(),
             authorize_times: VecDeque::new(),
+            invite_times: VecDeque::new(),
         }
     }
 
     /// Sliding one-minute window for Quick Connect approvals.
     pub fn allow_authorize(&mut self, now: f64) -> bool {
-        while self
-            .authorize_times
-            .front()
-            .is_some_and(|t| now - t >= 60.0)
-        {
-            self.authorize_times.pop_front();
-        }
-        if self.authorize_times.len() >= AUTHORIZE_PER_MINUTE {
-            return false;
-        }
-        self.authorize_times.push_back(now);
-        true
+        allow_in_window(&mut self.authorize_times, now, AUTHORIZE_PER_MINUTE)
     }
+
+    /// Sliding one-minute window for Plex invites.
+    pub fn allow_invite(&mut self, now: f64) -> bool {
+        allow_in_window(&mut self.invite_times, now, INVITE_PER_MINUTE)
+    }
+}
+
+/// A plex.tv username or email from a `plexInvite` request, or None if it
+/// can't be one.
+pub fn plex_username(value: &Value) -> Option<String> {
+    let name = value.get("username")?.as_str()?.trim();
+    let ok = !name.is_empty()
+        && name.chars().count() <= MAX_PLEX_USERNAME
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || "@._-+".contains(c));
+    ok.then(|| name.to_string())
 }
 
 pub fn new_token() -> String {
@@ -156,6 +194,14 @@ pub enum Effect {
         conn: ConnId,
         code: String,
     },
+    /// Invite a plex.tv user to the host's Plex.
+    InvitePlex {
+        conn: ConnId,
+        /// plex.tv username or email.
+        username: String,
+        /// Who asked, as known on the Syncplay server.
+        syncplay_name: String,
+    },
     UploadFailed {
         conn: ConnId,
         upload: String,
@@ -176,6 +222,25 @@ mod tests {
         assert!(!s.allow_authorize(30.0));
         assert!(s.allow_authorize(60.5));
         assert!(!s.allow_authorize(60.6));
+        for i in 0..3 {
+            assert!(s.allow_invite(i as f64), "invites have their own budget");
+        }
+        assert!(!s.allow_invite(3.0));
+    }
+
+    #[test]
+    fn plex_usernames_are_checked() {
+        let name = |v: Value| plex_username(&json!({ "username": v }));
+        assert_eq!(name(json!(" alice_99 ")).as_deref(), Some("alice_99"));
+        assert_eq!(
+            name(json!("a.b+c@example.com")).as_deref(),
+            Some("a.b+c@example.com")
+        );
+        assert_eq!(name(json!("")), None);
+        assert_eq!(name(json!("a b")), None);
+        assert_eq!(name(json!("a/../b")), None);
+        assert_eq!(name(json!("x".repeat(101))), None);
+        assert_eq!(name(json!(5)), None);
     }
 
     #[test]
