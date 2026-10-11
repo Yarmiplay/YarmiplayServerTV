@@ -7,6 +7,7 @@
 //! the host live in memory only, each with a channel that carries the
 //! decision to the connection that is waiting.
 
+use super::managed;
 use crate::paths::write_atomic;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -70,6 +71,8 @@ pub struct DevicesStatus {
 struct DeviceFile {
     server_id: String,
     devices: Vec<ApprovedDevice>,
+    /// Managed Syncplay room names are derived from it.
+    room_salt: String,
 }
 
 struct Pending {
@@ -124,9 +127,12 @@ impl DeviceStore {
                 }
             })
             .unwrap_or_default();
-        let fresh = file.server_id.is_empty();
-        if fresh {
+        let fresh = file.server_id.is_empty() || file.room_salt.is_empty();
+        if file.server_id.is_empty() {
             file.server_id = hex::encode(rand::random::<[u8; 16]>());
+        }
+        if file.room_salt.is_empty() {
+            file.room_salt = managed::generate_salt();
         }
         let store = Self {
             path: Some(path),
@@ -151,6 +157,7 @@ impl DeviceStore {
                 file: DeviceFile {
                     server_id: hex::encode(rand::random::<[u8; 16]>()),
                     devices: Vec::new(),
+                    room_salt: managed::generate_salt(),
                 },
                 pending: Vec::new(),
             }),
@@ -167,6 +174,17 @@ impl DeviceStore {
 
     pub fn server_id(&self) -> String {
         self.inner.lock().file.server_id.clone()
+    }
+
+    pub fn room_salt(&self) -> String {
+        self.inner.lock().file.room_salt.clone()
+    }
+
+    /// A new salt: every managed room name and password made so far stops working.
+    pub fn reset_room_salt(&self) -> Result<(), String> {
+        let mut inner = self.inner.lock();
+        inner.file.room_salt = managed::generate_salt();
+        self.save(&inner)
     }
 
     pub fn is_approved(&self, fingerprint: &str) -> bool {

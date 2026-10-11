@@ -126,6 +126,13 @@ A peer's `features`, echoed in `Set` `user` `joined` events and in `List` replie
 which viewers are on a stock client (they can't seed or fetch relayed files). Vanilla clients
 never see this key.
 
+### Managed rooms
+
+These aren't an extension. Since 1.7.1, the Hello's `features.managedRooms` is `true` (unless the host
+switched managed rooms off), and `controllerAuth`, `newControlledRoom`, the `controller` flag and setting
+other users' readiness work as on the official server. See
+[yarmiplaytv-managed-rooms-prompt.md](yarmiplaytv-managed-rooms-prompt.md).
+
 ## HTTP on the Syncplay port
 
 The same host and port serve HTTP. Build the base URL from where the Syncplay connection went:

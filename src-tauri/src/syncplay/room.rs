@@ -11,6 +11,7 @@
 //! for them; everyone else sees the official server.
 
 use super::ext::{self, Effect, ExtSession, JellyfinShare, PlexShare};
+use super::managed;
 use super::protocol::{
     self, line, truncate, PingService, MAX_FILENAME_LENGTH, MAX_ROOM_NAME_LENGTH,
 };
@@ -56,6 +57,10 @@ pub struct SyncplayOptions {
     pub vanilla_mode: bool,
     /// Advertise the file relay to extension sessions.
     pub file_relay: bool,
+    /// Managed rooms (`+name:HASH`), where only operators control playback.
+    pub managed_rooms: bool,
+    /// Secret the managed-room names are derived from; kept across restarts.
+    pub room_salt: String,
 }
 
 impl Default for SyncplayOptions {
@@ -71,6 +76,8 @@ impl Default for SyncplayOptions {
             max_username_length: 150,
             vanilla_mode: false,
             file_relay: false,
+            managed_rooms: true,
+            room_salt: String::new(),
         }
     }
 }
@@ -182,10 +189,13 @@ struct Room {
     last_update: f64,
     playlist: Vec<Value>,
     playlist_index: Value,
+    /// A managed room: only `controllers` may play, pause, seek or change the playlist.
+    controlled: bool,
+    controllers: Vec<ConnId>,
 }
 
 impl Room {
-    fn new(now: f64) -> Self {
+    fn new(now: f64, controlled: bool) -> Self {
         Self {
             members: Vec::new(),
             paused: true,
@@ -194,7 +204,14 @@ impl Room {
             last_update: now,
             playlist: Vec::new(),
             playlist_index: Value::Null,
+            controlled,
+            controllers: Vec::new(),
         }
+    }
+
+    /// The official server's `canControl`: everyone in an ordinary room.
+    fn can_control(&self, id: ConnId) -> bool {
+        !self.controlled || self.controllers.contains(&id)
     }
 }
 
@@ -204,6 +221,10 @@ pub struct RoomInfo {
     pub name: String,
     pub users: Vec<String>,
     pub paused: bool,
+    /// A managed room (`+name:HASH`).
+    pub controlled: bool,
+    /// Its operators.
+    pub controllers: Vec<String>,
 }
 
 /// Username, room and client version from a Hello.
@@ -263,6 +284,12 @@ impl ServerState {
         let approved_only = switched_to(SyncplayAccess::Approved);
         let password_only = switched_to(SyncplayAccess::PasswordOnly);
         let before = self.capabilities();
+        if !opts.managed_rooms {
+            for room in self.rooms.values_mut() {
+                room.controlled = false;
+                room.controllers.clear();
+            }
+        }
         self.opts = opts;
         if revoke {
             self.revoke_sessions();
@@ -523,6 +550,13 @@ impl ServerState {
                     .map(|w| w.name.clone())
                     .collect(),
                 paused: room.paused,
+                controlled: room.controlled,
+                controllers: room
+                    .controllers
+                    .iter()
+                    .filter_map(|id| self.watchers.get(id))
+                    .map(|w| w.name.clone())
+                    .collect(),
             })
             .collect();
         rooms.sort_by(|a, b| a.name.cmp(&b.name));
@@ -533,7 +567,7 @@ impl ServerState {
         let mut f = json!({
             "isolateRooms": self.opts.isolate_rooms,
             "readiness": !self.opts.disable_ready,
-            "managedRooms": false,
+            "managedRooms": self.opts.managed_rooms,
             "persistentRooms": false,
             "chat": !self.opts.disable_chat,
             "maxChatMessageLength": self.opts.max_chat_message_length,
@@ -571,6 +605,22 @@ impl ServerState {
             .and_then(|w| self.rooms.get(&w.room))
             .map(|r| r.members.clone())
             .unwrap_or_default()
+    }
+
+    /// Whether `id` may change its room's playstate and playlist.
+    fn can_control(&self, id: ConnId) -> bool {
+        self.watchers
+            .get(&id)
+            .and_then(|w| self.rooms.get(&w.room))
+            .is_none_or(|r| r.can_control(id))
+    }
+
+    /// The official server's `isController`: an operator of a managed room.
+    fn is_controller(&self, id: ConnId) -> bool {
+        self.watchers
+            .get(&id)
+            .and_then(|w| self.rooms.get(&w.room))
+            .is_some_and(|r| r.controlled && r.controllers.contains(&id))
     }
 
     fn send_to(&self, ids: &[ConnId], value: &Value) {
@@ -706,10 +756,11 @@ impl ServerState {
             self.send_to(&others, &event);
         }
         self.detach(id);
+        let controlled = self.opts.managed_rooms && managed::is_controlled(room_name).is_some();
         let room = self
             .rooms
             .entry(room_name.to_string())
-            .or_insert_with(|| Room::new(now));
+            .or_insert_with(|| Room::new(now, controlled));
         let had_members = !room.members.is_empty();
         room.members.push(id);
         self.watchers.get_mut(&id).unwrap().room = room_name.to_string();
@@ -725,6 +776,7 @@ impl ServerState {
         };
         if let Some(room) = self.rooms.get_mut(&old) {
             room.members.retain(|m| *m != id);
+            room.controllers.retain(|m| *m != id);
             if room.members.is_empty() {
                 self.rooms.remove(&old);
             }
@@ -766,13 +818,19 @@ impl ServerState {
     }
 
     /// Room position, re-anchored on the furthest-behind watcher at most once per second.
+    /// In a managed room only its operators count, and without any the position runs on.
     fn room_position(&mut self, room_name: &str, now: f64) -> Option<f64> {
         let room = self.rooms.get(room_name)?;
         let age = now - room.last_update;
-        if !room.members.is_empty() && age > 1.0 {
+        let anchors = if room.controlled {
+            &room.controllers
+        } else {
+            &room.members
+        };
+        if !anchors.is_empty() && age > 1.0 {
             let paused = room.paused;
             let mut best: Option<ConnId> = None;
-            for id in &room.members {
+            for id in anchors {
                 let Some(w) = self.watchers.get(id) else {
                     continue;
                 };
@@ -973,8 +1031,8 @@ impl ServerState {
                         .unwrap_or(false);
                     let other = value.get("username").and_then(Value::as_str);
                     let own_name = self.watchers[&id].name.clone();
-                    if other.is_some_and(|u| u != own_name) {
-                        // Setting other users' readiness requires managed rooms, which this server does not offer.
+                    if let Some(other) = other.filter(|u| *u != own_name) {
+                        self.set_others_ready(id, other, is_ready, manually);
                         continue;
                     }
                     self.watchers.get_mut(&id).unwrap().ready = is_ready;
@@ -1001,13 +1059,9 @@ impl ServerState {
                     }
                 }
                 "controllerAuth" => {
-                    let w = &self.watchers[&id];
-                    let room = value
-                        .get("room")
-                        .and_then(Value::as_str)
-                        .unwrap_or(&w.room)
-                        .to_string();
-                    w.send_set(json!({ "controllerAuth": { "user": w.name, "room": room, "success": false } }));
+                    let room = value.get("room").and_then(Value::as_str);
+                    let password = value.get("password").and_then(Value::as_str);
+                    self.auth_room_controller(id, room, password);
                 }
                 _ => {}
             }
@@ -1034,7 +1088,8 @@ impl ServerState {
             .sum();
         let valid = files.len() <= protocol::PLAYLIST_MAX_ITEMS
             && total <= protocol::PLAYLIST_MAX_CHARACTERS
-            && files.iter().all(Value::is_string);
+            && files.iter().all(Value::is_string)
+            && self.can_control(id);
         let (name, room_name) = {
             let w = &self.watchers[&id];
             (w.name.clone(), w.room.clone())
@@ -1060,6 +1115,14 @@ impl ServerState {
             let w = &self.watchers[&id];
             (w.name.clone(), w.room.clone())
         };
+        if !self.can_control(id) {
+            if let Some(room) = self.rooms.get(&room_name) {
+                self.watchers[&id].send_set(
+                    json!({ "playlistIndex": { "user": room_name, "index": room.playlist_index } }),
+                );
+            }
+            return;
+        }
         if let Some(room) = self.rooms.get_mut(&room_name) {
             room.playlist_index = index.clone();
             room.set_by = Some(name.clone());
@@ -1093,7 +1156,7 @@ impl ServerState {
             let room = list.entry(w.room.clone()).or_insert_with(|| json!({}));
             room[w.name.clone()] = json!({
                 "file": w.file.clone().unwrap_or_else(|| json!({})),
-                "controller": false,
+                "controller": self.is_controller(wid),
                 "isReady": w.ready,
                 "features": me.view_features(&w.features),
             });
@@ -1160,7 +1223,8 @@ impl ServerState {
             w.last_updated = now;
             (w.name.clone(), w.ping.forward_delay())
         };
-        if pause_changed {
+        let can_control = self.can_control(id);
+        if pause_changed && can_control {
             let room = self.rooms.get_mut(&room_name).unwrap();
             room.paused = paused.unwrap();
             room.set_by = Some(name.clone());
@@ -1172,7 +1236,114 @@ impl ServerState {
             self.watchers.get_mut(&id).unwrap().position = Some(p);
         }
         if do_seek == Some(true) || pause_changed {
-            self.force_position_update(id, do_seek == Some(true), now);
+            if can_control {
+                self.force_position_update(id, do_seek == Some(true), now);
+            } else {
+                self.revert_watcher(id, paused.unwrap_or(room_paused), now);
+            }
+        }
+    }
+
+    /// A managed room's non-operator paused or seeked: put only them back
+    /// (the official server's `forcePositionUpdate` for `not canControl`).
+    fn revert_watcher(&mut self, id: ConnId, own_paused: bool, now: f64) {
+        let room_name = self.watchers[&id].room.clone();
+        let position = self.room_position(&room_name, now);
+        let Some((paused, set_by)) = self
+            .rooms
+            .get(&room_name)
+            .map(|r| (r.paused, r.set_by.clone()))
+        else {
+            return;
+        };
+        let w = self.watchers.get_mut(&id).unwrap();
+        let name = w.name.clone();
+        w.send_state(position, own_paused, false, Some(&name), true, now);
+        w.send_state(position, paused, true, set_by.as_deref(), true, now);
+    }
+
+    /// `Set.controllerAuth`: identify as an operator of a managed room, or
+    /// (for an ordinary room) get the name of a new managed room.
+    fn auth_room_controller(&mut self, id: ConnId, room: Option<&str>, password: Option<&str>) {
+        let (name, current) = {
+            let w = &self.watchers[&id];
+            (w.name.clone(), w.room.clone())
+        };
+        let status = |success: bool| json!({ "Set": { "controllerAuth": { "user": name, "room": current, "success": success } } });
+        if !self.opts.managed_rooms {
+            self.watchers[&id].send(status(false));
+            return;
+        }
+        let password = password.unwrap_or("");
+        if !managed::password_valid(password) {
+            self.send_to(&self.room_members(id), &status(false));
+            return;
+        }
+        let room_name = room
+            .filter(|r| !r.is_empty())
+            .unwrap_or(&current)
+            .to_string();
+        if managed::is_controlled(&room_name).is_none() {
+            let new_name = managed::controlled_name(&room_name, password, &self.opts.room_salt);
+            self.watchers[&id].send_set(
+                json!({ "newControlledRoom": { "password": password, "roomName": new_name } }),
+            );
+            return;
+        }
+        // Unlike the official server, the password must be for the room the user is in.
+        let success =
+            room_name == current && managed::check(&room_name, password, &self.opts.room_salt);
+        if success {
+            if let Some(r) = self.rooms.get_mut(&current) {
+                if r.controlled && !r.controllers.contains(&id) {
+                    r.controllers.push(id);
+                }
+            }
+            tracing::info!(user = %name, room = %current, "Syncplay room operator identified");
+        }
+        self.send_to(&self.audience(id), &status(success));
+    }
+
+    /// `Set.ready` for someone else: only a managed room's operators may.
+    fn set_others_ready(
+        &mut self,
+        id: ConnId,
+        username: &str,
+        is_ready: Option<bool>,
+        manually: bool,
+    ) {
+        if !self.is_controller(id) {
+            return;
+        }
+        let setter = self.watchers[&id].name.clone();
+        let members = self.room_members(id);
+        let Some(target) = members
+            .iter()
+            .copied()
+            .find(|m| self.watchers.get(m).is_some_and(|w| w.name == username))
+        else {
+            return;
+        };
+        let w = self.watchers.get_mut(&target).unwrap();
+        w.ready = is_ready;
+        let target_name = w.name.clone();
+        let msg = json!({ "Set": { "ready": {
+            "username": target_name, "isReady": is_ready, "manuallyInitiated": manually, "setBy": setter,
+        } } });
+        self.send_to(&members, &msg);
+        let text = if is_ready == Some(true) {
+            format!("I have set {target_name} as ready.")
+        } else {
+            format!("I have set {target_name} as not ready.")
+        };
+        let chat = json!({ "Chat": { "message": text, "username": setter } });
+        for m in &members {
+            // Clients that show `setBy` themselves skip the chat line.
+            if let Some(w) = self.watchers.get(m) {
+                if w.features.get("setOthersReadiness") != Some(&json!(true)) {
+                    w.send(chat.clone());
+                }
+            }
         }
     }
 
@@ -1399,6 +1570,250 @@ mod tests {
         let to_a = drain(&mut a);
         assert_eq!(to_a[0]["State"]["playstate"]["doSeek"], true);
         assert!((to_a[0]["State"]["playstate"]["position"].as_f64().unwrap() - 100.0).abs() < 0.01);
+    }
+
+    const SALT: &str = "QWERTYUIOP";
+    const ROOM: &str = "+movie night:D6A85289CDB5";
+    const PW: &str = "AB-123-456";
+
+    fn managed_opts() -> SyncplayOptions {
+        SyncplayOptions {
+            room_salt: SALT.into(),
+            ..Default::default()
+        }
+    }
+
+    fn auth(s: &mut ServerState, id: ConnId, room: Option<&str>, password: &str, now: f64) {
+        let mut v = json!({ "password": password });
+        if let Some(r) = room {
+            v["room"] = json!(r);
+        }
+        s.handle_message(id, &msg(json!({ "Set": { "controllerAuth": v } })), now);
+    }
+
+    fn find<'a>(out: &'a [Value], set: &str) -> Vec<&'a Value> {
+        out.iter().filter_map(|m| m["Set"].get(set)).collect()
+    }
+
+    #[test]
+    fn managed_rooms_are_advertised() {
+        let mut s = ServerState::new(managed_opts());
+        let mut a = join(&mut s, 1, "alice", "movie", 0.0);
+        let out = drain(&mut a);
+        let hello = out.iter().find(|m| m.get("Hello").is_some()).unwrap();
+        assert_eq!(hello["Hello"]["features"]["managedRooms"], true);
+    }
+
+    #[test]
+    fn controller_auth_in_an_ordinary_room_names_a_new_managed_room() {
+        let mut s = ServerState::new(managed_opts());
+        let mut a = join(&mut s, 1, "alice", "movie night", 0.0);
+        let mut b = join(&mut s, 2, "bob", "movie night", 0.0);
+        drain(&mut a);
+        drain(&mut b);
+        auth(&mut s, 1, Some("movie night"), PW, 1.0);
+        let out = drain(&mut a);
+        let created = find(&out, "newControlledRoom");
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0]["roomName"], ROOM);
+        assert_eq!(created[0]["password"], PW);
+        assert!(drain(&mut b).is_empty(), "only the sender is told");
+    }
+
+    #[test]
+    fn operators_are_identified_by_password() {
+        let mut s = ServerState::new(managed_opts());
+        let mut a = join(&mut s, 1, "alice", ROOM, 0.0);
+        let mut b = join(&mut s, 2, "bob", ROOM, 0.0);
+        let mut c = join(&mut s, 3, "carol", "other", 0.0);
+        drain(&mut a);
+        drain(&mut b);
+        drain(&mut c);
+
+        // A wrong password is broadcast as a failure.
+        auth(&mut s, 2, Some(ROOM), "AB-123-457", 1.0);
+        let fail = drain(&mut c);
+        assert_eq!(find(&fail, "controllerAuth")[0]["success"], false);
+        assert_eq!(find(&fail, "controllerAuth")[0]["user"], "bob");
+
+        // A malformed one only reaches the room.
+        auth(&mut s, 2, None, "nope", 1.0);
+        assert_eq!(find(&drain(&mut a), "controllerAuth").len(), 2);
+        assert!(drain(&mut c).is_empty());
+        drain(&mut b);
+
+        auth(&mut s, 1, Some(ROOM), PW, 2.0);
+        for rx in [&mut a, &mut b, &mut c] {
+            let out = drain(rx);
+            let st = find(&out, "controllerAuth");
+            assert_eq!(st.len(), 1);
+            assert_eq!(st[0]["success"], true);
+            assert_eq!(st[0]["user"], "alice");
+            assert_eq!(st[0]["room"], ROOM);
+        }
+        s.handle_message(2, &msg(json!({ "List": null })), 2.0);
+        let list = drain(&mut b);
+        assert_eq!(list[0]["List"][ROOM]["alice"]["controller"], true);
+        assert_eq!(list[0]["List"][ROOM]["bob"]["controller"], false);
+
+        let info = s.rooms().into_iter().find(|r| r.name == ROOM).unwrap();
+        assert!(info.controlled);
+        assert_eq!(info.controllers, vec!["alice".to_string()]);
+
+        // Leaving the room drops control; coming back needs the password again.
+        s.handle_message(
+            1,
+            &msg(json!({ "Set": { "room": { "name": "other" } } })),
+            3.0,
+        );
+        s.handle_message(1, &msg(json!({ "Set": { "room": { "name": ROOM } } })), 3.0);
+        assert!(s.rooms().iter().all(|r| r.controllers.is_empty()));
+    }
+
+    #[test]
+    fn a_password_for_another_room_does_not_grant_control() {
+        let mut s = ServerState::new(managed_opts());
+        let other = managed::controlled_name("other", PW, SALT);
+        let mut a = join(&mut s, 1, "alice", &other, 0.0);
+        drain(&mut a);
+        auth(&mut s, 1, Some(ROOM), PW, 1.0);
+        assert_eq!(find(&drain(&mut a), "controllerAuth")[0]["success"], false);
+        assert!(s.rooms()[0].controllers.is_empty());
+    }
+
+    #[test]
+    fn only_operators_control_a_managed_room() {
+        let mut s = ServerState::new(managed_opts());
+        let mut a = join(&mut s, 1, "alice", ROOM, 0.0);
+        let mut b = join(&mut s, 2, "bob", ROOM, 0.0);
+        auth(&mut s, 1, Some(ROOM), PW, 0.5);
+        drain(&mut a);
+        drain(&mut b);
+
+        // Bob unpauses: nobody else hears of it, and Bob is put back.
+        s.handle_message(2, &msg(json!({ "State": { "playstate": { "position": 10.0, "paused": false, "doSeek": false } } })), 1.0);
+        assert!(drain(&mut a).is_empty());
+        let back = drain(&mut b);
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0]["State"]["playstate"]["paused"], false);
+        assert_eq!(back[0]["State"]["playstate"]["doSeek"], false);
+        assert_eq!(back[0]["State"]["playstate"]["setBy"], "bob");
+        assert_eq!(back[1]["State"]["playstate"]["paused"], true);
+        assert_eq!(back[1]["State"]["playstate"]["doSeek"], true);
+        assert_eq!(back[1]["State"]["ignoringOnTheFly"]["server"], 2);
+        assert!(s.rooms()[0].paused);
+
+        // Bob's playlist change is undone for him only.
+        s.handle_message(
+            2,
+            &msg(json!({ "Set": { "playlistChange": { "files": ["a.mkv"] } } })),
+            1.1,
+        );
+        let undo = drain(&mut b);
+        assert_eq!(find(&undo, "playlistChange")[0]["files"], json!([]));
+        s.handle_message(
+            2,
+            &msg(json!({ "Set": { "playlistIndex": { "index": 3 } } })),
+            1.1,
+        );
+        assert_eq!(
+            find(&drain(&mut b), "playlistIndex")[0]["index"],
+            Value::Null
+        );
+        assert!(drain(&mut a).is_empty());
+
+        // Alice unpauses: everyone follows.
+        s.handle_message(1, &msg(json!({ "State": { "playstate": { "position": 5.0, "paused": false, "doSeek": false } } })), 2.0);
+        let to_b = drain(&mut b);
+        assert_eq!(to_b[0]["State"]["playstate"]["paused"], false);
+        assert_eq!(to_b[0]["State"]["playstate"]["setBy"], "alice");
+        s.handle_message(
+            1,
+            &msg(json!({ "Set": { "playlistChange": { "files": ["a.mkv"] } } })),
+            2.1,
+        );
+        assert_eq!(
+            find(&drain(&mut b), "playlistChange")[0]["files"],
+            json!(["a.mkv"])
+        );
+    }
+
+    #[test]
+    fn operators_can_set_others_ready() {
+        let mut s = ServerState::new(managed_opts());
+        let mut a = join(&mut s, 1, "alice", ROOM, 0.0);
+        let mut b = join(&mut s, 2, "bob", ROOM, 0.0);
+        drain(&mut a);
+        drain(&mut b);
+
+        // Not an operator yet: ignored.
+        s.handle_message(1, &msg(json!({ "Set": { "ready": { "username": "bob", "isReady": true, "manuallyInitiated": true } } })), 1.0);
+        assert!(drain(&mut b).is_empty());
+
+        auth(&mut s, 1, None, PW, 1.0);
+        drain(&mut a);
+        drain(&mut b);
+        s.handle_message(1, &msg(json!({ "Set": { "ready": { "username": "bob", "isReady": true, "manuallyInitiated": true } } })), 2.0);
+        let out = drain(&mut b);
+        let ready = find(&out, "ready");
+        assert_eq!(ready[0]["username"], "bob");
+        assert_eq!(ready[0]["isReady"], true);
+        assert_eq!(ready[0]["setBy"], "alice");
+        let chat = out.iter().find(|m| m.get("Chat").is_some()).unwrap();
+        assert_eq!(chat["Chat"]["message"], "I have set bob as ready.");
+        assert_eq!(chat["Chat"]["username"], "alice");
+    }
+
+    #[test]
+    fn managed_rooms_off_behaves_as_before() {
+        let mut s = ServerState::new(SyncplayOptions {
+            managed_rooms: false,
+            ..managed_opts()
+        });
+        let mut a = join(&mut s, 1, "alice", ROOM, 0.0);
+        let mut b = join(&mut s, 2, "bob", ROOM, 0.0);
+        let hello = drain(&mut a);
+        let hello = hello.iter().find(|m| m.get("Hello").is_some()).unwrap();
+        assert_eq!(hello["Hello"]["features"]["managedRooms"], false);
+        drain(&mut b);
+
+        auth(&mut s, 1, Some(ROOM), PW, 1.0);
+        let out = drain(&mut a);
+        assert_eq!(find(&out, "controllerAuth")[0]["success"], false);
+        assert!(drain(&mut b).is_empty());
+
+        // Anyone may control the room.
+        s.handle_message(2, &msg(json!({ "State": { "playstate": { "position": 1.0, "paused": false, "doSeek": false } } })), 2.0);
+        assert_eq!(drain(&mut a)[0]["State"]["playstate"]["setBy"], "bob");
+    }
+
+    #[test]
+    fn switching_managed_rooms_off_frees_existing_rooms() {
+        let mut s = ServerState::new(managed_opts());
+        let mut a = join(&mut s, 1, "alice", ROOM, 0.0);
+        let mut b = join(&mut s, 2, "bob", ROOM, 0.0);
+        auth(&mut s, 1, None, PW, 0.5);
+        drain(&mut a);
+        drain(&mut b);
+        s.set_options(SyncplayOptions {
+            managed_rooms: false,
+            ..managed_opts()
+        });
+        assert!(!s.rooms()[0].controlled);
+        s.handle_message(2, &msg(json!({ "State": { "playstate": { "position": 1.0, "paused": false, "doSeek": false } } })), 2.0);
+        assert_eq!(drain(&mut a)[0]["State"]["playstate"]["setBy"], "bob");
+    }
+
+    #[test]
+    fn vanilla_mode_keeps_managed_rooms() {
+        let mut s = ServerState::new(SyncplayOptions {
+            vanilla_mode: true,
+            ..managed_opts()
+        });
+        let mut a = join(&mut s, 1, "alice", ROOM, 0.0);
+        drain(&mut a);
+        auth(&mut s, 1, None, PW, 1.0);
+        assert_eq!(find(&drain(&mut a), "controllerAuth")[0]["success"], true);
     }
 
     #[test]

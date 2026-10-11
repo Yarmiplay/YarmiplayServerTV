@@ -2,6 +2,7 @@
 
 pub mod devices;
 pub mod ext;
+pub mod managed;
 pub mod mux;
 pub mod protocol;
 pub mod room;
@@ -29,6 +30,9 @@ impl From<&crate::config::SyncplaySettings> for SyncplayOptions {
             max_username_length: s.max_username_length as usize,
             vanilla_mode: s.vanilla_mode,
             file_relay: s.relay_effective(),
+            managed_rooms: s.managed_rooms,
+            // Filled in from the device store by the caller.
+            room_salt: String::new(),
         }
     }
 }

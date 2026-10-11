@@ -91,6 +91,8 @@ export interface SyncplaySettings {
   vanillaMode: boolean;
   fileRelay: boolean;
   relayCacheGb: number;
+  /** Managed rooms (`+name:HASH`), where only operators control playback. */
+  managedRooms: boolean;
 }
 
 export interface JellyfinSettings {
@@ -175,6 +177,22 @@ export interface RoomInfo {
   name: string;
   users: string[];
   paused: boolean;
+  /** A managed room (`+name:HASH`). */
+  controlled: boolean;
+  /** Its operators. */
+  controllers: string[];
+}
+
+/** A managed room made on the Syncplay page. */
+export interface ManagedRoom {
+  room: string;
+  password: string;
+}
+
+/** "movie" for the managed room "+movie:1A2B3C4D5E6F". */
+export function roomBaseName(name: string): string {
+  const m = /^\+(.*):(\w{12})$/u.exec(name);
+  return m ? m[1] : name;
 }
 
 export interface RelayActivity {
@@ -384,6 +402,8 @@ export const api = {
   removeDevice: (fingerprint: string) => invoke<Snapshot>("syncplay_device_remove", { fingerprint }),
   renameDevice: (fingerprint: string, name: string) =>
     invoke<Snapshot>("syncplay_device_rename", { fingerprint, name }),
+  createManagedRoom: (name: string) => invoke<ManagedRoom>("syncplay_create_managed_room", { name }),
+  resetRoomSalt: () => invoke<Snapshot>("syncplay_reset_room_salt"),
   getLogs: () => invoke<LogLine[]>("get_logs"),
   clearLogs: () => invoke<void>("clear_logs"),
   openUrl: async (url: string) => {

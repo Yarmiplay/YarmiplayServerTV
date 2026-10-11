@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { Snapshot } from "../lib/api";
-  import { api, formatBytes, formatDateTime, usesPassword } from "../lib/api";
+  import type { ManagedRoom, Snapshot } from "../lib/api";
+  import { api, formatBytes, formatDateTime, roomBaseName, usesPassword } from "../lib/api";
   import { store } from "../lib/store.svelte";
   import { useDraft } from "../lib/draft.svelte";
   import { syncplayPill } from "../lib/status";
@@ -44,6 +44,23 @@
     const fp = renaming;
     renaming = null;
     await device(() => api.renameDevice(fp, newName));
+  }
+
+  // Room names are at most 35 characters, and a managed room adds "+", ":" and a 12-character hash.
+  const MAX_MANAGED_NAME = 21;
+  let managedName = $state("");
+  let managed = $state<ManagedRoom | null>(null);
+  let confirmReset = $state(false);
+
+  async function createManagedRoom() {
+    const made = await store.run(() => api.createManagedRoom(managedName));
+    if (made) managed = made;
+  }
+
+  async function resetRoomSalt() {
+    confirmReset = false;
+    managed = null;
+    await device(() => api.resetRoomSalt(), "Managed-room passwords reset");
   }
 
   const pill = $derived(syncplayPill(snap));
@@ -150,6 +167,12 @@
         hint="Hide the ready / not ready indicator"
         checked={form.draft.disableReady}
         onchange={(v) => (form.draft.disableReady = v)}
+      />
+      <Toggle
+        label="Managed rooms"
+        hint="Let Syncplay users create rooms where only operators can play, pause and seek"
+        checked={form.draft.managedRooms}
+        onchange={(v) => (form.draft.managedRooms = v)}
       />
     </div>
     <div class="row buttons">
@@ -304,10 +327,19 @@
         {#each snap.syncplay.rooms as room (room.name)}
           <li>
             <div class="spread">
-              <strong class="selectable">{room.name}</strong>
+              <strong class="selectable" title={room.name}>
+                {#if room.controlled}<span class="lock" aria-label="Managed room">🔒</span>{/if}{roomBaseName(room.name)}
+              </strong>
               <span class="pill">{room.paused ? "Paused" : "Playing"}</span>
             </div>
-            <div class="muted selectable">{room.users.join(", ")}</div>
+            <div class="muted selectable">
+              {#each room.users as user, i (user)}{i > 0 ? ", " : ""}{user}{#if room.controllers.includes(user)}<span
+                    class="operator"> (operator)</span
+                  >{/if}{/each}
+            </div>
+            {#if room.controlled && room.controllers.length === 0}
+              <div class="muted relay">No operator yet: nobody can play, pause or seek.</div>
+            {/if}
             {#each relay.active.filter((a) => a.room === room.name) as a (a.name)}
               <div class="relay muted">
                 Relaying <strong class="selectable">{a.name}</strong>: {formatBytes(a.cachedBytes)} of {formatBytes(a.size)}
@@ -321,6 +353,48 @@
       </ul>
     {/if}
   </section>
+
+  {#if snap.settings.syncplay.managedRooms}
+    <section class="card">
+      <h2>Create a managed room</h2>
+      <p class="sub">
+        Only the room's operators can play, pause, seek and change the playlist. Anyone else who joins can watch but not
+        control.
+      </p>
+      <div class="row">
+        <input
+          class="room-name"
+          type="text"
+          maxlength={MAX_MANAGED_NAME}
+          placeholder="Room name"
+          bind:value={managedName}
+          onkeydown={(e) => e.key === "Enter" && managedName.trim() && createManagedRoom()}
+        />
+        <button class="primary" disabled={!managedName.trim()} onclick={createManagedRoom}>Create</button>
+      </div>
+      {#if managed}
+        <div class="addrs">
+          <Address label="Room name" value={managed.room} />
+          <Address label="Operator password" value={managed.password} />
+        </div>
+        <p class="note muted">
+          Join this room in Syncplay, then enter the password under Room → Identify as room operator. Share the room name
+          with everyone, and the password only with the people who should control playback.
+        </p>
+      {/if}
+      <div class="reset">
+        {#if confirmReset}
+          <span class="muted">Every managed room name and password made so far stops working.</span>
+          <div class="row">
+            <button class="danger" onclick={resetRoomSalt}>Reset</button>
+            <button onclick={() => (confirmReset = false)}>Cancel</button>
+          </div>
+        {:else}
+          <button class="small" onclick={() => (confirmReset = true)}>Reset all managed-room passwords…</button>
+        {/if}
+      </div>
+    </section>
+  {/if}
 </div>
 
 <style>
@@ -401,6 +475,25 @@
   .relay {
     font-size: 0.9em;
     margin-top: 4px;
+  }
+  .lock {
+    margin-right: 6px;
+  }
+  .operator {
+    color: var(--accent);
+  }
+  .room-name {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .reset {
+    margin-top: 14px;
+    border-top: 1px solid var(--line);
+    padding-top: 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
   }
   h3 {
     font-size: 1em;

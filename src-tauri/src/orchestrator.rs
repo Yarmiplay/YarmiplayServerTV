@@ -15,6 +15,7 @@ use crate::relay::{Relay, RelayStatus};
 use crate::secrets::{self, Secrets};
 use crate::syncplay::devices::{DeviceStore, DevicesStatus};
 use crate::syncplay::ext::{JellyfinShare, PlexShare};
+use crate::syncplay::managed;
 use crate::syncplay::{
     AuthorizeFn, Extensions, PlexInviteFn, RoomInfo, SyncplayOptions, SyncplayServer,
 };
@@ -69,6 +70,14 @@ pub struct PlexLink {
     pub code: String,
     /// Unix seconds.
     pub expires_at: u64,
+}
+
+/// A managed Syncplay room made from the Syncplay page: its full name and operator password.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedRoom {
+    pub room: String,
+    pub password: String,
 }
 
 /// The host's plex.tv account as the Plex page shows it.
@@ -416,7 +425,7 @@ impl App {
 
         // Syncplay.
         let want_port = s.syncplay.enabled.then_some(s.syncplay.port);
-        let opts = SyncplayOptions::from(&s.syncplay);
+        let opts = self.syncplay_options(&s);
         let running_port = self.syncplay.lock().as_ref().map(|srv| srv.port);
         if running_port.is_some() && running_port != want_port {
             if let Some(srv) = self.syncplay.lock().take() {
@@ -633,6 +642,46 @@ impl App {
         self.with_auth(res).await?;
         info!("approved a Jellyfin Quick Connect sign-in for a Syncplay guest");
         Ok(())
+    }
+
+    fn syncplay_options(&self, s: &Settings) -> SyncplayOptions {
+        SyncplayOptions {
+            room_salt: self.devices.room_salt(),
+            ..SyncplayOptions::from(&s.syncplay)
+        }
+    }
+
+    // ------------------------------------------------------------ Syncplay managed rooms
+
+    /// A managed room name and password for `name`, as a Syncplay client's "Create managed room" makes them.
+    pub fn create_managed_room(&self, name: &str) -> Result<ManagedRoom, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Enter a room name".into());
+        }
+        let max =
+            crate::syncplay::protocol::MAX_ROOM_NAME_LENGTH - managed::CONTROLLED_SUFFIX_LENGTH;
+        if name.chars().count() > max {
+            return Err(format!("Room names can be up to {max} characters"));
+        }
+        if !self.settings.read().syncplay.managed_rooms {
+            return Err("Managed rooms are off".into());
+        }
+        let password = managed::generate_password();
+        let room = managed::controlled_name(name, &password, &self.devices.room_salt());
+        Ok(ManagedRoom { room, password })
+    }
+
+    /// Make a new salt, so every managed room name and password made so far stops working.
+    pub fn reset_room_salt(&self) -> Result<Snapshot, String> {
+        self.devices.reset_room_salt()?;
+        let opts = self.syncplay_options(&self.settings.read());
+        if let Some(srv) = self.syncplay.lock().as_ref() {
+            srv.set_options(opts);
+        }
+        info!("reset the managed Syncplay room passwords");
+        (self.notify)();
+        Ok(self.snapshot())
     }
 
     // ------------------------------------------------------------ Syncplay devices

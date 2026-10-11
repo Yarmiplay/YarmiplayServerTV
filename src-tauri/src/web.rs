@@ -352,6 +352,10 @@ async fn dispatch(h: &AppHandle, command: &str, a: &Value) -> Result<Value, Stri
             ok(cmd::plex_remove_path(app(), arg(a, "key")?, arg(a, "path")?).await?)
         }
         "plex_rescan" => ok(cmd::plex_rescan(app()).await?),
+        "syncplay_create_managed_room" => {
+            ok(cmd::syncplay_create_managed_room(app(), arg(a, "name")?)?)
+        }
+        "syncplay_reset_room_salt" => ok(cmd::syncplay_reset_room_salt(app())?),
         "plex_remove_invite" => ok(cmd::plex_remove_invite(app(), arg(a, "shareId")?).await?),
         "clear_relay_cache" => ok(cmd::clear_relay_cache(app())),
         "syncplay_device_approve" => {

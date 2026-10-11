@@ -154,6 +154,8 @@ pub fn run() {
             commands::plex_add_path,
             commands::plex_remove_path,
             commands::plex_rescan,
+            commands::syncplay_create_managed_room,
+            commands::syncplay_reset_room_salt,
             commands::plex_remove_invite,
             commands::clear_relay_cache,
             commands::syncplay_device_approve,

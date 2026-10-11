@@ -4,7 +4,7 @@
 use crate::config::Settings;
 use crate::jellyfin::api::Library;
 use crate::logs::{self, LogLine};
-use crate::orchestrator::{App, Snapshot};
+use crate::orchestrator::{App, ManagedRoom, Snapshot};
 use crate::plex::api::Library as PlexLibrary;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
@@ -201,6 +201,19 @@ pub fn syncplay_device_deny(app: AppState<'_>, fingerprint: String) -> Result<Sn
 #[tauri::command]
 pub fn syncplay_device_remove(app: AppState<'_>, fingerprint: String) -> Result<Snapshot, String> {
     app.remove_device(&fingerprint)
+}
+
+#[tauri::command]
+pub fn syncplay_create_managed_room(
+    app: AppState<'_>,
+    name: String,
+) -> Result<ManagedRoom, String> {
+    app.create_managed_room(&name)
+}
+
+#[tauri::command]
+pub fn syncplay_reset_room_salt(app: AppState<'_>) -> Result<Snapshot, String> {
+    app.reset_room_salt()
 }
 
 #[tauri::command]

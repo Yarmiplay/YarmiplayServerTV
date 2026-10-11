@@ -92,6 +92,8 @@ pub struct SyncplaySettings {
     pub file_relay: bool,
     /// Disk space the relay cache may use, in GB.
     pub relay_cache_gb: u32,
+    /// Let Syncplay users create managed rooms, where only operators control playback.
+    pub managed_rooms: bool,
 }
 
 impl SyncplaySettings {
@@ -117,6 +119,7 @@ impl Default for SyncplaySettings {
             vanilla_mode: false,
             file_relay: true,
             relay_cache_gb: 10,
+            managed_rooms: true,
         }
     }
 }

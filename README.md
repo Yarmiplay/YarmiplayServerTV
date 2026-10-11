@@ -85,6 +85,15 @@ code; compare them, then **Approve** or **Deny**. The device waits up to 10 minu
 approved until you **Remove** them, which also disconnects them. Each device keeps a key for this server only,
 so your LAN address and DuckDNS name share one approval and other servers can't recognize the device.
 
+**Managed rooms** (on by default) work as on the official server. In a Syncplay client, **Room → Create
+managed room** moves you to a room named like `+movie:1A2B3C4D5E6F` and makes you its operator. Only operators
+can play, pause, seek or change the playlist; everyone else follows. Others become operators with
+**Identify as room operator** and the room's password. You can also make a managed room on the **Syncplay**
+page: type a name and **Create** shows the room name and password to share. The **Rooms** list marks managed
+rooms with a lock and shows their operators. Room names and passwords keep working after restarts and
+updates; **Reset all managed-room passwords** makes every one made so far stop working. Switching managed
+rooms off makes them ordinary rooms again.
+
 Connect from YarmiplayTV or any Syncplay client with `address:port`, for example `192.168.1.20:8999`. When
 DuckDNS and HTTPS are set up, connect with the DuckDNS name (`myname.duckdns.org:8999`) so clients can
 verify the certificate and use an encrypted connection.
@@ -119,8 +128,9 @@ see them. All of it runs on the Syncplay port: no extra port to forward.
   takes effect right away.
 
 The protocol is described in [docs/client-integration-prompt.md](docs/client-integration-prompt.md),
-[docs/yarmiplaytv-device-access-prompt.md](docs/yarmiplaytv-device-access-prompt.md) and
-[docs/yarmiplaytv-plex-sharing-prompt.md](docs/yarmiplaytv-plex-sharing-prompt.md).
+[docs/yarmiplaytv-device-access-prompt.md](docs/yarmiplaytv-device-access-prompt.md),
+[docs/yarmiplaytv-plex-sharing-prompt.md](docs/yarmiplaytv-plex-sharing-prompt.md) and
+[docs/yarmiplaytv-managed-rooms-prompt.md](docs/yarmiplaytv-managed-rooms-prompt.md).
 
 ### Jellyfin
 
@@ -194,7 +204,7 @@ certificates per week, so switch staging off once everything works.
 
 ## Where things are stored
 
-Settings, approved Syncplay devices (`syncplay-devices.json`), the ACME account, certificates, Jellyfin
+Settings, approved Syncplay devices and the secret managed-room names are made from (`syncplay-devices.json`), the ACME account, certificates, Jellyfin
 (program, database, cache and logs) and the file relay cache (`relay-cache`) are kept in the per-user app-data
 folder; **Open data folder** on the dashboard opens it.
 
