@@ -52,7 +52,7 @@ limited to invited friends" (server password). Everything else is No. The result
 > stream from.
 >
 > SYNCPLAY SERVER
-> • A Syncplay 1.7-compatible server built in: rooms, passwords, chat, readiness and shared playlists
+> • A Syncplay 1.7.6-compatible server built in: rooms, passwords, chat, readiness and shared playlists
 > • Works with YarmiplayTV and the Syncplay desktop client
 > • Encrypted connections (TLS) once a certificate is set up
 >
@@ -85,7 +85,7 @@ limited to invited friends" (server password). Everything else is No. The result
 
 **Product features** (one per line, 200 characters max each):
 
-- Syncplay 1.7-compatible server with rooms, passwords, chat and shared playlists
+- Syncplay 1.7.6-compatible server with rooms, passwords, chat and shared playlists
 - The official Jellyfin server built in, ready to switch on
 - Jellyfin setup and libraries in the control panel
 - Works with your own Plex Media Server: libraries and sharing (Plex not included)

@@ -17,7 +17,7 @@
       videos in sync from your media library with YarmiplayTV or any Syncplay client.
     </p>
     <ul>
-      <li>A Syncplay 1.7 compatible server with rooms, an optional password, chat and a shared playlist</li>
+      <li>A Syncplay 1.7.6 compatible server with rooms, an optional password, chat and a shared playlist</li>
       <li>A Jellyfin media server, set up from the control panel</li>
       <li>Works with a Plex Media Server you install yourself: manage its libraries and share it with your Syncplay users</li>
       <li>Optional UPnP port forwarding so people outside your home network can connect</li>

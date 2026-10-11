@@ -9,7 +9,7 @@ into the agent.
 
 ## Goal
 
-YarmiplayServerTV is a Syncplay 1.7 server that can also:
+YarmiplayServerTV is a Syncplay 1.7.6 server that can also:
 
 1. **Relay video files between viewers in a room.** A viewer who doesn't have the room's file can
    stream it (or download it whole) from another viewer who does, through the server, which keeps

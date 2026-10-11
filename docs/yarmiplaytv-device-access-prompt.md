@@ -10,7 +10,7 @@ the line into the agent.
 
 ## Goal
 
-YarmiplayServerTV is a Syncplay 1.7 server (it reports `realversion` 1.7.6). Its host chooses who can join:
+YarmiplayServerTV is a Syncplay 1.7.6 server (it reports `realversion` 1.7.6). Its host chooses who can join:
 
 - **open:** anyone.
 - **passwordOnly:** the Syncplay password, for everyone. Device keys aren't checked, so there is no

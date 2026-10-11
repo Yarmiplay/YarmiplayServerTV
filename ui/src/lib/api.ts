@@ -310,6 +310,8 @@ export interface Addresses {
 
 export interface Snapshot {
   version: string;
+  /** The Syncplay version the server reports, e.g. "1.7.6". */
+  syncplayVersion: string;
   settings: Settings;
   duckdnsTokenSet: boolean;
   jellyfinSignedIn: boolean;

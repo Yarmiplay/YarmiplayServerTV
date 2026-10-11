@@ -45,7 +45,8 @@
     <p class="sub">
       Free software under the GNU General Public License, version 3 or later. Jellyfin is made by the Jellyfin project
       and keeps its own license. Plex is a trademark of Plex, Inc.; this app works with a Plex Media Server you install
-      yourself and isn't made or endorsed by Plex. The Syncplay server works with Syncplay 1.7 clients.
+      yourself and isn't made or endorsed by Plex. The Syncplay server reports itself as
+      Syncplay {snap.syncplayVersion} and works with Syncplay 1.7 clients.
     </p>
   </section>
 </div>

@@ -259,7 +259,7 @@ def render_page(downloads, version, built, windows_signed=False, privacy=False, 
 <header>
  <div class="brand"><img src="logo.svg" alt=""><h1>Yarmiplay<span>ServerTV</span></h1></div>
  <p>Host your own Syncplay server and Jellyfin server from the system tray, for YarmiplayTV and any Syncplay client.</p>
- <ul class="features"><li>Syncplay 1.7 server</li><li>Jellyfin, installed for you</li><li>Optional UPnP port forwarding</li><li>Free HTTPS with DuckDNS + Let's Encrypt</li></ul>
+ <ul class="features"><li>Syncplay {html.escape(syncplay_version())} server</li><li>Jellyfin, installed for you</li><li>Optional UPnP port forwarding</li><li>Free HTTPS with DuckDNS + Let's Encrypt</li></ul>
  <p class="meta">{meta}</p>
 </header>
 <div class="grid">
@@ -406,6 +406,15 @@ def build(dist, out, version, windows_signed=False, site_url=None):
             f.write(f"User-agent: *\nAllow: /\n\nSitemap: {page_url(site_url, 'sitemap.xml')}\n")
     open(os.path.join(out, ".nojekyll"), "w").close()
     print(f"wrote {out} ({sum(len(v) for v in downloads.values())} downloads)")
+
+
+def syncplay_version():
+    """The Syncplay version the built-in server reports (protocol.rs SERVER_VERSION)."""
+    with open(os.path.join(ROOT, "src-tauri", "src", "syncplay", "protocol.rs"), encoding="utf-8") as f:
+        m = re.search(r'pub const SERVER_VERSION: &str = "([^"]+)";', f.read())
+    if not m:
+        sys.exit("SERVER_VERSION not found in src-tauri/src/syncplay/protocol.rs")
+    return m.group(1)
 
 
 def app_version():

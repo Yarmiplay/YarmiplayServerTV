@@ -121,6 +121,8 @@ pub struct Addresses {
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub version: &'static str,
+    /// The Syncplay version the server reports to clients, e.g. 1.7.6.
+    pub syncplay_version: &'static str,
     pub settings: Settings,
     pub duckdns_token_set: bool,
     pub jellyfin_signed_in: bool,
@@ -749,6 +751,7 @@ impl App {
             plex_account: self.plex_account(),
             plex_share: self.plex_share_status(),
             version: env!("CARGO_PKG_VERSION"),
+            syncplay_version: crate::syncplay::protocol::SERVER_VERSION,
             duckdns_token_set: self.duckdns_token.read().is_some(),
             jellyfin_signed_in: self.jellyfin_token.read().is_some(),
             settings: s,

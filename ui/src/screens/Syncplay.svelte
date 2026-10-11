@@ -67,7 +67,7 @@
   <section class="card">
     <Toggle
       label="Syncplay server"
-      hint="A Syncplay 1.7-compatible server built into this app"
+      hint={`A Syncplay ${snap.syncplayVersion}-compatible server built into this app`}
       checked={snap.settings.syncplay.enabled}
       onchange={(v) => store.save((s) => (s.syncplay.enabled = v))}
     />

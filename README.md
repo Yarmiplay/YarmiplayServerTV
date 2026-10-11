@@ -7,7 +7,7 @@ gives your friends a room to watch in sync and a media library to stream from.
 **[Download YarmiplayServerTV](https://servertv.yarmiplay.com/)**, or on Windows get it from the
 [Microsoft Store](https://apps.microsoft.com/detail/9P6B9C1KXFFQ) (Jellyfin built in, updated by the Store).
 
-- A Syncplay 1.7-compatible server built in: rooms, passwords, chat, readiness, shared playlists, and
+- A Syncplay 1.7.6-compatible server built in: rooms, passwords, chat, readiness, shared playlists, and
   encrypted connections (TLS) when a certificate is available. You can also admit only the YarmiplayTV
   devices you approve.
 - Extras for YarmiplayTV on the same port: a file relay, so everyone in a room can play the file one
