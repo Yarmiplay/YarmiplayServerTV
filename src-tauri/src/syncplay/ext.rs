@@ -48,6 +48,17 @@ pub struct PlexShare {
     pub addresses: Vec<String>,
 }
 
+/// How clients at home can reach this server with TLS when the router doesn't
+/// loop connections to the public address back in.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TlsInfo {
+    /// The name on the certificate; clients verify it whatever address they dial.
+    pub name: String,
+    /// `ip:port` addresses on the host's network (and its public IPv6).
+    pub lan: Vec<String>,
+}
+
 /// A connection's extension session.
 #[derive(Debug)]
 pub struct ExtSession {

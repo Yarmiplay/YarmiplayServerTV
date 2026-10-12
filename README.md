@@ -129,8 +129,9 @@ see them. All of it runs on the Syncplay port: no extra port to forward.
 
 The protocol is described in [docs/client-integration-prompt.md](docs/client-integration-prompt.md),
 [docs/yarmiplaytv-device-access-prompt.md](docs/yarmiplaytv-device-access-prompt.md),
-[docs/yarmiplaytv-plex-sharing-prompt.md](docs/yarmiplaytv-plex-sharing-prompt.md) and
-[docs/yarmiplaytv-managed-rooms-prompt.md](docs/yarmiplaytv-managed-rooms-prompt.md).
+[docs/yarmiplaytv-plex-sharing-prompt.md](docs/yarmiplaytv-plex-sharing-prompt.md),
+[docs/yarmiplaytv-managed-rooms-prompt.md](docs/yarmiplaytv-managed-rooms-prompt.md) and
+[docs/yarmiplaytv-home-network-prompt.md](docs/yarmiplaytv-home-network-prompt.md).
 
 ### Jellyfin
 
@@ -171,8 +172,8 @@ needed); sharing through this app doesn't change that.
 
 ## Internet access
 
-At home, friends can always connect with the LAN address. For friends elsewhere, your router has to
-forward the server ports to your computer.
+At home, friends can always connect with the LAN address (unencrypted; see "Connecting from home" below
+for encryption). For friends elsewhere, your router has to forward the server ports to your computer.
 
 ### Port forwarding
 
@@ -201,6 +202,20 @@ right away; Jellyfin restarts briefly to load it.
 **Test certificates (Let's Encrypt staging)** is useful while trying things out: staging has much higher
 rate limits, but browsers and clients don't trust those certificates. Let's Encrypt allows 5 identical
 certificates per week, so switch staging off once everything works.
+
+**Connecting from home.** The DuckDNS name points at your router's public address. Many routers don't
+loop a connection from inside your network back to it (NAT loopback), so at home the name can fail even
+though it works from outside. The app works around this on its own:
+
+- **YarmiplayTV** finds this computer on your network (the app answers a discovery request on the Syncplay
+  port number, over UDP) and connects to its home address. It still checks the certificate against the
+  DuckDNS name, so the connection is just as encrypted and verified.
+- **Publish IPv6 too** (on by default) also points the name at this computer's public IPv6 address, when
+  your network has one. IPv6 has no NAT, so any client with IPv6, including official Syncplay, reaches
+  the computer by name directly at home. Whether it also works from outside depends on your router's IPv6
+  firewall; clients fall back to IPv4 if it doesn't. The Syncplay server listens on IPv6 as well as IPv4.
+- Other clients on IPv4 only need a router that supports NAT loopback, or can connect to the LAN address
+  without encryption.
 
 ## Where things are stored
 

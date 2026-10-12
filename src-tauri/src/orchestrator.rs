@@ -407,6 +407,7 @@ impl App {
                         duckdns,
                         staging: s.tls.staging,
                         email: Some(s.tls.email.clone()).filter(|e| !e.is_empty()),
+                        ipv6: s.tls.ipv6,
                     })
                 }
             };

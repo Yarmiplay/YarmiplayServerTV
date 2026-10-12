@@ -77,6 +77,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.7.2" date="2026-10-12">
+      <description>
+        <p>Encrypted connections from home: YarmiplayTV finds the server on the local network and verifies the DuckDNS certificate, and the DuckDNS name now also gets this PC's IPv6 address.</p>
+      </description>
+    </release>
     <release version="1.7.1" date="2026-10-11">
       <description>
         <p>Managed Syncplay rooms: only room operators can play, pause and seek, and the host can create managed rooms from the Syncplay page.</p>

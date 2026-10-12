@@ -233,7 +233,7 @@ impl Settings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TlsSettings {
     pub enabled: bool,
@@ -241,6 +241,20 @@ pub struct TlsSettings {
     pub duckdns_domain: String,
     pub email: String,
     pub staging: bool,
+    /// Publish this PC's public IPv6 address on DuckDNS too.
+    pub ipv6: bool,
+}
+
+impl Default for TlsSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            duckdns_domain: String::new(),
+            email: String::new(),
+            staging: false,
+            ipv6: true,
+        }
+    }
 }
 
 impl Settings {

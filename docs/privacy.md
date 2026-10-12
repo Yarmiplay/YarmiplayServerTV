@@ -1,6 +1,6 @@
 # YarmiplayServerTV privacy policy
 
-Effective 11 October 2026. This policy covers the YarmiplayServerTV app for Windows, macOS and Linux, including
+Effective 12 October 2026. This policy covers the YarmiplayServerTV app for Windows, macOS and Linux, including
 the copy from the Microsoft Store.
 
 ## Summary
@@ -23,7 +23,8 @@ until you switch it on, and each one only talks to what it needs.
   administrator account you create and the libraries you add stay in Jellyfin on your computer.
 - **UPnP:** when you switch it on, the app asks your router on the local network to add and remove port
   forwards, and reads your public IP address from it.
-- **DuckDNS and HTTPS:** when you switch it on, the app sends your DuckDNS token and public IP address to
+- **DuckDNS and HTTPS:** when you switch it on, the app sends your DuckDNS token and public IP address (and,
+  unless you switch off **Publish IPv6 too**, this computer's public IPv6 address) to
   [DuckDNS](https://www.duckdns.org), requests certificates from
   [Let's Encrypt](https://letsencrypt.org/privacy/) (with the contact email if you enter one), and checks the
   DNS record through
@@ -31,7 +32,9 @@ until you switch it on, and each one only talks to what it needs.
   [Cloudflare DNS](https://developers.cloudflare.com/1.1.1.1/privacy/public-dns-resolver/).
 - **Syncplay server:** people you give the address to connect to it. The names they enter, file names,
   playback state and chat are passed between them and not stored; the app's log on your computer notes who
-  joined and left which room.
+  joined and left which room. While a certificate is loaded, the server tells connecting YarmiplayTV apps the
+  certificate's name and this computer's addresses on your network, and answers YarmiplayTV discovery requests
+  from devices on your local network with the same, so they can connect encrypted at home.
 - **Approved devices** (when you choose **Password** or **Approved devices only**): a YarmiplayTV device that
   asks to join sends its public key, a device name and its username. Requests you haven't answered, including
   the device's IP address, are kept in memory only and forgotten after a day or when the app quits. For each

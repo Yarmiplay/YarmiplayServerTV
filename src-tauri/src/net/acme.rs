@@ -9,7 +9,7 @@ use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, LetsEncrypt,
     NewAccount, NewOrder, Order, OrderStatus, RetryPolicy,
 };
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
@@ -240,20 +240,41 @@ async fn duckdns_update_once(
     }
 }
 
+/// What DuckDNS has on record for the name.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct DuckDnsRecord {
+    pub ip: Option<IpAddr>,
+    pub ipv6: Option<Ipv6Addr>,
+}
+
 /// Point `<subdomain>.duckdns.org` at `ip` (`None` = DuckDNS uses the caller's
-/// IPv4). Returns the address DuckDNS now has on record.
+/// IPv4) and, when given, `ipv6` (`None` leaves the AAAA record alone).
+/// Returns what DuckDNS now has on record.
 pub async fn duckdns_set_ip(
     api: &str,
     duck: &DuckDns,
     ip: Option<IpAddr>,
-) -> Result<Option<IpAddr>, String> {
+    ipv6: Option<Ipv6Addr>,
+) -> Result<DuckDnsRecord, String> {
     let ip = ip.map(|ip| ip.to_string());
-    let extra: Vec<(&str, &str)> = ip.as_deref().map(|ip| ("ip", ip)).into_iter().collect();
+    let ipv6 = ipv6.map(|ip| ip.to_string());
+    let mut extra: Vec<(&str, &str)> = Vec::new();
+    if let Some(ip) = ip.as_deref() {
+        extra.push(("ip", ip));
+    }
+    if let Some(ip) = ipv6.as_deref() {
+        extra.push(("ipv6", ip));
+    }
     let body = duckdns_update(api, duck, &extra).await?;
     if body.contains("UPDATED") {
-        info!(domain = %duck.fqdn(), ip = ?ip, "DuckDNS address updated");
+        info!(domain = %duck.fqdn(), ip = ?ip, ipv6 = ?ipv6, "DuckDNS address updated");
     }
-    Ok(body.lines().nth(1).and_then(|l| l.trim().parse().ok()))
+    // Verbose reply: OK, IPv4, IPv6, UPDATED|NOCHANGE.
+    let line = |n| body.lines().nth(n).map(str::trim).unwrap_or("");
+    Ok(DuckDnsRecord {
+        ip: line(1).parse().ok(),
+        ipv6: line(2).parse().ok(),
+    })
 }
 
 pub async fn duckdns_set_txt(api: &str, duck: &DuckDns, value: &str) -> Result<(), String> {
@@ -646,15 +667,13 @@ mod tests {
             let ok = req.path == "/update"
                 && req.query.get("domains").map(String::as_str) == Some("yarmiplay")
                 && req.query.get("token").map(String::as_str) == Some(TEST_TOKEN);
+            let body = match (ok, req.query.get("ipv6")) {
+                (false, _) => "KO".to_string(),
+                (true, Some(v6)) => format!("OK\n203.0.113.10\n{v6}\nUPDATED"),
+                (true, None) => "OK\n203.0.113.10\n\nUPDATED".to_string(),
+            };
             log.lock().push(req.query);
-            (
-                200,
-                if ok {
-                    "OK\n203.0.113.10\n\nUPDATED".into()
-                } else {
-                    "KO".into()
-                },
-            )
+            (200, body)
         }))
         .await;
         (base, seen)
@@ -664,11 +683,15 @@ mod tests {
     async fn duckdns_api_sets_ip_txt_and_clears() {
         let (api, seen) = fake_duckdns().await;
         let duck = DuckDns::new("yarmiplay.duckdns.org", TEST_TOKEN).unwrap();
-        let ip = duckdns_set_ip(&api, &duck, Some("203.0.113.10".parse().unwrap()))
+        let rec = duckdns_set_ip(&api, &duck, Some("203.0.113.10".parse().unwrap()), None)
             .await
             .unwrap();
-        assert_eq!(ip, Some("203.0.113.10".parse().unwrap()));
-        duckdns_set_ip(&api, &duck, None).await.unwrap();
+        assert_eq!(rec.ip, Some("203.0.113.10".parse().unwrap()));
+        assert_eq!(rec.ipv6, None);
+        let rec = duckdns_set_ip(&api, &duck, None, Some("2a02:6b8::1".parse().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(rec.ipv6, Some("2a02:6b8::1".parse().unwrap()));
         duckdns_set_txt(&api, &duck, "abc-DNS01-value")
             .await
             .unwrap();
@@ -677,8 +700,16 @@ mod tests {
         assert_eq!(calls.len(), 4);
         assert_eq!(calls[0].get("ip").map(String::as_str), Some("203.0.113.10"));
         assert!(
+            !calls[0].contains_key("ipv6"),
+            "no IPv6 leaves the AAAA alone"
+        );
+        assert!(
             !calls[1].contains_key("ip"),
             "None lets DuckDNS auto-detect"
+        );
+        assert_eq!(
+            calls[1].get("ipv6").map(String::as_str),
+            Some("2a02:6b8::1")
         );
         assert_eq!(
             calls[2].get("txt").map(String::as_str),
@@ -702,7 +733,7 @@ mod tests {
         let dead = format!("http://{}", listener.local_addr().unwrap());
         drop(listener);
         let duck = DuckDns::new("yarmiplay", TEST_TOKEN).unwrap();
-        let err = duckdns_set_ip(&dead, &duck, None).await.unwrap_err();
+        let err = duckdns_set_ip(&dead, &duck, None, None).await.unwrap_err();
         assert!(err.starts_with("DuckDNS request failed"), "{err}");
         assert!(!err.contains(TEST_TOKEN), "token leaked: {err}");
         assert!(!format!("{:?}", opts(Path::new("acme"))).contains(TEST_TOKEN));
@@ -756,7 +787,7 @@ mod tests {
             duckdns_api: None,
             directory: None,
         };
-        let ip = duckdns_set_ip(o.duckdns_api(), &o.duckdns, None)
+        let ip = duckdns_set_ip(o.duckdns_api(), &o.duckdns, None, None)
             .await
             .expect("duckdns ip update");
         eprintln!("duckdns ip {ip:?}");

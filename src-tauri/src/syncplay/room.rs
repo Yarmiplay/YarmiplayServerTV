@@ -10,7 +10,7 @@
 //! The YarmiplayTV extensions ([`super::ext`]) only exist for clients that ask
 //! for them; everyone else sees the official server.
 
-use super::ext::{self, Effect, ExtSession, JellyfinShare, PlexShare};
+use super::ext::{self, Effect, ExtSession, JellyfinShare, PlexShare, TlsInfo};
 use super::managed;
 use super::protocol::{
     self, line, truncate, PingService, MAX_FILENAME_LENGTH, MAX_ROOM_NAME_LENGTH,
@@ -257,7 +257,7 @@ pub struct ServerState {
     rooms: HashMap<String, Room>,
     jellyfin: Option<JellyfinShare>,
     plex: Option<PlexShare>,
-    https: bool,
+    tls: Option<TlsInfo>,
     effects: Vec<Effect>,
 }
 
@@ -270,7 +270,7 @@ impl ServerState {
             rooms: HashMap::new(),
             jellyfin: None,
             plex: None,
-            https: false,
+            tls: None,
             effects: Vec::new(),
         };
         s.set_options(opts);
@@ -412,11 +412,20 @@ impl ServerState {
         }
     }
 
-    /// Whether the Syncplay port answers TLS directly (a certificate is loaded).
-    pub fn set_https(&mut self, https: bool) {
-        if self.https != https {
-            self.https = https;
+    /// The loaded certificate's name and the home addresses (`None` = no
+    /// certificate, so no TLS on the Syncplay port).
+    pub fn set_tls(&mut self, tls: Option<TlsInfo>) {
+        if self.tls != tls {
+            self.tls = tls;
             self.broadcast_ext_state();
+        }
+    }
+
+    /// `tls` as clients see it: `null` without a certificate or in vanilla mode.
+    pub fn tls_message(&self) -> Value {
+        match (&self.tls, self.opts.vanilla_mode) {
+            (Some(t), false) => serde_json::to_value(t).unwrap_or(Value::Null),
+            _ => Value::Null,
         }
     }
 
@@ -427,6 +436,7 @@ impl ServerState {
             "version": env!("CARGO_PKG_VERSION"),
             "protocol": ext::PROTOCOL,
             "capabilities": self.capabilities(),
+            "tls": self.tls_message(),
         })
     }
 
@@ -440,7 +450,7 @@ impl ServerState {
             "fileRelay": on && self.opts.file_relay,
             "jellyfin": on && self.jellyfin.is_some(),
             "plex": on && self.plex.is_some(),
-            "https": on && self.https,
+            "https": on && self.tls.is_some(),
         })
     }
 
@@ -470,8 +480,9 @@ impl ServerState {
         let caps = self.capabilities();
         let jf = self.jellyfin_message();
         let plex = self.plex_message();
+        let tls = self.tls_message();
         for w in self.watchers.values().filter(|w| w.ext.is_some()) {
-            w.send(json!({ "Yarmiplay": { "capabilities": caps, "jellyfin": jf, "plex": plex } }));
+            w.send(json!({ "Yarmiplay": { "capabilities": caps, "jellyfin": jf, "plex": plex, "tls": tls } }));
         }
     }
 
@@ -581,6 +592,7 @@ impl ServerState {
                 "version": env!("CARGO_PKG_VERSION"),
                 "protocol": s.protocol,
                 "capabilities": self.capabilities(),
+                "tls": self.tls_message(),
                 "access": self.opts.access.as_str(),
                 "device": if device { "approved" } else { "none" },
             });
@@ -738,6 +750,7 @@ impl ServerState {
                 "capabilities": self.capabilities(),
                 "jellyfin": self.jellyfin_message(),
                 "plex": self.plex_message(),
+                "tls": self.tls_message(),
             } }));
         }
         tracing::info!(user = %name, room = %w.room, client = %version, ext = w.ext.is_some(), "Syncplay user joined");
@@ -1917,6 +1930,46 @@ mod tests {
         h["features"]["yarmiplay"] = json!({ "protocol": 3 });
         s.handle_hello(id, &h, tx, 0.0).unwrap();
         rx
+    }
+
+    #[test]
+    fn tls_name_and_home_addresses_are_advertised() {
+        let mut s = ServerState::new(SyncplayOptions::default());
+        let tls = TlsInfo {
+            name: "home.duckdns.org".into(),
+            lan: vec!["192.168.1.20:8999".into()],
+        };
+        s.set_tls(Some(tls.clone()));
+        let mut a = join_ext(&mut s, 1, "alice", "movie");
+        let out = drain(&mut a);
+        let hello = out.iter().find(|m| m.get("Hello").is_some()).unwrap();
+        let y = &hello["Hello"]["features"]["yarmiplay"];
+        assert_eq!(y["tls"]["name"], "home.duckdns.org");
+        assert_eq!(y["capabilities"]["https"], true);
+        let ext = out
+            .iter()
+            .find(|m| m["Yarmiplay"].get("session").is_some())
+            .unwrap();
+        assert_eq!(ext["Yarmiplay"]["tls"]["lan"][0], "192.168.1.20:8999");
+        assert_eq!(s.ext_info()["tls"]["name"], "home.duckdns.org");
+
+        // Losing the certificate is broadcast.
+        s.set_tls(None);
+        let out = drain(&mut a);
+        assert_eq!(out[0]["Yarmiplay"]["tls"], Value::Null);
+        assert_eq!(out[0]["Yarmiplay"]["capabilities"]["https"], false);
+
+        // Vanilla mode hides it.
+        s.set_tls(Some(tls));
+        s.set_options(SyncplayOptions {
+            vanilla_mode: true,
+            ..Default::default()
+        });
+        assert_eq!(s.ext_info()["tls"], Value::Null);
+        let mut b = join(&mut s, 2, "bob", "movie", 0.0);
+        let out = drain(&mut b);
+        let hello = out.iter().find(|m| m.get("Hello").is_some()).unwrap();
+        assert!(hello["Hello"]["features"].get("yarmiplay").is_none());
     }
 
     fn relay_opts() -> SyncplayOptions {

@@ -5,7 +5,8 @@
 //! YarmiplayTV extensions (see [`super::mux`]).
 
 use super::devices::{self, Decision, DeviceStore};
-use super::ext::{self, Effect, JellyfinShare, PlexShare};
+use super::discovery;
+use super::ext::{self, Effect, JellyfinShare, PlexShare, TlsInfo};
 use super::mux::{self, ConnMeta, HttpSender, Sniff};
 use super::protocol::{line, now_secs, MAX_LINE_LENGTH};
 use super::room::{Access, ConnId, Out, RoomInfo, ServerState, SyncplayOptions};
@@ -59,6 +60,7 @@ pub struct SyncplayServer {
     accept: JoinHandle<()>,
     heartbeat: JoinHandle<()>,
     http: JoinHandle<()>,
+    discovery: Option<JoinHandle<()>>,
 }
 
 struct Shared {
@@ -136,6 +138,43 @@ impl Shared {
     }
 }
 
+/// How often (in heartbeat seconds) the home addresses are looked up again.
+const LAN_REFRESH_TICKS: u64 = 30;
+
+/// The certificate's name and the home addresses, while a certificate is loaded.
+fn tls_info(store: &CertStore, lan: &[String]) -> Option<TlsInfo> {
+    store.read().as_ref().map(|b| TlsInfo {
+        name: b.host.clone(),
+        lan: lan.to_vec(),
+    })
+}
+
+/// Listen on IPv6 and IPv4 at once, so devices with IPv6 reach the PC directly
+/// (no NAT); fall back to IPv4 only where IPv6 is unavailable.
+fn bind_dual_stack(port: u16) -> std::io::Result<TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let v6 = || -> std::io::Result<std::net::TcpListener> {
+        let s = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+        s.set_only_v6(false)?;
+        #[cfg(unix)]
+        s.set_reuse_address(true)?;
+        s.bind(&SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)).into())?;
+        s.listen(1024)?;
+        s.set_nonblocking(true)?;
+        Ok(s.into())
+    };
+    let std = match v6() {
+        Ok(l) => l,
+        Err(e) => {
+            debug!(error = %e, "IPv6 unavailable, listening on IPv4 only");
+            let l = std::net::TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], port)))?;
+            l.set_nonblocking(true)?;
+            l
+        }
+    };
+    TcpListener::from_std(std)
+}
+
 impl SyncplayServer {
     pub async fn start(
         port: u16,
@@ -144,12 +183,17 @@ impl SyncplayServer {
         notify: ChangeNotify,
         ext: Extensions,
     ) -> std::io::Result<Self> {
-        let listener = TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], port))).await?;
+        let listener = bind_dual_stack(port)?;
         let local = listener.local_addr()?;
         let port = local.port();
+        let mut lan = crate::net::ip::lan_addresses(port);
         let mut st = ServerState::new(opts.clone());
-        st.set_https(tls.read().is_some());
+        st.set_tls(tls_info(&tls, &lan));
         let state = Arc::new(Mutex::new(st));
+        let discovery = match &ext.devices {
+            Some(d) => discovery::start(port, &state, d.server_id()).await,
+            None => None,
+        };
         if let Some(r) = &ext.relay {
             r.attach(Arc::downgrade(&state));
         }
@@ -172,6 +216,8 @@ impl SyncplayServer {
                     tokio::select! {
                         accepted = listener.accept() => {
                             let Ok((stream, peer)) = accepted else { continue };
+                            // IPv4 clients on the dual-stack socket show up as ::ffff:a.b.c.d.
+                            let peer = SocketAddr::new(peer.ip().to_canonical(), peer.port());
                             let _ = stream.set_nodelay(true);
                             let shared = shared.clone();
                             conns.spawn(async move { serve_conn(stream, peer, shared).await });
@@ -186,12 +232,17 @@ impl SyncplayServer {
             let shared = shared.clone();
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(Duration::from_secs(1));
+                let mut ticks: u64 = 0;
                 loop {
                     tick.tick().await;
-                    let https = shared.tls.read().is_some();
+                    ticks += 1;
+                    if ticks.is_multiple_of(LAN_REFRESH_TICKS) {
+                        lan = crate::net::ip::lan_addresses(port);
+                    }
+                    let tls = tls_info(&shared.tls, &lan);
                     let dropped = {
                         let mut st = shared.state.lock();
-                        st.set_https(https);
+                        st.set_tls(tls);
                         st.tick(now_secs())
                     };
                     shared.dispatch();
@@ -209,6 +260,7 @@ impl SyncplayServer {
             accept,
             heartbeat,
             http,
+            discovery,
         })
     }
 
@@ -255,6 +307,9 @@ impl SyncplayServer {
         self.accept.abort();
         self.heartbeat.abort();
         self.http.abort();
+        if let Some(d) = &self.discovery {
+            d.abort();
+        }
         if let Some(r) = &self.shared.ext.relay {
             r.detach();
         }
@@ -931,6 +986,18 @@ mod tests {
         SyncplayServer::start(0, opts, Arc::default(), Arc::new(|| {}), ext)
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn listens_on_ipv4_and_ipv6() {
+        let store = Arc::new(DeviceStore::in_memory());
+        let server = start_with(SyncplayAccess::Open, false, &store).await;
+        assert!(TcpStream::connect(("127.0.0.1", server.port)).await.is_ok());
+        // Hosts without IPv6 fall back to IPv4 only.
+        if std::net::TcpListener::bind("[::1]:0").is_ok() {
+            assert!(TcpStream::connect(("::1", server.port)).await.is_ok());
+        }
+        server.stop();
     }
 
     async fn connect(server: &SyncplayServer) -> Conn {

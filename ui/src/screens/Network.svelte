@@ -35,7 +35,10 @@
 <div class="stack">
   <header>
     <h1>Network</h1>
-    <p class="muted">Everything here is optional. On your own network, friends can always connect with the LAN address.</p>
+    <p class="muted">
+      Everything here is optional. On your own network, friends can always connect with the LAN address without
+      encryption; YarmiplayTV finds this PC at home and connects encrypted on its own.
+    </p>
   </header>
 
   <section class="card">
@@ -85,6 +88,12 @@
         checked={snap.settings.tls.staging}
         onchange={(v) => store.save((s) => (s.tls.staging = v))}
       />
+      <Toggle
+        label="Publish IPv6 too"
+        hint="Devices with IPv6 reach this PC by name directly, also at home where the router may not loop the IPv4 address back. From outside, your router's IPv6 firewall decides."
+        checked={snap.settings.tls.ipv6}
+        onchange={(v) => store.save((s) => (s.tls.ipv6 = v))}
+      />
     </div>
 
     {#if snap.tls.phase !== "off"}
@@ -95,7 +104,18 @@
           <span>Renews</span><span>{formatDate(snap.tls.renewAt)}</span>
         {/if}
         {#if snap.tls.duckdnsIp}<span>DuckDNS points to</span><code>{snap.tls.duckdnsIp}</code>{/if}
+        {#if snap.settings.tls.ipv6}
+          <span>DuckDNS IPv6</span>
+          {#if snap.tls.duckdnsIpv6}<code>{snap.tls.duckdnsIpv6}</code>{:else}<span class="muted"
+              >No public IPv6 on this network</span
+            >{/if}
+        {/if}
       </div>
+      {#if !snap.settings.tls.ipv6 && snap.tls.duckdnsIpv6}
+        <div class="notice warn">
+          DuckDNS still has the IPv6 address {snap.tls.duckdnsIpv6}. Clear it on duckdns.org if it shouldn't be used.
+        </div>
+      {/if}
       {#if snap.tls.error}<div class="notice {snap.tls.phase === 'ready' ? 'warn' : 'err'}">{snap.tls.error}</div>{/if}
       {#if snap.tls.phase === "ready" || snap.tls.phase === "error"}
         <div class="row buttons">

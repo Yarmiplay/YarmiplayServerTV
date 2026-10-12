@@ -67,6 +67,9 @@ pub struct TlsRequest {
     pub duckdns: DuckDns,
     pub staging: bool,
     pub email: Option<String>,
+    /// Also publish this PC's public IPv6 address (AAAA), so devices with IPv6
+    /// at home reach it directly instead of through the router's NAT.
+    pub ipv6: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Default, PartialEq)]
@@ -81,6 +84,8 @@ pub struct TlsStatus {
     pub error: Option<String>,
     /// Address DuckDNS has on record for the name.
     pub duckdns_ip: Option<String>,
+    /// IPv6 address DuckDNS has on record for the name.
+    pub duckdns_ipv6: Option<String>,
 }
 
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -260,7 +265,7 @@ impl TlsManager {
         }
         notify();
 
-        self.refresh_ip(&opts, &ip).await;
+        self.refresh_ip(&opts, &ip, req.ipv6).await;
         notify();
 
         let mut failed = false;
@@ -338,7 +343,7 @@ impl TlsManager {
             tokio::select! {
                 _ = tokio::time::sleep(delay) => {}
                 _ = ip_tick.tick() => {
-                    self.refresh_ip(&opts, &ip).await;
+                    self.refresh_ip(&opts, &ip, req.ipv6).await;
                     notify();
                 }
                 msg = renew.recv() => {
@@ -349,9 +354,17 @@ impl TlsManager {
         }
     }
 
-    async fn refresh_ip(&self, opts: &AcmeOptions, ip: &IpSource) {
-        match acme::duckdns_set_ip(opts.duckdns_api(), &opts.duckdns, ip()).await {
-            Ok(recorded) => self.set_status(|s| s.duckdns_ip = recorded.map(|i| i.to_string())),
+    async fn refresh_ip(&self, opts: &AcmeOptions, ip: &IpSource, ipv6: bool) {
+        let v6 = if ipv6 {
+            crate::net::ip::global_ipv6()
+        } else {
+            None
+        };
+        match acme::duckdns_set_ip(opts.duckdns_api(), &opts.duckdns, ip(), v6).await {
+            Ok(recorded) => self.set_status(|s| {
+                s.duckdns_ip = recorded.ip.map(|i| i.to_string());
+                s.duckdns_ipv6 = recorded.ipv6.map(|i| i.to_string());
+            }),
             Err(e) => {
                 warn!(error = %e, "DuckDNS address update failed");
                 self.set_status(|s| {

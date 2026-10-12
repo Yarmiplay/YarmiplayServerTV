@@ -1,6 +1,7 @@
 //! Native Syncplay 1.7-compatible server, plus the YarmiplayTV extensions.
 
 pub mod devices;
+pub mod discovery;
 pub mod ext;
 pub mod managed;
 pub mod mux;

@@ -126,6 +126,26 @@ A peer's `features`, echoed in `Set` `user` `joined` events and in `List` replie
 which viewers are on a stock client (they can't seed or fetch relayed files). Vanilla clients
 never see this key.
 
+### Home network (TLS without NAT loopback)
+
+While a certificate is loaded (and vanilla mode is off), the server says which name the certificate is for
+and how devices at home can reach it, as `tls` in the Hello's `features.yarmiplay`, in every `Yarmiplay`
+state message and in `/yarmiplay/info`:
+
+```json
+"tls": {"name": "myname.duckdns.org", "lan": ["192.168.1.20:8999", "[2a02:6b8::20]:8999"]}
+```
+
+`tls` is `null` without a certificate. A client can dial a `lan` address and verify the certificate against
+`name` (SNI and hostname check), which works at home even when the router doesn't loop the public address back.
+
+**Discovery:** the server answers a UDP datagram `{"yarmiplay":"discover","protocol":1}` sent to the
+Syncplay port number (8999/udp by default, broadcast on the local network) with
+`{"yarmiplay":"server","server":"YarmiplayServerTV","version":…,"serverId":…,"port":…,"tls":{…}|null}`.
+It only answers private, link-local and loopback addresses, at most 10 replies a second, and not in vanilla
+mode. `serverId` is the same id device approvals use. See
+[yarmiplaytv-home-network-prompt.md](yarmiplaytv-home-network-prompt.md).
+
 ### Managed rooms
 
 These aren't an extension. Since 1.7.1, the Hello's `features.managedRooms` is `true` (unless the host

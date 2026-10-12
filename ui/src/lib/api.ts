@@ -139,6 +139,8 @@ export interface TlsSettings {
   duckdnsDomain: string;
   email: string;
   staging: boolean;
+  /** Publish this PC's public IPv6 address on DuckDNS too. */
+  ipv6: boolean;
 }
 
 export interface BrowserSettings {
@@ -294,6 +296,7 @@ export interface TlsStatus {
   staging: boolean;
   error: string | null;
   duckdnsIp: string | null;
+  duckdnsIpv6: string | null;
 }
 
 export interface MappingStatus {
