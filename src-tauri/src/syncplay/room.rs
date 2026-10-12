@@ -215,6 +215,25 @@ impl Room {
     }
 }
 
+/// Settings that are a room's, the same for everyone in it (`{"Yarmiplay": {"roomSettings": …}}`).
+/// Kept by room name while the server runs, also while the room is empty.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct RoomSettings {
+    /// Skip anime openings and endings automatically.
+    auto_skip: bool,
+    /// Who changed them last.
+    set_by: Option<String>,
+}
+
+impl RoomSettings {
+    fn message(&self) -> Value {
+        json!({ "autoSkip": self.auto_skip, "setBy": self.set_by })
+    }
+}
+
+/// How many rooms' settings are kept; beyond it the settings of rooms nobody is in are forgotten.
+const MAX_ROOM_SETTINGS: usize = 500;
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RoomInfo {
@@ -255,6 +274,7 @@ pub struct ServerState {
     password_md5: Option<String>,
     watchers: HashMap<ConnId, Watcher>,
     rooms: HashMap<String, Room>,
+    room_settings: HashMap<String, RoomSettings>,
     jellyfin: Option<JellyfinShare>,
     plex: Option<PlexShare>,
     tls: Option<TlsInfo>,
@@ -268,6 +288,7 @@ impl ServerState {
             password_md5: None,
             watchers: HashMap::new(),
             rooms: HashMap::new(),
+            room_settings: HashMap::new(),
             jellyfin: None,
             plex: None,
             tls: None,
@@ -451,7 +472,39 @@ impl ServerState {
             "jellyfin": on && self.jellyfin.is_some(),
             "plex": on && self.plex.is_some(),
             "https": on && self.tls.is_some(),
+            "roomSettings": on,
         })
+    }
+
+    /// `room`'s shared settings as sent to clients.
+    fn room_settings_message(&self, room: &str) -> Value {
+        self.room_settings.get(room).cloned().unwrap_or_default().message()
+    }
+
+    /// `{"roomSettings": {"autoSkip": …}}` from `id`: changes its room's settings for everyone in it.
+    /// In a managed room only operators may; anyone else just gets the room's settings back.
+    fn set_room_settings(&mut self, id: ConnId, value: &Value) {
+        let Some(w) = self.watchers.get(&id) else {
+            return;
+        };
+        let room = w.room.clone();
+        if !self.can_control(id) {
+            let current = self.room_settings_message(&room);
+            self.send_ext(id, "roomSettings", current);
+            return;
+        }
+        let name = w.name.clone();
+        if self.room_settings.len() >= MAX_ROOM_SETTINGS && !self.room_settings.contains_key(&room) {
+            let rooms = &self.rooms;
+            self.room_settings.retain(|r, _| rooms.contains_key(r));
+        }
+        let settings = self.room_settings.entry(room.clone()).or_default();
+        if let Some(on) = value.get("autoSkip").and_then(Value::as_bool) {
+            settings.auto_skip = on;
+        }
+        settings.set_by = Some(name);
+        let message = settings.message();
+        self.send_ext_room(&room, "roomSettings", &message);
     }
 
     fn plex_message(&self) -> Value {
@@ -745,12 +798,14 @@ impl ServerState {
             }
         }));
         if let Some(s) = &w.ext {
+            // The room's settings ride with the session: a client takes them only once it has one.
             w.send(json!({ "Yarmiplay": {
                 "session": { "token": s.token, "protocol": s.protocol },
                 "capabilities": self.capabilities(),
                 "jellyfin": self.jellyfin_message(),
                 "plex": self.plex_message(),
                 "tls": self.tls_message(),
+                "roomSettings": self.room_settings_message(&w.room),
             } }));
         }
         tracing::info!(user = %name, room = %w.room, client = %version, ext = w.ext.is_some(), "Syncplay user joined");
@@ -823,6 +878,11 @@ impl ServerState {
             json!({ "playlistIndex": { "user": room.set_by, "index": room.playlist_index } }),
         );
         if w.ext.is_some() {
+            // On logging in they come with the session instead.
+            if !as_join {
+                let settings = self.room_settings_message(&room_name);
+                self.send_ext(id, "roomSettings", settings);
+            }
             self.effects.push(Effect::Joined {
                 conn: id,
                 room: room_name,
@@ -1005,6 +1065,7 @@ impl ServerState {
                         }
                     }
                 }
+                "roomSettings" => self.set_room_settings(id, value),
                 "uploadFailed" => {
                     let upload = value.get("id").and_then(Value::as_str).unwrap_or("");
                     let error = value.get("error").and_then(Value::as_str).unwrap_or("");
@@ -2076,6 +2137,79 @@ mod tests {
         let out = drain(&mut late);
         assert!(out[3]["Hello"]["features"].get("yarmiplay").is_none());
         assert_eq!(out.len(), 4);
+    }
+
+    fn ext_messages<'a>(out: &'a [Value], sub: &str) -> Vec<&'a Value> {
+        out.iter().filter_map(|m| m.get("Yarmiplay").and_then(|y| y.get(sub))).collect()
+    }
+
+    #[test]
+    fn room_settings_are_shared_with_the_room_and_sent_on_joining() {
+        let mut s = ServerState::new(SyncplayOptions::default());
+        let mut a = join_ext(&mut s, 1, "alice", "movie");
+        let first = drain(&mut a);
+        // With the session: nobody set anything yet.
+        assert_eq!(ext_messages(&first, "capabilities")[0]["roomSettings"], true);
+        assert_eq!(*ext_messages(&first, "roomSettings")[0], json!({ "autoSkip": false, "setBy": null }));
+        let mut b = join_ext(&mut s, 2, "bob", "movie");
+        let mut v = join(&mut s, 3, "vanilla", "movie", 0.0);
+        drain(&mut a);
+        drain(&mut b);
+        drain(&mut v);
+
+        s.handle_message(2, &msg(json!({ "Yarmiplay": { "roomSettings": { "autoSkip": true } } })), 1.0);
+        let changed = json!({ "autoSkip": true, "setBy": "bob" });
+        assert_eq!(ext_messages(&drain(&mut a), "roomSettings"), vec![&changed]);
+        assert_eq!(ext_messages(&drain(&mut b), "roomSettings"), vec![&changed]);
+        assert!(drain(&mut v).is_empty(), "a client without the extension hears nothing");
+
+        // Switching to another room and back: each room has its own.
+        s.handle_message(1, &msg(json!({ "Set": { "room": { "name": "anime" } } })), 2.0);
+        assert_eq!(ext_messages(&drain(&mut a), "roomSettings"), vec![&json!({ "autoSkip": false, "setBy": null })]);
+        s.handle_message(1, &msg(json!({ "Set": { "room": { "name": "movie" } } })), 3.0);
+        assert_eq!(ext_messages(&drain(&mut a), "roomSettings"), vec![&changed]);
+    }
+
+    #[test]
+    fn room_settings_outlast_an_empty_room() {
+        let mut s = ServerState::new(SyncplayOptions::default());
+        let mut a = join_ext(&mut s, 1, "alice", "movie");
+        s.handle_message(1, &msg(json!({ "Yarmiplay": { "roomSettings": { "autoSkip": true } } })), 1.0);
+        drain(&mut a);
+        s.remove(1);
+        let mut b = join_ext(&mut s, 2, "bob", "movie");
+        assert_eq!(*ext_messages(&drain(&mut b), "roomSettings")[0], json!({ "autoSkip": true, "setBy": "alice" }));
+    }
+
+    #[test]
+    fn only_operators_change_a_managed_room_s_settings() {
+        let mut s = ServerState::new(managed_opts());
+        let mut a = join_ext(&mut s, 1, "alice", ROOM);
+        let mut b = join_ext(&mut s, 2, "bob", ROOM);
+        auth(&mut s, 1, Some(ROOM), PW, 0.5);
+        drain(&mut a);
+        drain(&mut b);
+
+        s.handle_message(2, &msg(json!({ "Yarmiplay": { "roomSettings": { "autoSkip": true } } })), 1.0);
+        assert!(drain(&mut a).is_empty());
+        assert_eq!(ext_messages(&drain(&mut b), "roomSettings"), vec![&json!({ "autoSkip": false, "setBy": null })]);
+
+        s.handle_message(1, &msg(json!({ "Yarmiplay": { "roomSettings": { "autoSkip": true } } })), 2.0);
+        let on = json!({ "autoSkip": true, "setBy": "alice" });
+        assert_eq!(ext_messages(&drain(&mut a), "roomSettings"), vec![&on]);
+        assert_eq!(ext_messages(&drain(&mut b), "roomSettings"), vec![&on]);
+    }
+
+    #[test]
+    fn room_settings_need_a_session() {
+        let mut s = ServerState::new(SyncplayOptions::default());
+        let mut y = join_ext(&mut s, 1, "yarmi", "movie");
+        let mut v = join(&mut s, 2, "vanilla", "movie", 0.0);
+        drain(&mut y);
+        drain(&mut v);
+        s.handle_message(2, &msg(json!({ "Yarmiplay": { "roomSettings": { "autoSkip": true } } })), 1.0);
+        assert!(drain(&mut y).is_empty());
+        assert!(drain(&mut v).is_empty());
     }
 
     #[test]

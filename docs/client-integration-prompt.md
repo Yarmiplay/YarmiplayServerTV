@@ -153,6 +153,24 @@ switched managed rooms off), and `controllerAuth`, `newControlledRoom`, the `con
 other users' readiness work as on the official server. See
 [yarmiplaytv-managed-rooms-prompt.md](yarmiplaytv-managed-rooms-prompt.md).
 
+### Room settings
+
+From 1.7.3, `capabilities.roomSettings` is `true` and the server keeps settings that belong to a room,
+the same for everyone in it. Today there is one: `autoSkip`, skip anime openings and endings
+automatically (the room jumps, as when anyone seeks). The room's settings come with the session on
+logging in, and on their own after every room change:
+
+```json
+{"Yarmiplay": {"roomSettings": {"autoSkip": false, "setBy": null}}}
+```
+
+To change them, send `{"Yarmiplay": {"roomSettings": {"autoSkip": true}}}`. Everyone in the room
+with a session gets the new settings, including you, with `setBy` naming who changed them; that echo
+is when the change has happened. In a managed room only operators may change them; anyone else just
+gets the room's current settings back. The server keeps a room's settings while it runs, also after
+everyone has left, and forgets them on restart. Older servers have no `roomSettings` capability:
+treat it as `false` and let each device decide for itself.
+
 ## HTTP on the Syncplay port
 
 The same host and port serve HTTP. Build the base URL from where the Syncplay connection went:
