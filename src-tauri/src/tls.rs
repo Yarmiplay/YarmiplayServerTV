@@ -8,7 +8,7 @@ use crate::net::acme::{self, AcmeOptions, DuckDns, IssuedCert};
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -17,6 +17,8 @@ use tracing::{info, warn};
 
 pub struct CertBundle {
     pub host: String,
+    /// Every DNS name the certificate covers (`host` first, then the LAN name).
+    pub names: Vec<String>,
     pub cert_pem: String,
     pub key_pem: String,
     pub not_before: i64,
@@ -52,6 +54,7 @@ pub fn server_config(cert_pem: &str, key_pem: &str) -> Result<Arc<rustls::Server
 fn bundle(cert: &IssuedCert, staging: bool) -> Result<CertBundle, String> {
     Ok(CertBundle {
         host: cert.host.clone(),
+        names: cert.names.clone(),
         cert_pem: cert.cert_pem.clone(),
         key_pem: cert.key_pem.clone(),
         not_before: cert.not_before,
@@ -70,6 +73,9 @@ pub struct TlsRequest {
     /// Also publish this PC's public IPv6 address (AAAA), so devices with IPv6
     /// at home reach it directly instead of through the router's NAT.
     pub ipv6: bool,
+    /// A second DuckDNS name kept pointing at this PC's LAN address and added
+    /// to the certificate, so browsers at home connect locally.
+    pub lan: Option<DuckDns>,
 }
 
 #[derive(Debug, Clone, Serialize, Default, PartialEq)]
@@ -86,6 +92,9 @@ pub struct TlsStatus {
     pub duckdns_ip: Option<String>,
     /// IPv6 address DuckDNS has on record for the name.
     pub duckdns_ipv6: Option<String>,
+    /// The LAN name, when set, and the LAN address DuckDNS has for it.
+    pub lan_host: Option<String>,
+    pub lan_ip: Option<String>,
 }
 
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -181,6 +190,7 @@ impl TlsManager {
             phase: "issuing",
             host: Some(request.duckdns.fqdn()),
             staging: request.staging,
+            lan_host: request.lan.as_ref().map(DuckDns::fqdn),
             ..Default::default()
         };
         // Publish a still-valid cached certificate right away so services
@@ -246,6 +256,7 @@ impl TlsManager {
             staging: req.staging,
             email: req.email.clone(),
             duckdns: req.duckdns.clone(),
+            lan: req.lan.clone(),
             duckdns_api: None,
             directory: None,
         }
@@ -266,6 +277,7 @@ impl TlsManager {
         notify();
 
         self.refresh_ip(&opts, &ip, req.ipv6).await;
+        let mut lan_ip = self.refresh_lan_ip(&opts, None).await;
         notify();
 
         let mut failed = false;
@@ -277,9 +289,9 @@ impl TlsManager {
             let now = acme::unix_now();
             let due = force
                 || (now >= retry_at
-                    && self.current().is_none_or(|b| {
-                        acme::needs_renewal(b.not_before, b.not_after, now)
-                    }));
+                    && self
+                        .current()
+                        .is_none_or(|b| acme::needs_renewal(b.not_before, b.not_after, now)));
             if due {
                 self.set_status(|s| {
                     s.phase = "issuing";
@@ -330,6 +342,7 @@ impl TlsManager {
                 Some(b) => acme::next_check_delay(
                     &IssuedCert {
                         host: String::new(),
+                        names: Vec::new(),
                         cert_pem: String::new(),
                         key_pem: String::new(),
                         not_before: b.not_before,
@@ -344,12 +357,40 @@ impl TlsManager {
                 _ = tokio::time::sleep(delay) => {}
                 _ = ip_tick.tick() => {
                     self.refresh_ip(&opts, &ip, req.ipv6).await;
+                    lan_ip = self.refresh_lan_ip(&opts, lan_ip).await;
                     notify();
                 }
                 msg = renew.recv() => {
                     if msg.is_none() { return; }
                     force = true;
                 }
+            }
+        }
+    }
+
+    /// Point the LAN name at this PC's LAN IPv4 when it differs from `last`
+    /// (what DuckDNS was last given). Returns the address on record.
+    async fn refresh_lan_ip(&self, opts: &AcmeOptions, last: Option<Ipv4Addr>) -> Option<Ipv4Addr> {
+        let lan = opts.lan.as_ref()?;
+        let Some(now) = crate::net::ip::primary_lan_ipv4() else {
+            return last;
+        };
+        if last == Some(now) {
+            return last;
+        }
+        match acme::duckdns_set_ip(opts.duckdns_api(), lan, Some(IpAddr::V4(now)), None).await {
+            Ok(recorded) => {
+                self.set_status(|s| s.lan_ip = recorded.ip.map(|i| i.to_string()));
+                Some(now)
+            }
+            Err(e) => {
+                warn!(error = %e, "DuckDNS LAN address update failed");
+                self.set_status(|s| {
+                    if s.phase != "issuing" {
+                        s.error = Some(format!("LAN name: {e}"));
+                    }
+                });
+                last
             }
         }
     }

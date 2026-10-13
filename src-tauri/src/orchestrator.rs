@@ -280,10 +280,22 @@ impl App {
             next.plex.saved_custom_connections = cur.plex.saved_custom_connections.clone();
         }
         next.tls.duckdns_domain = next.tls.duckdns_domain.trim().to_string();
+        next.tls.lan_domain = next.tls.lan_domain.trim().to_string();
         next.tls.email = next.tls.email.trim().to_string();
         next.validate()?;
         if !next.tls.duckdns_domain.is_empty() {
             crate::net::acme::normalize_domain(&next.tls.duckdns_domain)?;
+        }
+        if !next.tls.lan_domain.is_empty() {
+            let lan = crate::net::acme::normalize_domain(&next.tls.lan_domain)
+                .map_err(|e| format!("LAN name: {e}"))?;
+            if crate::net::acme::normalize_domain(&next.tls.duckdns_domain)
+                .ok()
+                .as_deref()
+                == Some(lan.as_str())
+            {
+                return Err("The LAN name must be a second DuckDNS name, not the same one".into());
+            }
         }
         self.save_settings(next)?;
         self.reconcile().await;
@@ -387,6 +399,7 @@ impl App {
             devices: Some(self.devices.clone()),
             plex_proxy: Some(self.plex_proxy.clone()),
             plex_invite: Some(plex_invite),
+            mal_upstream: None,
         }
     }
 
@@ -408,6 +421,9 @@ impl App {
                         staging: s.tls.staging,
                         email: Some(s.tls.email.clone()).filter(|e| !e.is_empty()),
                         ipv6: s.tls.ipv6,
+                        lan: Some(s.tls.lan_domain.as_str())
+                            .filter(|d| !d.is_empty())
+                            .and_then(|d| DuckDns::new(d, t).ok()),
                     })
                 }
             };

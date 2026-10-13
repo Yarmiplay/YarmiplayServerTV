@@ -5,10 +5,44 @@
   import { useDraft } from "../lib/draft.svelte";
   import { tlsPill, upnpPill } from "../lib/status";
   import Toggle from "../lib/Toggle.svelte";
+  import Address from "../lib/Address.svelte";
 
   let { snap }: { snap: Snapshot } = $props();
 
-  const tlsForm = useDraft(() => ({ duckdnsDomain: snap.settings.tls.duckdnsDomain, email: snap.settings.tls.email }));
+  const tlsForm = useDraft(() => ({
+    duckdnsDomain: snap.settings.tls.duckdnsDomain,
+    email: snap.settings.tls.email,
+    lanDomain: snap.settings.tls.lanDomain,
+  }));
+  let testing = $state(false);
+  let testResult = $state<{ ok: boolean; text: string } | null>(null);
+
+  async function testLan() {
+    testing = true;
+    testResult = null;
+    try {
+      testResult = { ok: true, text: await api.testLanName(tlsForm.draft.lanDomain) };
+    } catch (e) {
+      testResult = { ok: false, text: String(e) };
+    }
+    testing = false;
+  }
+
+  // The browser client: tv.yarmiplay.com/watch joins over HTTPS with the DuckDNS name.
+  let room = $state("lobby");
+  const fqdn = (d: string) => {
+    const name = d.trim().toLowerCase().replace(/\.$/, "");
+    return name.endsWith(".duckdns.org") ? name : `${name}.duckdns.org`;
+  };
+  const browserReady = $derived(
+    snap.settings.tls.enabled && snap.tls.phase === "ready" && !snap.settings.syncplay.vanillaMode && !!snap.tls.host,
+  );
+  const watchUrl = $derived.by(() => {
+    if (!browserReady || !snap.tls.host) return null;
+    const r = encodeURIComponent(room.trim() || "lobby");
+    const lan = snap.settings.tls.lanDomain.trim() ? `&lan=${fqdn(snap.settings.tls.lanDomain)}` : "";
+    return `https://tv.yarmiplay.com/watch/#join=${snap.tls.host}:${snap.settings.syncplay.port}/${r}${lan}`;
+  });
   let token = $state("");
   let showToken = $state(false);
 
@@ -58,7 +92,21 @@
     <div class="fields">
       <label class="field">DuckDNS domain<input bind:value={tlsForm.draft.duckdnsDomain} placeholder="myname.duckdns.org" /></label>
       <label class="field">Email for Let's Encrypt (optional)<input type="email" bind:value={tlsForm.draft.email} placeholder="Expiry notices" /></label>
+      <label class="field">
+        LAN name for browsers (optional)
+        <input bind:value={tlsForm.draft.lanDomain} placeholder="myname-lan.duckdns.org" />
+      </label>
     </div>
+    <p class="muted note">
+      A second DuckDNS name (on the same account) that this PC keeps pointed at its address on your network, and that
+      goes on the same certificate. Browsers can't check a certificate when connecting to an IP address, so this lets
+      people at home watch in a browser over your network instead of through the internet. Some routers block DNS
+      answers with private addresses ("DNS rebinding protection") and need an exception for this name.
+      {#if tlsForm.draft.lanDomain.trim()}
+        <button class="small" disabled={testing} onclick={testLan}>{testing ? "Testing…" : "Test"}</button>
+      {/if}
+    </p>
+    {#if testResult}<div class="notice {testResult.ok ? 'ok' : 'warn'}">{testResult.text}</div>{/if}
     <div class="row buttons">
       <button class="primary" disabled={!tlsForm.dirty} onclick={() => store.save((s) => Object.assign(s.tls, tlsForm.draft), "Saved")}>Save</button>
       <button disabled={!tlsForm.dirty} onclick={() => tlsForm.reset()}>Revert</button>
@@ -104,6 +152,9 @@
           <span>Renews</span><span>{formatDate(snap.tls.renewAt)}</span>
         {/if}
         {#if snap.tls.duckdnsIp}<span>DuckDNS points to</span><code>{snap.tls.duckdnsIp}</code>{/if}
+        {#if snap.tls.lanHost}
+          <span>LAN name</span><code>{snap.tls.lanHost}{snap.tls.lanIp ? ` → ${snap.tls.lanIp}` : ""}</code>
+        {/if}
         {#if snap.settings.tls.ipv6}
           <span>DuckDNS IPv6</span>
           {#if snap.tls.duckdnsIpv6}<code>{snap.tls.duckdnsIpv6}</code>{:else}<span class="muted"
@@ -122,6 +173,25 @@
           <button onclick={() => store.run(() => api.renewCertificate(), "Requesting a new certificate")}>Renew now</button>
         </div>
       {/if}
+    {/if}
+  </section>
+
+  <section class="card">
+    <h2>Watch in a browser</h2>
+    {#if watchUrl}
+      <p class="sub">
+        Anyone with this link can open YarmiplayTV in their browser and join the room (they still need your approval or
+        the password, as on any device).
+      </p>
+      <label class="field room">Room<input bind:value={room} placeholder="lobby" /></label>
+      <Address label="Link" value={watchUrl} link />
+    {:else}
+      <p class="sub">
+        Browsers can only join over HTTPS with a real certificate: set up DuckDNS and HTTPS above{snap.settings.syncplay
+          .vanillaMode
+          ? ", and turn off vanilla Syncplay mode on the Syncplay page"
+          : ""}. Then a link to tv.yarmiplay.com/watch shows here.
+      </p>
     {/if}
   </section>
 
@@ -239,5 +309,9 @@
   }
   .note {
     font-size: 0.9em;
+  }
+  .room {
+    max-width: 240px;
+    margin-bottom: 8px;
   }
 </style>

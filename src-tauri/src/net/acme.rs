@@ -102,6 +102,10 @@ pub struct AcmeOptions {
     pub staging: bool,
     pub email: Option<String>,
     pub duckdns: DuckDns,
+    /// A second DuckDNS name (same account) that points at the host's LAN
+    /// address, so browsers at home can connect locally with a valid
+    /// certificate. It goes on the same certificate.
+    pub lan: Option<DuckDns>,
     /// DuckDNS API base URL override (tests); `None` = [`DUCKDNS_API`].
     pub duckdns_api: Option<String>,
     /// Custom ACME directory (e.g. Pebble) instead of Let's Encrypt.
@@ -125,6 +129,25 @@ impl AcmeOptions {
         self.duckdns_api.as_deref().unwrap_or(DUCKDNS_API)
     }
 
+    /// The names the certificate must cover: the DuckDNS name, then the LAN name.
+    pub fn names(&self) -> Vec<String> {
+        let mut names = vec![self.duckdns.fqdn()];
+        names.extend(
+            self.lan
+                .as_ref()
+                .map(DuckDns::fqdn)
+                .filter(|n| n != &names[0]),
+        );
+        names
+    }
+
+    /// The DuckDNS name `host` belongs to.
+    fn duck_for(&self, host: &str) -> Option<&DuckDns> {
+        std::iter::once(&self.duckdns)
+            .chain(self.lan.as_ref())
+            .find(|d| d.fqdn().eq_ignore_ascii_case(host))
+    }
+
     fn directory_url(&self) -> String {
         match &self.directory {
             Some(url) => url.clone(),
@@ -137,6 +160,8 @@ impl AcmeOptions {
 #[derive(Debug, Clone)]
 pub struct IssuedCert {
     pub host: String,
+    /// Every DNS name the certificate covers (`host` first).
+    pub names: Vec<String>,
     pub cert_pem: String,
     pub key_pem: String,
     /// Unix seconds.
@@ -350,22 +375,36 @@ pub fn parse_cert(cert_pem: &str, key_pem: &str, expected: &str) -> Result<Issue
     let cert = pem
         .parse_x509()
         .map_err(|e| format!("certificate DER: {e}"))?;
-    let covers = cert
+    let sans: Vec<String> = cert
         .subject_alternative_name()
         .ok()
         .flatten()
-        .is_some_and(|san| {
-            san.value.general_names.iter().any(|name| {
-                matches!(name, x509_parser::extensions::GeneralName::DNSName(dns) if dns.eq_ignore_ascii_case(expected))
-            })
-        });
-    if !covers {
+        .map(|san| {
+            san.value
+                .general_names
+                .iter()
+                .filter_map(|name| match name {
+                    x509_parser::extensions::GeneralName::DNSName(dns) => {
+                        Some(dns.to_ascii_lowercase())
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !sans.iter().any(|n| n.eq_ignore_ascii_case(expected)) {
         return Err(format!("certificate does not cover {expected}"));
     }
     if !key_pem.contains("PRIVATE KEY") {
         return Err("private key PEM missing".into());
     }
+    let mut names = vec![expected.to_ascii_lowercase()];
+    names.extend(
+        sans.into_iter()
+            .filter(|n| !n.eq_ignore_ascii_case(expected)),
+    );
     Ok(IssuedCert {
+        names,
         host: expected.to_string(),
         cert_pem: cert_pem.to_string(),
         key_pem: key_pem.to_string(),
@@ -440,19 +479,23 @@ async fn load_or_create_account(opts: &AcmeOptions) -> Result<Account, String> {
     Ok(account)
 }
 
-/// DNS-01 issuance for the DuckDNS name. The TXT record is always cleared afterwards.
+/// DNS-01 issuance for the DuckDNS name (and the LAN name, with its own TXT
+/// record). The TXT records are always cleared afterwards.
 async fn issue(opts: &AcmeOptions) -> Result<(String, String), String> {
     let account = load_or_create_account(opts).await?;
-    let host = opts.duckdns.fqdn();
-    let identifiers = [Identifier::Dns(host.clone())];
+    let names = opts.names();
+    let host = names[0].clone();
+    let identifiers: Vec<Identifier> = names.iter().cloned().map(Identifier::Dns).collect();
     let mut order = account
         .new_order(&NewOrder::new(&identifiers))
         .await
-        .map_err(|e| format!("new order for {host}: {e}"))?;
-    info!(%host, staging = opts.staging, "ACME order started");
+        .map_err(|e| format!("new order for {}: {e}", names.join(", ")))?;
+    info!(names = %names.join(", "), staging = opts.staging, "ACME order started");
     let result = drive_order(&mut order, opts, &host).await;
-    if let Err(e) = duckdns_clear_txt(opts.duckdns_api(), &opts.duckdns).await {
-        warn!(error = %e, "clearing the DuckDNS TXT record failed");
+    for duck in std::iter::once(&opts.duckdns).chain(opts.lan.as_ref()) {
+        if let Err(e) = duckdns_clear_txt(opts.duckdns_api(), duck).await {
+            warn!(error = %e, domain = %duck.fqdn(), "clearing the DuckDNS TXT record failed");
+        }
     }
     result
 }
@@ -471,13 +514,21 @@ async fn drive_order(
                 AuthorizationStatus::Valid => continue,
                 other => return Err(format!("authorization for {host} is {other:?}")),
             }
+            let name = match authz.identifier().identifier {
+                Identifier::Dns(name) => name.clone(),
+                other => return Err(format!("unexpected identifier {other:?}")),
+            };
+            let duck = opts
+                .duck_for(&name)
+                .ok_or_else(|| format!("{name} isn't one of this server's DuckDNS names"))?
+                .clone();
             let mut challenge = authz
                 .challenge(ChallengeType::Dns01)
-                .ok_or_else(|| format!("no DNS-01 challenge offered for {host}"))?;
+                .ok_or_else(|| format!("no DNS-01 challenge offered for {name}"))?;
             let value = challenge.key_authorization().dns_value();
-            duckdns_set_txt(opts.duckdns_api(), &opts.duckdns, &value).await?;
-            info!(%host, "DuckDNS TXT record set");
-            wait_for_txt(&format!("_acme-challenge.{host}"), &value).await?;
+            duckdns_set_txt(opts.duckdns_api(), &duck, &value).await?;
+            info!(%name, "DuckDNS TXT record set");
+            wait_for_txt(&format!("_acme-challenge.{name}"), &value).await?;
             challenge
                 .set_ready()
                 .await
@@ -487,7 +538,7 @@ async fn drive_order(
 
     let policy = RetryPolicy::new().timeout(ORDER_TIMEOUT);
     let hint = format!(
-        "Let's Encrypt must see the TXT record _acme-challenge.{host} set through DuckDNS. Check the DuckDNS token and that DuckDNS is up."
+        "Let's Encrypt must see the TXT record _acme-challenge.{host} (and the LAN name's, if set) through DuckDNS. Check the DuckDNS token, that both names belong to that account, and that DuckDNS is up."
     );
     let status = order
         .poll_ready(&policy)
@@ -529,6 +580,15 @@ async fn challenge_errors(order: &mut Order) -> String {
     }
 }
 
+/// A cached certificate does unless it's due for renewal or misses a name
+/// (a LAN name added since the last order needs a new certificate).
+fn cached_is_enough(c: &IssuedCert, names: &[String], now: i64) -> bool {
+    !c.needs_renewal(now)
+        && names
+            .iter()
+            .all(|n| c.names.iter().any(|x| x.eq_ignore_ascii_case(n)))
+}
+
 /// Reuse a cached certificate unless it is due for renewal (or `force`), else issue a new one.
 /// A failed renewal keeps serving the cached certificate while it is still valid.
 pub async fn load_or_issue(opts: &AcmeOptions, force: bool) -> Result<IssuedCert, String> {
@@ -536,7 +596,7 @@ pub async fn load_or_issue(opts: &AcmeOptions, force: bool) -> Result<IssuedCert
     let now = unix_now();
     let cached = load_cached(opts);
     if let Some(c) = &cached {
-        if !force && !c.needs_renewal(now) {
+        if !force && cached_is_enough(c, &opts.names(), now) {
             info!(%host, not_after = c.not_after, "using cached certificate");
             return Ok(c.clone());
         }
@@ -583,6 +643,7 @@ mod tests {
             staging: true,
             email: None,
             duckdns: DuckDns::new("yarmiplay", TEST_TOKEN).unwrap(),
+            lan: None,
             duckdns_api: None,
             directory: None,
         }
@@ -615,6 +676,7 @@ mod tests {
         let now = 10_000_000;
         let cert = IssuedCert {
             host: String::new(),
+            names: Vec::new(),
             cert_pem: String::new(),
             key_pem: String::new(),
             not_before: now,
@@ -740,6 +802,55 @@ mod tests {
     }
 
     #[test]
+    fn two_names_one_certificate() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut o = opts(dir.path());
+        assert_eq!(o.names(), vec!["yarmiplay.duckdns.org".to_string()]);
+        o.lan = Some(DuckDns::new("yarmiplay-lan", TEST_TOKEN).unwrap());
+        assert_eq!(
+            o.names(),
+            vec![
+                "yarmiplay.duckdns.org".to_string(),
+                "yarmiplay-lan.duckdns.org".to_string()
+            ]
+        );
+        // Each name's TXT record goes on its own DuckDNS name.
+        assert_eq!(
+            o.duck_for("YARMIPLAY-LAN.duckdns.org").unwrap().subdomain,
+            "yarmiplay-lan"
+        );
+        assert_eq!(
+            o.duck_for("yarmiplay.duckdns.org").unwrap().subdomain,
+            "yarmiplay"
+        );
+        assert!(o.duck_for("other.duckdns.org").is_none());
+
+        // A certificate for both names reads both; one without the LAN name is replaced.
+        let params = rcgen::CertificateParams::new(vec![
+            "yarmiplay.duckdns.org".into(),
+            "yarmiplay-lan.duckdns.org".into(),
+        ])
+        .unwrap();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let both = params.self_signed(&key).unwrap();
+        let both = parse_cert(&both.pem(), &key.serialize_pem(), "yarmiplay.duckdns.org").unwrap();
+        assert_eq!(
+            both.names,
+            vec!["yarmiplay.duckdns.org", "yarmiplay-lan.duckdns.org"]
+        );
+        let now = both.not_before + 60;
+        assert!(cached_is_enough(&both, &o.names(), now));
+        let (one, one_key) = self_signed("yarmiplay.duckdns.org", (2026, 1, 1), (2099, 1, 1));
+        let one = parse_cert(&one, &one_key, "yarmiplay.duckdns.org").unwrap();
+        assert!(
+            !cached_is_enough(&one, &o.names(), now),
+            "the LAN name is missing"
+        );
+        o.lan = None;
+        assert!(cached_is_enough(&one, &o.names(), now));
+    }
+
+    #[test]
     fn duckdns_domain_normalization() {
         for input in [
             "yarmiplay",
@@ -784,6 +895,7 @@ mod tests {
             staging: true,
             email: None,
             duckdns: DuckDns::new("yarmiplay", &token).unwrap(),
+            lan: None,
             duckdns_api: None,
             directory: None,
         };

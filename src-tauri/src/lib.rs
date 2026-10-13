@@ -134,6 +134,7 @@ pub fn run() {
             commands::update_settings,
             commands::set_duckdns_token,
             commands::renew_certificate,
+            commands::tls_test_lan_name,
             commands::jellyfin_retry,
             commands::jellyfin_setup,
             commands::jellyfin_login,

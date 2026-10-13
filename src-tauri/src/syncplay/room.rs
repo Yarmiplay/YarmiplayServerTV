@@ -61,6 +61,8 @@ pub struct SyncplayOptions {
     pub managed_rooms: bool,
     /// Secret the managed-room names are derived from; kept across restarts.
     pub room_salt: String,
+    /// Origins of web pages allowed to use the port from a browser (normalized).
+    pub web_origins: Vec<String>,
 }
 
 impl Default for SyncplayOptions {
@@ -78,6 +80,7 @@ impl Default for SyncplayOptions {
             file_relay: false,
             managed_rooms: true,
             room_salt: String::new(),
+            web_origins: crate::config::default_web_origins(),
         }
     }
 }
@@ -417,6 +420,11 @@ impl ServerState {
         self.opts.vanilla_mode
     }
 
+    /// Whether a web page at `origin` may use the port from a browser.
+    pub fn origin_allowed(&self, origin: &str) -> bool {
+        crate::config::normalize_origin(origin).is_some_and(|o| self.opts.web_origins.contains(&o))
+    }
+
     /// What extension sessions are told about the shared Jellyfin.
     pub fn set_jellyfin(&mut self, share: Option<JellyfinShare>) {
         if self.jellyfin != share {
@@ -473,12 +481,18 @@ impl ServerState {
             "plex": on && self.plex.is_some(),
             "https": on && self.tls.is_some(),
             "roomSettings": on,
+            "websocket": on,
+            "mal": on,
         })
     }
 
     /// `room`'s shared settings as sent to clients.
     fn room_settings_message(&self, room: &str) -> Value {
-        self.room_settings.get(room).cloned().unwrap_or_default().message()
+        self.room_settings
+            .get(room)
+            .cloned()
+            .unwrap_or_default()
+            .message()
     }
 
     /// `{"roomSettings": {"autoSkip": …}}` from `id`: changes its room's settings for everyone in it.
@@ -494,7 +508,8 @@ impl ServerState {
             return;
         }
         let name = w.name.clone();
-        if self.room_settings.len() >= MAX_ROOM_SETTINGS && !self.room_settings.contains_key(&room) {
+        if self.room_settings.len() >= MAX_ROOM_SETTINGS && !self.room_settings.contains_key(&room)
+        {
             let rooms = &self.rooms;
             self.room_settings.retain(|r, _| rooms.contains_key(r));
         }
@@ -1999,6 +2014,7 @@ mod tests {
         let tls = TlsInfo {
             name: "home.duckdns.org".into(),
             lan: vec!["192.168.1.20:8999".into()],
+            lan_name: None,
         };
         s.set_tls(Some(tls.clone()));
         let mut a = join_ext(&mut s, 1, "alice", "movie");
@@ -2140,7 +2156,9 @@ mod tests {
     }
 
     fn ext_messages<'a>(out: &'a [Value], sub: &str) -> Vec<&'a Value> {
-        out.iter().filter_map(|m| m.get("Yarmiplay").and_then(|y| y.get(sub))).collect()
+        out.iter()
+            .filter_map(|m| m.get("Yarmiplay").and_then(|y| y.get(sub)))
+            .collect()
     }
 
     #[test]
@@ -2149,24 +2167,48 @@ mod tests {
         let mut a = join_ext(&mut s, 1, "alice", "movie");
         let first = drain(&mut a);
         // With the session: nobody set anything yet.
-        assert_eq!(ext_messages(&first, "capabilities")[0]["roomSettings"], true);
-        assert_eq!(*ext_messages(&first, "roomSettings")[0], json!({ "autoSkip": false, "setBy": null }));
+        assert_eq!(
+            ext_messages(&first, "capabilities")[0]["roomSettings"],
+            true
+        );
+        assert_eq!(
+            *ext_messages(&first, "roomSettings")[0],
+            json!({ "autoSkip": false, "setBy": null })
+        );
         let mut b = join_ext(&mut s, 2, "bob", "movie");
         let mut v = join(&mut s, 3, "vanilla", "movie", 0.0);
         drain(&mut a);
         drain(&mut b);
         drain(&mut v);
 
-        s.handle_message(2, &msg(json!({ "Yarmiplay": { "roomSettings": { "autoSkip": true } } })), 1.0);
+        s.handle_message(
+            2,
+            &msg(json!({ "Yarmiplay": { "roomSettings": { "autoSkip": true } } })),
+            1.0,
+        );
         let changed = json!({ "autoSkip": true, "setBy": "bob" });
         assert_eq!(ext_messages(&drain(&mut a), "roomSettings"), vec![&changed]);
         assert_eq!(ext_messages(&drain(&mut b), "roomSettings"), vec![&changed]);
-        assert!(drain(&mut v).is_empty(), "a client without the extension hears nothing");
+        assert!(
+            drain(&mut v).is_empty(),
+            "a client without the extension hears nothing"
+        );
 
         // Switching to another room and back: each room has its own.
-        s.handle_message(1, &msg(json!({ "Set": { "room": { "name": "anime" } } })), 2.0);
-        assert_eq!(ext_messages(&drain(&mut a), "roomSettings"), vec![&json!({ "autoSkip": false, "setBy": null })]);
-        s.handle_message(1, &msg(json!({ "Set": { "room": { "name": "movie" } } })), 3.0);
+        s.handle_message(
+            1,
+            &msg(json!({ "Set": { "room": { "name": "anime" } } })),
+            2.0,
+        );
+        assert_eq!(
+            ext_messages(&drain(&mut a), "roomSettings"),
+            vec![&json!({ "autoSkip": false, "setBy": null })]
+        );
+        s.handle_message(
+            1,
+            &msg(json!({ "Set": { "room": { "name": "movie" } } })),
+            3.0,
+        );
         assert_eq!(ext_messages(&drain(&mut a), "roomSettings"), vec![&changed]);
     }
 
@@ -2174,11 +2216,18 @@ mod tests {
     fn room_settings_outlast_an_empty_room() {
         let mut s = ServerState::new(SyncplayOptions::default());
         let mut a = join_ext(&mut s, 1, "alice", "movie");
-        s.handle_message(1, &msg(json!({ "Yarmiplay": { "roomSettings": { "autoSkip": true } } })), 1.0);
+        s.handle_message(
+            1,
+            &msg(json!({ "Yarmiplay": { "roomSettings": { "autoSkip": true } } })),
+            1.0,
+        );
         drain(&mut a);
         s.remove(1);
         let mut b = join_ext(&mut s, 2, "bob", "movie");
-        assert_eq!(*ext_messages(&drain(&mut b), "roomSettings")[0], json!({ "autoSkip": true, "setBy": "alice" }));
+        assert_eq!(
+            *ext_messages(&drain(&mut b), "roomSettings")[0],
+            json!({ "autoSkip": true, "setBy": "alice" })
+        );
     }
 
     #[test]
@@ -2190,11 +2239,22 @@ mod tests {
         drain(&mut a);
         drain(&mut b);
 
-        s.handle_message(2, &msg(json!({ "Yarmiplay": { "roomSettings": { "autoSkip": true } } })), 1.0);
+        s.handle_message(
+            2,
+            &msg(json!({ "Yarmiplay": { "roomSettings": { "autoSkip": true } } })),
+            1.0,
+        );
         assert!(drain(&mut a).is_empty());
-        assert_eq!(ext_messages(&drain(&mut b), "roomSettings"), vec![&json!({ "autoSkip": false, "setBy": null })]);
+        assert_eq!(
+            ext_messages(&drain(&mut b), "roomSettings"),
+            vec![&json!({ "autoSkip": false, "setBy": null })]
+        );
 
-        s.handle_message(1, &msg(json!({ "Yarmiplay": { "roomSettings": { "autoSkip": true } } })), 2.0);
+        s.handle_message(
+            1,
+            &msg(json!({ "Yarmiplay": { "roomSettings": { "autoSkip": true } } })),
+            2.0,
+        );
         let on = json!({ "autoSkip": true, "setBy": "alice" });
         assert_eq!(ext_messages(&drain(&mut a), "roomSettings"), vec![&on]);
         assert_eq!(ext_messages(&drain(&mut b), "roomSettings"), vec![&on]);
@@ -2207,7 +2267,11 @@ mod tests {
         let mut v = join(&mut s, 2, "vanilla", "movie", 0.0);
         drain(&mut y);
         drain(&mut v);
-        s.handle_message(2, &msg(json!({ "Yarmiplay": { "roomSettings": { "autoSkip": true } } })), 1.0);
+        s.handle_message(
+            2,
+            &msg(json!({ "Yarmiplay": { "roomSettings": { "autoSkip": true } } })),
+            1.0,
+        );
         assert!(drain(&mut y).is_empty());
         assert!(drain(&mut v).is_empty());
     }

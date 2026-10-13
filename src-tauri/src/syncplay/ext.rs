@@ -57,6 +57,10 @@ pub struct TlsInfo {
     pub name: String,
     /// `ip:port` addresses on the host's network (and its public IPv6).
     pub lan: Vec<String>,
+    /// A second name on the certificate that points at the host's LAN
+    /// address, for browsers (which can't check a certificate against an IP).
+    #[serde(rename = "lanName", skip_serializing_if = "Option::is_none")]
+    pub lan_name: Option<String>,
 }
 
 /// A connection's extension session.

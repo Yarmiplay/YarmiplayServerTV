@@ -52,6 +52,8 @@ pub struct Extensions {
     pub plex_invite: Option<PlexInviteFn>,
     /// Approved device keys; without it nobody gets a device challenge.
     pub devices: Option<Arc<DeviceStore>>,
+    /// Where the MyAnimeList passthrough goes (tests point it elsewhere).
+    pub mal_upstream: Option<mux::MalUpstream>,
 }
 
 pub struct SyncplayServer {
@@ -146,6 +148,11 @@ fn tls_info(store: &CertStore, lan: &[String]) -> Option<TlsInfo> {
     store.read().as_ref().map(|b| TlsInfo {
         name: b.host.clone(),
         lan: lan.to_vec(),
+        lan_name: b
+            .names
+            .iter()
+            .find(|n| !n.eq_ignore_ascii_case(&b.host))
+            .cloned(),
     })
 }
 
@@ -197,7 +204,9 @@ impl SyncplayServer {
         if let Some(r) = &ext.relay {
             r.attach(Arc::downgrade(&state));
         }
-        let (http_tx, http) = mux::start_http(Arc::downgrade(&state), ext.clone(), local);
+        let sessions: mux::SessionSlot = Arc::default();
+        let (http_tx, http) =
+            mux::start_http(Arc::downgrade(&state), ext.clone(), local, sessions.clone());
         let shared = Arc::new(Shared {
             state: state.clone(),
             tls,
@@ -207,6 +216,19 @@ impl SyncplayServer {
             http: http_tx,
         });
         shared.relay_on(&opts);
+        {
+            let weak = Arc::downgrade(&shared);
+            let _ = sessions.set(Arc::new(
+                move |io: mux::BoxIo, peer: SocketAddr, tls: bool| {
+                    let weak = weak.clone();
+                    Box::pin(async move {
+                        if let Some(shared) = weak.upgrade() {
+                            serve_stream(io, peer, tls, shared).await;
+                        }
+                    })
+                },
+            ));
+        }
 
         let accept = {
             let shared = shared.clone();
@@ -441,6 +463,14 @@ async fn serve_conn(stream: TcpStream, peer: SocketAddr, shared: Arc<Shared>) {
         return;
     }
     run_session(reader, Some(first), id, peer, false, shared).await
+}
+
+/// A Syncplay session over any stream, e.g. the browser client's WebSocket
+/// (no STARTTLS there: a `TLS` line is answered with `startTLS: false`).
+async fn serve_stream(io: mux::BoxIo, peer: SocketAddr, tls: bool, shared: Arc<Shared>) {
+    let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
+    debug!(%peer, id, tls, "Syncplay WebSocket connection");
+    run_session(BufReader::new(io), None, id, peer, tls, shared).await
 }
 
 async fn run_session<S>(
@@ -870,6 +900,7 @@ mod tests {
         let store: CertStore = Arc::new(parking_lot::RwLock::new(Some(Arc::new(
             crate::tls::CertBundle {
                 host: "localhost".into(),
+                names: vec!["localhost".into()],
                 cert_pem: cert.pem(),
                 key_pem: key.serialize_pem(),
                 not_before: 0,

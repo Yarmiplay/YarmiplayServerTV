@@ -94,6 +94,9 @@ pub struct SyncplaySettings {
     pub relay_cache_gb: u32,
     /// Let Syncplay users create managed rooms, where only operators control playback.
     pub managed_rooms: bool,
+    /// Origins of web pages allowed to join from a browser (`GET /yarmiplay/ws`)
+    /// and to read the relay and MyAnimeList passthrough cross-origin.
+    pub web_origins: Vec<String>,
 }
 
 impl SyncplaySettings {
@@ -120,6 +123,7 @@ impl Default for SyncplaySettings {
             file_relay: true,
             relay_cache_gb: 10,
             managed_rooms: true,
+            web_origins: default_web_origins(),
         }
     }
 }
@@ -243,6 +247,10 @@ pub struct TlsSettings {
     pub staging: bool,
     /// Publish this PC's public IPv6 address on DuckDNS too.
     pub ipv6: bool,
+    /// A second DuckDNS name (same account) kept pointing at this PC's LAN
+    /// address and added to the certificate, so browsers at home can connect
+    /// locally. Empty for none.
+    pub lan_domain: String,
 }
 
 impl Default for TlsSettings {
@@ -253,8 +261,35 @@ impl Default for TlsSettings {
             email: String::new(),
             staging: false,
             ipv6: true,
+            lan_domain: String::new(),
         }
     }
+}
+
+/// Web pages allowed to use the Syncplay port from a browser (WebSocket and CORS).
+pub fn default_web_origins() -> Vec<String> {
+    [
+        "https://tv.yarmiplay.com",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
+/// `https://Example.com/` -> `https://example.com`; `None` unless it's an http(s) origin.
+pub fn normalize_origin(origin: &str) -> Option<String> {
+    let o = origin.trim().trim_end_matches('/').to_ascii_lowercase();
+    let rest = o
+        .strip_prefix("https://")
+        .or_else(|| o.strip_prefix("http://"))?;
+    let valid = !rest.is_empty()
+        && !rest.contains(['/', '?', '#', ' ', '@'])
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'));
+    valid.then_some(o)
 }
 
 impl Settings {

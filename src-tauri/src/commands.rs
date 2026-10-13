@@ -50,6 +50,13 @@ pub fn renew_certificate(app: AppState<'_>) -> Result<(), String> {
     app.renew_certificate()
 }
 
+/// Whether the LAN name resolves (through this PC's DNS, as a browser at home
+/// would) to this PC's LAN address.
+#[tauri::command]
+pub async fn tls_test_lan_name(name: String) -> Result<String, String> {
+    crate::net::ip::test_lan_name(&name).await
+}
+
 #[tauri::command]
 pub fn jellyfin_retry(app: AppState<'_>) {
     app.jellyfin.retry();

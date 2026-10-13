@@ -187,6 +187,44 @@ token.
 Status codes: `401` unknown or revoked token, `404` relay off or no such file in your room,
 `416` unsatisfiable range.
 
+## Browser client (WebSocket)
+
+Browsers can't open raw TCP, so the web app (`https://tv.yarmiplay.com/watch/`) joins over a WebSocket on
+the same port. `capabilities.websocket` is `true` when the server has it (never in vanilla mode).
+
+- **`GET /yarmiplay/ws`** upgrades to a WebSocket that is an ordinary Syncplay session: one JSON line per
+  text message in both directions, without the line ending. Binary frames are ignored and pings are
+  answered; the socket closes when the session ends. Everything works as on TCP: Hello, the `yarmiplay`
+  features, the device challenge and approval, the session token, the relay, room settings, Jellyfin and
+  Plex sharing. Don't send STARTTLS: use `wss://`. A `{"TLS":…}` line anyway is answered with
+  `{"TLS":{"startTLS":"false"}}` and the session goes on.
+- **`wss://<duckdns-name>:<port>/yarmiplay/ws`** with the DuckDNS certificate; plain `ws://` works for
+  development from `http://localhost`.
+- **Origins.** Requests with an `Origin` header are only served for the host's allowed origins (by default
+  `https://tv.yarmiplay.com`, `http://localhost:5173` and `http://127.0.0.1:5173`); others get `403`.
+  Requests without `Origin` (native clients) and same-origin ones are unaffected.
+- **CORS** on every route of the port (`/yarmiplay/info`, `/yarmiplay/files/{id}`,
+  `/yarmiplay/upload/{id}`, the MyAnimeList passthrough, and the Jellyfin/Plex proxy, whose own CORS
+  headers are replaced): preflights answer `Access-Control-Allow-Origin: <origin>`, `Vary: Origin`,
+  `Access-Control-Allow-Methods: GET, HEAD, PUT, POST, PATCH, DELETE, OPTIONS`,
+  `Access-Control-Allow-Headers: Authorization, Range, Content-Type, X-Yarmiplay-Session, X-MAL-CLIENT-ID`,
+  `Access-Control-Max-Age: 600`, and `Access-Control-Allow-Private-Network: true` when asked
+  (`Access-Control-Request-Private-Network: true`). Answers carry `Access-Control-Expose-Headers:
+  Content-Range, Accept-Ranges, Content-Length, Content-Type` and `Cross-Origin-Resource-Policy:
+  cross-origin`. Relay files take many `Range` requests in parallel.
+- **MyAnimeList passthrough** (`capabilities.mal`), since MyAnimeList refuses browsers' preflights.
+  No session needed (sign-in and opening/ending lookups happen before joining), but an allowed `Origin`
+  is, and each address gets 60 requests a minute (10 on `/token`):
+  - `POST /yarmiplay/mal/token` forwards the form body to `https://myanimelist.net/v1/oauth2/token`.
+  - `ANY /yarmiplay/mal/api/{*path}` forwards to `https://api.myanimelist.net/v2/{path}` with the query,
+    method, body and `Authorization: Bearer …` (signed in) or `X-MAL-CLIENT-ID` (signed out).
+  Bodies and tokens are never logged.
+- **LAN name.** Browsers can't verify a certificate when dialing an IP, so `tls.lan[]` is no use to them.
+  When the host sets one, `tls.lanName` (in `/yarmiplay/info` and the Hello's `tls`) is a second DuckDNS
+  name on the same certificate that points at the host's LAN address: try `wss://<lanName>:<port>` first
+  at home, then the public name. Some routers block private-address DNS answers ("DNS rebinding
+  protection"), so fall back quietly.
+
 ## File relay
 
 ### Wire messages

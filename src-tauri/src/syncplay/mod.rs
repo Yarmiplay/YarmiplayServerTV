@@ -34,6 +34,11 @@ impl From<&crate::config::SyncplaySettings> for SyncplayOptions {
             managed_rooms: s.managed_rooms,
             // Filled in from the device store by the caller.
             room_salt: String::new(),
+            web_origins: s
+                .web_origins
+                .iter()
+                .filter_map(|o| crate::config::normalize_origin(o))
+                .collect(),
         }
     }
 }

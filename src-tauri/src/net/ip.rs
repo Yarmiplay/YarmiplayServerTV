@@ -24,6 +24,31 @@ pub fn primary_lan_ipv4() -> Option<Ipv4Addr> {
 
 /// This PC's public IPv6 address: the source address the OS would pick for
 /// internet traffic (no packet is sent), if it is global unicast.
+/// Look up a LAN DuckDNS name the way a browser at home would (through
+/// this PC's DNS, usually the router) and check it points at this PC.
+pub async fn test_lan_name(name: &str) -> Result<String, String> {
+    let sub = crate::net::acme::normalize_domain(name)?;
+    let fqdn = format!("{sub}.duckdns.org");
+    let lan = primary_lan_ipv4().ok_or("This PC has no LAN address right now")?;
+    let found: Vec<std::net::IpAddr> = match tokio::net::lookup_host((fqdn.as_str(), 443)).await {
+        Ok(addrs) => addrs.map(|a| a.ip()).collect(),
+        Err(_) => Vec::new(),
+    };
+    if found.contains(&std::net::IpAddr::V4(lan)) {
+        return Ok(format!("{fqdn} points at this PC ({lan})"));
+    }
+    if found.is_empty() {
+        return Err(format!(
+            "{fqdn} doesn't resolve here. If DuckDNS already has {lan} for it, your router is probably blocking              private-address answers (\"DNS rebinding protection\"): add an exception for {fqdn} there."
+        ));
+    }
+    let list: Vec<String> = found.iter().map(|ip| ip.to_string()).collect();
+    Err(format!(
+        "{fqdn} points at {} instead of this PC ({lan}). Save the LAN name and wait a minute for DuckDNS, then test again.",
+        list.join(", ")
+    ))
+}
+
 pub fn global_ipv6() -> Option<Ipv6Addr> {
     UdpSocket::bind("[::]:0")
         .and_then(|s| {

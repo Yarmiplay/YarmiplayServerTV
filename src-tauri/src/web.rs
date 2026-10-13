@@ -299,6 +299,7 @@ async fn dispatch(h: &AppHandle, command: &str, a: &Value) -> Result<Value, Stri
         "update_settings" => ok(cmd::update_settings(h.clone(), app(), arg(a, "settings")?).await?),
         "set_duckdns_token" => ok(cmd::set_duckdns_token(app(), arg(a, "token")?).await?),
         "renew_certificate" => ok(cmd::renew_certificate(app())?),
+        "tls_test_lan_name" => ok(cmd::tls_test_lan_name(arg(a, "name")?).await?),
         "jellyfin_retry" => {
             cmd::jellyfin_retry(app());
             Ok(Value::Null)

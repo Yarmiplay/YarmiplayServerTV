@@ -91,6 +91,8 @@ export interface SyncplaySettings {
   vanillaMode: boolean;
   fileRelay: boolean;
   relayCacheGb: number;
+  /** Web pages allowed to join from a browser and read the relay cross-origin. */
+  webOrigins: string[];
   /** Managed rooms (`+name:HASH`), where only operators control playback. */
   managedRooms: boolean;
 }
@@ -141,6 +143,8 @@ export interface TlsSettings {
   staging: boolean;
   /** Publish this PC's public IPv6 address on DuckDNS too. */
   ipv6: boolean;
+  /** A second DuckDNS name kept pointing at this PC's LAN address, for browsers at home. */
+  lanDomain: string;
 }
 
 export interface BrowserSettings {
@@ -297,6 +301,9 @@ export interface TlsStatus {
   error: string | null;
   duckdnsIp: string | null;
   duckdnsIpv6: string | null;
+  /** The LAN name, and the LAN address DuckDNS has for it. */
+  lanHost: string | null;
+  lanIp: string | null;
 }
 
 export interface MappingStatus {
@@ -376,6 +383,7 @@ export const api = {
   updateSettings: (settings: Settings) => invoke<Snapshot>("update_settings", { settings }),
   setDuckdnsToken: (token: string | null) => invoke<Snapshot>("set_duckdns_token", { token }),
   renewCertificate: () => invoke<void>("renew_certificate"),
+  testLanName: (name: string) => invoke<string>("tls_test_lan_name", { name }),
   jellyfinRetry: () => invoke<void>("jellyfin_retry"),
   jellyfinSetup: (serverName: string, username: string, password: string) =>
     invoke<Snapshot>("jellyfin_setup", { serverName, username, password }),

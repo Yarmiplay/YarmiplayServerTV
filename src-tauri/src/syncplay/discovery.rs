@@ -123,6 +123,7 @@ mod tests {
         st.set_tls(Some(TlsInfo {
             name: "home.duckdns.org".into(),
             lan: vec!["192.168.1.20:8999".into()],
+            lan_name: None,
         }));
         st
     }

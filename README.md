@@ -217,6 +217,23 @@ though it works from outside. The app works around this on its own:
 - Other clients on IPv4 only need a router that supports NAT loopback, or can connect to the LAN address
   without encryption.
 
+### Watch in a browser
+
+With DuckDNS and HTTPS set up (and vanilla mode off), friends can join from a browser at
+[tv.yarmiplay.com/watch](https://tv.yarmiplay.com/watch/): the **Network** page shows a link for a room. The
+browser connects straight to this server over a secure WebSocket on the Syncplay port, with the same
+approvals and passwords as any device, and streams through the file relay.
+
+- **LAN name for browsers** (optional, on the **Network** page): a second DuckDNS name on the same account,
+  for example `myname-lan`. The app keeps it pointed at this computer's address on your network and puts
+  it on the same certificate, so browsers at home connect locally instead of through the internet.
+  **Test** checks that the name resolves to this computer here; some routers block DNS answers with
+  private addresses ("DNS rebinding protection") and need an exception for the name.
+- **Web pages allowed to connect** (advanced, on the **Syncplay** page): only these pages may use the server
+  from a browser. The defaults are the YarmiplayTV web app and `localhost:5173` for developing it.
+- MyAnimeList sign-in in the browser goes through the server too (`/yarmiplay/mal`), since MyAnimeList
+  doesn't accept requests from web pages.
+
 ## Where things are stored
 
 Settings, approved Syncplay devices and the secret managed-room names are made from (`syncplay-devices.json`), the ACME account, certificates, Jellyfin

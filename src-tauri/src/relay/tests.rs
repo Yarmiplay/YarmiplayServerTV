@@ -411,3 +411,75 @@ async fn vanilla_clients_and_vanilla_mode_get_no_relay() {
     assert!(r.is_err() || !r.unwrap().status().is_success());
     server.stop();
 }
+
+/// The browser player streams with many `Range` requests at once, from another origin.
+#[tokio::test]
+async fn concurrent_ranges_through_cors() {
+    let (server, _relay, _dir) = start().await;
+    let port = server.port;
+    let data = Arc::new(content(3 * CHUNK as usize + 777));
+    let mut seeder = Client::connect(port, "seeder", true).await;
+    seeder
+        .send(json!({ "Yarmiplay": { "offer": { "files": [
+            { "name": "Movie.mkv", "size": data.len(), "duration": 60.0, "quickHash": hash_of(&data) }
+        ] } } }))
+        .await;
+    let files = seeder
+        .until(|m| m["Yarmiplay"]["files"][0]["id"].is_string())
+        .await;
+    let id = files["Yarmiplay"]["files"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let seeding = seed(seeder, port, data.clone(), false);
+    let reader = Client::connect(port, "web", true).await;
+
+    let origin = "https://tv.yarmiplay.com";
+    let url = format!("http://127.0.0.1:{port}/yarmiplay/files/{id}?mode=stream");
+    let pieces = 12u64;
+    let step = data.len() as u64 / pieces;
+    let gets = (0..pieces).map(|i| {
+        let (url, token) = (url.clone(), reader.token.clone());
+        let (from, to) = (
+            i * step,
+            if i + 1 == pieces {
+                data.len() as u64 - 1
+            } else {
+                (i + 1) * step - 1
+            },
+        );
+        async move {
+            let r = reqwest::Client::new()
+                .get(url)
+                .header("x-yarmiplay-session", token)
+                .header("origin", origin)
+                .header("range", format!("bytes={from}-{to}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 206);
+            assert_eq!(r.headers()["access-control-allow-origin"], origin);
+            assert!(r.headers()["access-control-expose-headers"]
+                .to_str()
+                .unwrap()
+                .contains("Content-Range"));
+            assert_eq!(
+                r.headers()["content-range"],
+                format!("bytes {from}-{to}/{}", 3 * CHUNK + 777).as_str()
+            );
+            (from, r.bytes().await.unwrap())
+        }
+    });
+    let got = tokio::time::timeout(
+        Duration::from_secs(30),
+        futures_util::future::join_all(gets),
+    )
+    .await
+    .expect("parallel ranges finish");
+    for (from, bytes) in got {
+        let from = from as usize;
+        assert!(bytes[..] == data[from..from + bytes.len()]);
+    }
+    seeding.abort();
+    server.stop();
+}

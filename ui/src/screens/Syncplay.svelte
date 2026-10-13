@@ -10,10 +10,18 @@
   let { snap }: { snap: Snapshot } = $props();
 
   const form = useDraft(() => {
-    const { enabled, upnp, vanillaMode, fileRelay, relayCacheGb, ...rest } = snap.settings.syncplay;
+    const { enabled, upnp, vanillaMode, fileRelay, relayCacheGb, webOrigins, ...rest } = snap.settings.syncplay;
     return rest;
   });
   const cache = useDraft(() => ({ relayCacheGb: snap.settings.syncplay.relayCacheGb }));
+  const origins = useDraft(() => ({ text: snap.settings.syncplay.webOrigins.join("\n") }));
+  function saveOrigins() {
+    const list = origins.draft.text
+      .split(/[\s,]+/)
+      .map((o) => o.trim())
+      .filter(Boolean);
+    store.save((s) => (s.syncplay.webOrigins = list), "Allowed web pages saved");
+  }
   let showPassword = $state(false);
   let saving = $state(false);
 
@@ -308,6 +316,21 @@
   </section>
 
   <section class="card">
+    <details>
+      <summary><h2>Advanced: web pages allowed to connect</h2></summary>
+      <p class="sub">
+        Browsers may join and stream from this server only from these pages (one per line). Native apps aren't affected.
+        tv.yarmiplay.com is the YarmiplayTV web app; the localhost entries are for developing it.
+      </p>
+      <textarea rows="4" bind:value={origins.draft.text} spellcheck="false"></textarea>
+      <div class="row buttons">
+        <button class="primary" disabled={!origins.dirty} onclick={saveOrigins}>Save</button>
+        <button disabled={!origins.dirty} onclick={() => origins.reset()}>Revert</button>
+      </div>
+    </details>
+  </section>
+
+  <section class="card">
     <Toggle
       label="Forward the port with UPnP"
       hint={`Asks your router to forward TCP ${snap.settings.syncplay.port} to this PC`}
@@ -514,5 +537,17 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+  }
+  details summary {
+    cursor: pointer;
+  }
+  details summary h2 {
+    display: inline;
+  }
+  details textarea {
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 8px;
+    font-family: ui-monospace, monospace;
   }
 </style>
