@@ -51,7 +51,8 @@ Without the user doing anything:
   - the Hello's `features.yarmiplay`, next to `capabilities`,
   - every `{"Yarmiplay": {...}}` state message (with `capabilities`, `jellyfin`, `plex`); it changes when a
     certificate appears or goes away, or the addresses change,
-  - `GET http://<host>:<port>/yarmiplay/info`, over plain HTTP on the Syncplay port, before any login.
+  - `GET http://<host>:<port>/yarmiplay/info`, over plain HTTP on the Syncplay port, before any login: since
+    1.8.3 with `name` only, the home addresses going to admitted clients.
 - **Values:** it's `null` without a certificate. `capabilities.https` stays as before (true exactly when `tls`
   isn't null).
 - **`lan` addresses:**

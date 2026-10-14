@@ -458,14 +458,21 @@ impl ServerState {
         }
     }
 
-    /// `GET /yarmiplay/info`: what a client would see in Hello, without logging in.
+    /// `GET /yarmiplay/info`: what anyone may ask without logging in. Of the
+    /// certificate only its name (a client given an IP address verifies TLS
+    /// against it); the home addresses and LAN name go to admitted clients,
+    /// in Hello.
     pub fn ext_info(&self) -> Value {
+        let tls = match (&self.tls, self.opts.vanilla_mode) {
+            (Some(t), false) => json!({ "name": t.name }),
+            _ => Value::Null,
+        };
         json!({
             "server": "YarmiplayServerTV",
             "version": env!("CARGO_PKG_VERSION"),
             "protocol": ext::PROTOCOL,
             "capabilities": self.capabilities(),
-            "tls": self.tls_message(),
+            "tls": tls,
         })
     }
 
@@ -2028,7 +2035,8 @@ mod tests {
             .find(|m| m["Yarmiplay"].get("session").is_some())
             .unwrap();
         assert_eq!(ext["Yarmiplay"]["tls"]["lan"][0], "192.168.1.20:8999");
-        assert_eq!(s.ext_info()["tls"]["name"], "home.duckdns.org");
+        // Without logging in, only the certificate's name.
+        assert_eq!(s.ext_info()["tls"], json!({ "name": "home.duckdns.org" }));
 
         // Losing the certificate is broadcast.
         s.set_tls(None);

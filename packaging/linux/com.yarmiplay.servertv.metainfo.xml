@@ -77,6 +77,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.8.3" date="2026-10-14">
+      <description>
+        <p>The server's home addresses only go to the people it lets in, and leave out virtual machine, WSL and VPN adapters.</p>
+      </description>
+    </release>
     <release version="1.8.2" date="2026-10-14">
       <description>
         <p>Jellyfin: sort loose episodes into show folders, once or as they arrive</p>

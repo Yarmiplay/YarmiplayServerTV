@@ -69,12 +69,21 @@ pub fn is_global_ipv6(ip: &Ipv6Addr) -> bool {
 }
 
 /// `ip:port` for every address devices at home can reach this PC on: the
-/// primary LAN address first, the other private adapters, then the public IPv6.
+/// primary LAN address first, the other network cards' private addresses,
+/// then the public IPv6. Adapters for virtual machines, WSL, containers and
+/// VPNs are left out: devices at home can't reach the PC through them, and
+/// they'd tell clients more about this PC than they need.
 pub fn lan_addresses(port: u16) -> Vec<String> {
-    let mut ips: Vec<Ipv4Addr> = primary_lan_ipv4().into_iter().collect();
-    for (_, ip) in super::upnp::lan_ipv4_adapters() {
-        if ip.is_private() && !ips.contains(&ip) {
-            ips.push(ip);
+    let adapters = super::upnp::lan_ipv4_adapters();
+    let real = |ip: &Ipv4Addr| {
+        !adapters
+            .iter()
+            .any(|(name, a)| a == ip && virtual_adapter(name))
+    };
+    let mut ips: Vec<Ipv4Addr> = primary_lan_ipv4().filter(real).into_iter().collect();
+    for (name, ip) in &adapters {
+        if ip.is_private() && !virtual_adapter(name) && !ips.contains(ip) {
+            ips.push(*ip);
         }
     }
     let mut out: Vec<String> = ips.iter().map(|ip| format!("{ip}:{port}")).collect();
@@ -82,6 +91,36 @@ pub fn lan_addresses(port: u16) -> Vec<String> {
         out.push(format!("[{v6}]:{port}"));
     }
     out
+}
+
+/// Whether an adapter is for virtual machines, WSL, containers or a VPN, by
+/// the names Windows, macOS and Linux give them.
+fn virtual_adapter(name: &str) -> bool {
+    const WORDS: &[&str] = &[
+        "vethernet",
+        "wsl",
+        "hyper-v",
+        "virtualbox",
+        "vmware",
+        "docker",
+        "tailscale",
+        "zerotier",
+        "wireguard",
+        "hamachi",
+        "radmin",
+        "nordlynx",
+        "openvpn",
+        "wintun",
+        "tap-windows",
+        "vpn",
+        "bluetooth",
+    ];
+    const PREFIXES: &[&str] = &[
+        "vboxnet", "vmnet", "virbr", "veth", "br-", "zt", "wg", "tun", "tap", "utun", "ppp", "ipsec",
+        "lxc", "lxd", "cni", "flannel", "podman",
+    ];
+    let n = name.trim().to_ascii_lowercase();
+    WORDS.iter().any(|w| n.contains(w)) || PREFIXES.iter().any(|p| n.starts_with(p))
 }
 
 /// Whether a request may come from devices at home (private, link-local,
@@ -110,6 +149,34 @@ mod tests {
         assert!(!g("::1"));
         assert!(!g("::ffff:192.168.1.2"));
         assert!(!g("2001:db8::1"));
+    }
+
+    #[test]
+    fn virtual_adapters_are_recognised() {
+        for name in [
+            "vEthernet (WSL (Hyper-V firewall))",
+            "vEthernet (Default Switch)",
+            "VirtualBox Host-Only Network",
+            "VMware Network Adapter VMnet8",
+            "ZeroTier One [8056c2e21c000001]",
+            "Tailscale",
+            "Radmin VPN",
+            "OpenVPN TAP-Windows6",
+            "docker0",
+            "br-3f2a1b",
+            "virbr0",
+            "vboxnet0",
+            "wg0",
+            "tun0",
+            "utun3",
+            "ztks57bmab",
+            "Bluetooth Network Connection",
+        ] {
+            assert!(virtual_adapter(name), "{name}");
+        }
+        for name in ["Ethernet", "Ethernet 2", "Wi-Fi", "eth0", "enp3s0", "wlan0", "wlp2s0", "en0", "br0"] {
+            assert!(!virtual_adapter(name), "{name}");
+        }
     }
 
     #[test]

@@ -861,8 +861,8 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert_eq!(info["tls"]["lanName"], "home-lan.duckdns.org");
-        assert_eq!(info["tls"]["name"], "localhost");
+        // Without logging in, only the certificate's name: the LAN name and addresses are for admitted clients.
+        assert_eq!(info["tls"], serde_json::json!({ "name": "localhost" }));
         server.stop();
     }
 

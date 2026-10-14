@@ -129,8 +129,9 @@ never see this key.
 ### Home network (TLS without NAT loopback)
 
 While a certificate is loaded (and vanilla mode is off), the server says which name the certificate is for
-and how devices at home can reach it, as `tls` in the Hello's `features.yarmiplay`, in every `Yarmiplay`
-state message and in `/yarmiplay/info`:
+and how devices at home can reach it, as `tls` in the Hello's `features.yarmiplay` and in every `Yarmiplay`
+state message. `/yarmiplay/info`, which needs no login, gives only `{"name": ...}`: the home addresses and
+the LAN name go to admitted clients only.
 
 ```json
 "tls": {"name": "myname.duckdns.org", "lan": ["192.168.1.20:8999", "[2a02:6b8::20]:8999"]}
@@ -220,7 +221,7 @@ the same port. `capabilities.websocket` is `true` when the server has it (never 
     method, body and `Authorization: Bearer …` (signed in) or `X-MAL-CLIENT-ID` (signed out).
   Bodies and tokens are never logged.
 - **LAN name.** Browsers can't verify a certificate when dialing an IP, so `tls.lan[]` is no use to them.
-  When the host sets one, `tls.lanName` (in `/yarmiplay/info` and the Hello's `tls`) is a second DuckDNS
+  When the host sets one, `tls.lanName` (in the Hello's `tls`) is a second DuckDNS
   name on the same certificate that points at the host's LAN address: try `wss://<lanName>:<port>` first
   at home, then the public name. Some routers block private-address DNS answers ("DNS rebinding
   protection"), so fall back quietly.
