@@ -77,6 +77,10 @@ export function upnpPill(s: Snapshot): Pill {
   return { kind: "ok", text: "Forwarded" };
 }
 
+/** A UPnP port mapping's state, as a pill. */
+export const mappingLabel = { ok: "Forwarded", manual: "Already forwarded", error: "Failed" } as const;
+export const mappingKind = { ok: "ok", manual: "ok", error: "err" } as const;
+
 /** "Updated by …" for copies a store or package manager updates. */
 export function updatedBy(managedBy: string): string {
   switch (managedBy) {

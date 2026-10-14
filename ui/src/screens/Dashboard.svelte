@@ -3,7 +3,17 @@
   import type { Snapshot } from "../lib/api";
   import { api, formatDate, inApp } from "../lib/api";
   import { store } from "../lib/store.svelte";
-  import { jellyfinPill, plexPill, syncplayPill, tlsPill, updatedBy, updatePill, upnpPill } from "../lib/status";
+  import {
+    jellyfinPill,
+    mappingKind,
+    mappingLabel,
+    plexPill,
+    syncplayPill,
+    tlsPill,
+    updatedBy,
+    updatePill,
+    upnpPill,
+  } from "../lib/status";
   import Toggle from "../lib/Toggle.svelte";
   import Address from "../lib/Address.svelte";
 
@@ -29,6 +39,26 @@
   );
   const tls = $derived(tlsPill(snap));
   const upnp = $derived(upnpPill(snap));
+  // The servers that are on, whose ports UPnP can forward.
+  const forwardable = $derived(
+    [
+      { name: "Syncplay", key: "syncplay", on: snap.settings.syncplay.enabled },
+      { name: "Jellyfin", key: "jellyfin", on: snap.settings.jellyfin.enabled },
+      { name: "Plex", key: "plex", on: snap.settings.plex.enabled },
+    ].filter((f) => f.on) as { name: string; key: "syncplay" | "jellyfin" | "plex" }[],
+  );
+  const upnpOn = $derived(snap.settings.syncplay.upnp || snap.settings.jellyfin.upnp || snap.settings.plex.upnp);
+
+  /** On: forward every server that's on. Off: stop forwarding all of them. */
+  function setUpnp(v: boolean) {
+    store.save((s) => {
+      if (v) {
+        for (const f of forwardable) s[f.key].upnp = true;
+      } else {
+        s.syncplay.upnp = s.jellyfin.upnp = s.plex.upnp = false;
+      }
+    });
+  }
   const upd = $derived(updatePill(snap));
   const updateBusy = $derived(["checking", "downloading", "installing"].includes(snap.update.phase));
   const waiting = $derived(snap.syncplay.devices.pending.length);
@@ -137,7 +167,24 @@
         <span>Port forwarding (UPnP)</span>
         <span class="pill {upnp.kind}">{upnp.text}</span>
         {#if snap.upnp.externalIp}<span>Public IP</span><code>{snap.upnp.externalIp}</code>{/if}
+        {#each snap.upnp.mappings as m (m.port)}
+          <span>{m.label} <span class="muted">TCP {m.port}</span></span>
+          <span class="pill {mappingKind[m.state]}" title={m.error ?? ""}>{mappingLabel[m.state]}</span>
+        {/each}
       </div>
+      <Toggle
+        label="Forward ports with UPnP"
+        hint={forwardable.length
+          ? `Asks your router to forward ${forwardable.map((f) => f.name).join(", ")}. Network settings picks them one by one`
+          : "Switch on a server first"}
+        checked={upnpOn}
+        disabled={!upnpOn && forwardable.length === 0}
+        onchange={setUpnp}
+      />
+      {#if snap.upnp.error}<div class="notice err">{snap.upnp.error}</div>{/if}
+      {#if snap.upnp.doubleNat}
+        <div class="notice warn">Your router's internet address is private (double NAT), so forwarded ports may not be reachable.</div>
+      {/if}
       <div class="actions"><button onclick={() => go("network")}>Network settings</button></div>
     </section>
 

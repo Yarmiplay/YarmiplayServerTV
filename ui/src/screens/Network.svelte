@@ -3,7 +3,7 @@
   import { api, formatDate } from "../lib/api";
   import { store } from "../lib/store.svelte";
   import { useDraft } from "../lib/draft.svelte";
-  import { tlsPill, upnpPill } from "../lib/status";
+  import { mappingKind, mappingLabel, tlsPill, upnpPill } from "../lib/status";
   import Toggle from "../lib/Toggle.svelte";
   import Address from "../lib/Address.svelte";
 
@@ -62,8 +62,6 @@
     if (next) store.snap = next;
   }
 
-  const stateLabel = { ok: "Forwarded", manual: "Already forwarded", error: "Failed" } as const;
-  const stateKind = { ok: "ok", manual: "ok", error: "err" } as const;
 </script>
 
 <div class="stack">
@@ -241,7 +239,7 @@
           {#each snap.upnp.mappings as m (m.port)}
             <li class="spread">
               <span>{m.label} <span class="muted">TCP {m.port}</span></span>
-              <span class="pill {stateKind[m.state]}" title={m.error ?? ""}>{stateLabel[m.state]}</span>
+              <span class="pill {mappingKind[m.state]}" title={m.error ?? ""}>{mappingLabel[m.state]}</span>
             </li>
             {#if m.error}<li class="muted err-line">{m.error}</li>{/if}
           {/each}
