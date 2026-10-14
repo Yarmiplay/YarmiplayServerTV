@@ -2,9 +2,11 @@
 
 pub mod api;
 pub mod installer;
+pub mod names;
 pub mod netconfig;
 pub mod process;
 pub mod share;
+pub mod sort;
 
 use crate::tls::Notify;
 use installer::Progress;

@@ -3,6 +3,7 @@
 
 use crate::config::Settings;
 use crate::jellyfin::api::JellyfinApi;
+use crate::jellyfin::sort::{self, SortLog, SortPlan, SortResult};
 use crate::jellyfin::{JellyfinDesired, JellyfinManager, JellyfinStatus};
 use crate::net::acme::DuckDns;
 use crate::net::proxy::LocalProxy;
@@ -24,11 +25,14 @@ use crate::updates::{UpdateStatus, Updates};
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 const UPNP_RECHECK: Duration = Duration::from_secs(10 * 60);
+/// How often folders kept sorted are checked for new loose episodes.
+const KEEP_SORTED_EVERY: Duration = Duration::from_secs(5 * 60);
 /// After a failed guest-account update, wait this long before trying again.
 const SHARE_RETRY: Duration = Duration::from_secs(30);
 /// How often to ask plex.tv whether the user entered the link code.
@@ -167,6 +171,8 @@ pub struct App {
     pub updates: Arc<Updates>,
     upnp_desired: Mutex<BTreeMap<u16, String>>,
     pfx: Mutex<Option<PfxState>>,
+    /// One folder sort at a time (the button and the keep-sorted pass).
+    sort_lock: tokio::sync::Mutex<()>,
     applied_fingerprint: Mutex<Option<String>>,
     notify: Notify,
     pub relay: Relay,
@@ -238,6 +244,7 @@ impl App {
             syncplay_error: RwLock::new(None),
             upnp_desired: Mutex::new(BTreeMap::new()),
             pfx: Mutex::new(None),
+            sort_lock: tokio::sync::Mutex::new(()),
             applied_fingerprint: Mutex::new(None),
             notify,
         })
@@ -248,6 +255,14 @@ impl App {
         let me = self.clone();
         tokio::spawn(async move {
             me.reconcile().await;
+            let sorter = me.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(KEEP_SORTED_EVERY);
+                loop {
+                    tick.tick().await;
+                    sorter.keep_sorted().await;
+                }
+            });
             let mut tick = tokio::time::interval(UPNP_RECHECK);
             tick.tick().await;
             loop {
@@ -985,6 +1000,80 @@ impl App {
     pub async fn jellyfin_rescan(&self) -> Result<(), String> {
         let api = self.jellyfin_api()?;
         self.with_auth(api.rescan().await).await
+    }
+
+    /// What sorting a library folder into show folders would do.
+    pub async fn jellyfin_sort_preview(&self, path: String) -> Result<SortPlan, String> {
+        tokio::task::spawn_blocking(move || sort::plan(Path::new(&path), sort::SETTLE))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Sort a library folder's loose episodes into show folders, then rescan.
+    pub async fn jellyfin_sort(&self, path: String) -> Result<SortResult, String> {
+        let result = self.sort_folder(path).await?;
+        if result.moved > 0 {
+            self.jellyfin_rescan().await?;
+        }
+        Ok(result)
+    }
+
+    /// Put back a folder's last sort, then rescan. How many files went back.
+    pub async fn jellyfin_sort_undo(&self, path: String) -> Result<usize, String> {
+        let log_file = self.paths.sort_log_file();
+        let _guard = self.sort_lock.lock().await;
+        let back = tokio::task::spawn_blocking(move || {
+            let mut log = SortLog::load(&log_file);
+            let back = sort::undo(Path::new(&path), &mut log)?;
+            log.save(&log_file)?;
+            Ok::<usize, String>(back)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        self.jellyfin_rescan().await?;
+        Ok(back)
+    }
+
+    /// Whether a folder has a sort to undo.
+    pub fn jellyfin_sorted_folders(&self) -> Vec<String> {
+        SortLog::load(&self.paths.sort_log_file()).folders.into_keys().collect()
+    }
+
+    async fn sort_folder(&self, path: String) -> Result<SortResult, String> {
+        let log_file = self.paths.sort_log_file();
+        let _guard = self.sort_lock.lock().await;
+        tokio::task::spawn_blocking(move || {
+            let mut log = SortLog::load(&log_file);
+            let result = sort::apply(Path::new(&path), sort::SETTLE, &mut log)?;
+            if result.moved > 0 {
+                log.save(&log_file)?;
+            }
+            Ok(result)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
+    /// Sort the folders kept sorted; rescan once if anything moved.
+    async fn keep_sorted(&self) {
+        let folders = self.settings.read().jellyfin.keep_sorted.clone();
+        let mut moved = 0;
+        for folder in folders {
+            match self.sort_folder(folder.clone()).await {
+                Ok(r) => {
+                    if r.moved > 0 {
+                        info!(folder = %folder, moved = r.moved, "sorted new episodes into show folders");
+                    }
+                    moved += r.moved;
+                }
+                Err(e) => warn!(folder = %folder, error = %e, "keeping a folder sorted"),
+            }
+        }
+        if moved > 0 {
+            if let Err(e) = self.jellyfin_rescan().await {
+                warn!(error = %e, "rescan after sorting");
+            }
+        }
     }
 
     // ------------------------------------------------------------ Plex

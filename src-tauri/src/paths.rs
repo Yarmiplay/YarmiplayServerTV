@@ -53,6 +53,11 @@ impl AppPaths {
         self.config.join("syncplay-devices.json")
     }
 
+    /// The last sort of each Jellyfin folder, for undo.
+    pub fn sort_log_file(&self) -> PathBuf {
+        self.config.join("jellyfin-sort-log.json")
+    }
+
     pub fn acme_dir(&self) -> PathBuf {
         self.data.join("acme")
     }

@@ -130,6 +130,26 @@ pub async fn jellyfin_rescan(app: AppState<'_>) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn jellyfin_sort_preview(app: AppState<'_>, path: String) -> Result<crate::jellyfin::sort::SortPlan, String> {
+    app.jellyfin_sort_preview(path).await
+}
+
+#[tauri::command]
+pub async fn jellyfin_sort(app: AppState<'_>, path: String) -> Result<crate::jellyfin::sort::SortResult, String> {
+    app.jellyfin_sort(path).await
+}
+
+#[tauri::command]
+pub async fn jellyfin_sort_undo(app: AppState<'_>, path: String) -> Result<usize, String> {
+    app.jellyfin_sort_undo(path).await
+}
+
+#[tauri::command]
+pub async fn jellyfin_sorted_folders(app: AppState<'_>) -> Result<Vec<String>, String> {
+    Ok(app.jellyfin_sorted_folders())
+}
+
+#[tauri::command]
 pub async fn plex_link_start(app: AppState<'_>) -> Result<Snapshot, String> {
     app.inner().plex_link_start().await
 }

@@ -144,6 +144,14 @@ whole first-run setup: the app configures the language, remote access and Quick 
 libraries: give each one a name, pick the kind of content (movies, shows, music…) and choose a folder.
 You can add more folders, remove libraries and start a scan from the same page.
 
+**Sort into shows**: episodes lying loose in a library folder show up in Jellyfin as unrelated videos with no
+episode numbers. The button on each folder moves them into a folder per show, and per season when the name
+gives one (`Frieren/Season 02/`), after showing what it will do. It reads fansub names
+(`[Group] Show - 05 (1080p).mkv`), `Show.S01E05` and `Show Ep 5`. Files keep their names, so Syncplay rooms
+still find them, and subtitles with the same name come along. Existing show folders are reused, nothing is
+overwritten, and the last sort can be undone. **Keep sorted** does the same for new episodes every few
+minutes, leaving files alone until they've stopped changing for two minutes.
+
 To change other Jellyfin settings, open Jellyfin (**This PC** → **Open**) and sign in with the
 administrator account.
 

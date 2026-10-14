@@ -21,6 +21,8 @@
     onAddPath,
     onRemovePath,
     onRemove,
+    onSort,
+    canSort = () => true,
   }: {
     libraries: LibraryItem[] | null;
     /** [value, label] for the "Content" choice when adding a library. */
@@ -32,6 +34,9 @@
     onAddPath: (id: string, path: string) => void;
     onRemovePath: (id: string, path: string) => void;
     onRemove: (id: string, name: string) => void;
+    /** Offers "Sort into shows" on each folder when set. */
+    onSort?: (id: string, path: string) => void;
+    canSort?: (id: string, path: string) => boolean;
   } = $props();
 
   let newName = $state("");
@@ -82,12 +87,17 @@
         {#each lib.locations as loc (loc)}
           <div class="loc spread">
             <code>{loc}</code>
+            <span class="row">
+            {#if onSort && canSort(lib.id, loc)}
+              <button class="small" onclick={() => onSort(lib.id, loc)}>Sort into shows</button>
+            {/if}
             <button
               class="small"
               onclick={() => onRemovePath(lib.id, loc)}
               disabled={lib.locations.length < 2}
               title={lib.locations.length < 2 ? "A library needs at least one folder" : ""}>Remove folder</button
             >
+            </span>
           </div>
         {/each}
       </li>

@@ -109,6 +109,8 @@ export interface JellyfinSettings {
   shareWithSyncplay: boolean;
   /** Managed by the app. */
   guestUserId: string | null;
+  /** Library folders whose loose episodes are sorted into show folders as they arrive. */
+  keepSorted: string[];
 }
 
 export interface PlexInvite {
@@ -370,6 +372,35 @@ export interface Library {
   itemId: string | null;
 }
 
+/** One episode a sort moves into its show's folder. */
+export interface SortMove {
+  file: string;
+  /** Relative to the library folder, e.g. "Frieren/Season 02/…". */
+  to: string;
+  show: string;
+  season: number | null;
+  episode: number;
+  /** Subtitles that go with it. */
+  extras: string[];
+}
+
+export interface SortSkip {
+  file: string;
+  why: string;
+}
+
+export interface SortPlan {
+  folder: string;
+  moves: SortMove[];
+  skipped: SortSkip[];
+}
+
+export interface SortResult {
+  moved: number;
+  shows: number;
+  skipped: SortSkip[];
+}
+
 export interface PlexLibrary {
   key: string;
   name: string;
@@ -396,6 +427,10 @@ export const api = {
   jellyfinAddPath: (library: string, path: string) => invoke<void>("jellyfin_add_path", { library, path }),
   jellyfinRemovePath: (library: string, path: string) => invoke<void>("jellyfin_remove_path", { library, path }),
   jellyfinRescan: () => invoke<void>("jellyfin_rescan"),
+  jellyfinSortPreview: (path: string) => invoke<SortPlan>("jellyfin_sort_preview", { path }),
+  jellyfinSort: (path: string) => invoke<SortResult>("jellyfin_sort", { path }),
+  jellyfinSortUndo: (path: string) => invoke<number>("jellyfin_sort_undo", { path }),
+  jellyfinSortedFolders: () => invoke<string[]>("jellyfin_sorted_folders"),
   plexLinkStart: () => invoke<Snapshot>("plex_link_start"),
   plexLinkCancel: () => invoke<Snapshot>("plex_link_cancel"),
   plexLogout: () => invoke<Snapshot>("plex_logout"),

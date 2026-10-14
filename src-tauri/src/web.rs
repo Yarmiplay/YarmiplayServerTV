@@ -333,6 +333,10 @@ async fn dispatch(h: &AppHandle, command: &str, a: &Value) -> Result<Value, Stri
             ok(cmd::jellyfin_remove_path(app(), arg(a, "library")?, arg(a, "path")?).await?)
         }
         "jellyfin_rescan" => ok(cmd::jellyfin_rescan(app()).await?),
+        "jellyfin_sort_preview" => ok(cmd::jellyfin_sort_preview(app(), arg(a, "path")?).await?),
+        "jellyfin_sort" => ok(cmd::jellyfin_sort(app(), arg(a, "path")?).await?),
+        "jellyfin_sort_undo" => ok(cmd::jellyfin_sort_undo(app(), arg(a, "path")?).await?),
+        "jellyfin_sorted_folders" => ok(cmd::jellyfin_sorted_folders(app()).await?),
         "plex_link_start" => ok(cmd::plex_link_start(app()).await?),
         "plex_link_cancel" => ok(cmd::plex_link_cancel(app())),
         "plex_logout" => ok(cmd::plex_logout(app()).await?),

@@ -146,6 +146,9 @@ pub struct JellyfinSettings {
     pub share_with_syncplay: bool,
     /// The guest account's Jellyfin user id; managed by the app.
     pub guest_user_id: Option<String>,
+    /// Library folders whose loose episodes are sorted into show folders
+    /// as they arrive.
+    pub keep_sorted: Vec<String>,
 }
 
 impl Default for JellyfinSettings {
@@ -161,6 +164,7 @@ impl Default for JellyfinSettings {
             device_id: String::new(),
             share_with_syncplay: false,
             guest_user_id: None,
+            keep_sorted: Vec::new(),
         }
     }
 }
