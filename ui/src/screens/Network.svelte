@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Snapshot } from "../lib/api";
+  import type { Snapshot, TlsProvider } from "../lib/api";
   import { api, formatDate } from "../lib/api";
   import { store } from "../lib/store.svelte";
   import { useDraft } from "../lib/draft.svelte";
@@ -11,6 +11,7 @@
 
   const tlsForm = useDraft(() => ({
     duckdnsDomain: snap.settings.tls.duckdnsDomain,
+    ownDomain: snap.settings.tls.ownDomain,
     email: snap.settings.tls.email,
     lanDomain: snap.settings.tls.lanDomain,
   }));
@@ -28,7 +29,11 @@
     testing = false;
   }
 
-  // The browser client: tv.yarmiplay.com/watch joins over HTTPS with the DuckDNS name.
+  const own = $derived(snap.settings.tls.provider === "domain");
+  // Port 80 is forwarded with the servers' ports when UPnP is on for any of them.
+  const upnpAny = $derived(snap.settings.syncplay.upnp || snap.settings.jellyfin.upnp || snap.settings.plex.upnp);
+
+  // The browser client: tv.yarmiplay.com/watch joins over HTTPS with the certificate's name.
   let room = $state("lobby");
   const fqdn = (d: string) => {
     const name = d.trim().toLowerCase().replace(/\.$/, "");
@@ -40,7 +45,7 @@
   const watchUrl = $derived.by(() => {
     if (!browserReady || !snap.tls.host) return null;
     const r = encodeURIComponent(room.trim() || "lobby");
-    const lan = snap.settings.tls.lanDomain.trim() ? `&lan=${fqdn(snap.settings.tls.lanDomain)}` : "";
+    const lan = !own && snap.settings.tls.lanDomain.trim() ? `&lan=${fqdn(snap.settings.tls.lanDomain)}` : "";
     return `https://tv.yarmiplay.com/watch/#join=${snap.tls.host}:${snap.settings.syncplay.port}/${r}${lan}`;
   });
   let token = $state("");
@@ -75,26 +80,54 @@
 
   <section class="card">
     <div class="spread">
-      <h2>DuckDNS and HTTPS</h2>
+      <h2>Domain and HTTPS</h2>
       <span class="pill {tls.kind}">{tls.text}</span>
     </div>
     <p class="sub">
-      A free <a href="https://www.duckdns.org" onclick={(e) => { e.preventDefault(); api.openUrl("https://www.duckdns.org"); }}>DuckDNS</a>
-      name that follows your home IP, with a Let's Encrypt certificate for encrypted Syncplay (TLS) and Jellyfin (HTTPS).
+      A name for your home with a Let's Encrypt certificate, for encrypted Syncplay (TLS) and Jellyfin (HTTPS): a free
+      <a href="https://www.duckdns.org" onclick={(e) => { e.preventDefault(); api.openUrl("https://www.duckdns.org"); }}>DuckDNS</a>
+      name that follows your home IP, or a domain of your own.
     </p>
     <Toggle
-      label="Use DuckDNS and HTTPS"
+      label="Use a domain and HTTPS"
       checked={snap.settings.tls.enabled}
       onchange={(v) => store.save((s) => (s.tls.enabled = v))}
     />
+    <label class="field">
+      Domain type
+      <select
+        value={snap.settings.tls.provider}
+        onchange={(e) => store.save((s) => (s.tls.provider = e.currentTarget.value as TlsProvider))}
+      >
+        <option value="duckDns">DuckDNS name (no port needed)</option>
+        <option value="domain">My own domain (port 80)</option>
+      </select>
+    </label>
     <div class="fields">
-      <label class="field">DuckDNS domain<input bind:value={tlsForm.draft.duckdnsDomain} placeholder="myname.duckdns.org" /></label>
+      {#if own}
+        <label class="field">Domain<input bind:value={tlsForm.draft.ownDomain} placeholder="tv.example.com" /></label>
+      {:else}
+        <label class="field">DuckDNS domain<input bind:value={tlsForm.draft.duckdnsDomain} placeholder="myname.duckdns.org" /></label>
+      {/if}
       <label class="field">Email for Let's Encrypt (optional)<input type="email" bind:value={tlsForm.draft.email} placeholder="Expiry notices" /></label>
-      <label class="field">
-        LAN name for browsers (optional)
-        <input bind:value={tlsForm.draft.lanDomain} placeholder="myname-lan.duckdns.org" />
-      </label>
+      {#if !own}
+        <label class="field">
+          LAN name for browsers (optional)
+          <input bind:value={tlsForm.draft.lanDomain} placeholder="myname-lan.duckdns.org" />
+        </label>
+      {/if}
     </div>
+    {#if own}
+      <p class="muted note">
+        At your domain's DNS, point the name at your home: an A record with your public IP{snap.upnp.externalIp
+          ? ` (${snap.upnp.externalIp})`
+          : ""}, or a CNAME to a DuckDNS name if your IP changes. Let's Encrypt checks the domain on port 80, so port 80
+        must reach this PC: {upnpAny
+          ? "it's forwarded with UPnP along with your servers."
+          : "forward it on your router, or switch on UPnP for a server."} The app only listens on port 80 while it gets
+        or renews the certificate.
+      </p>
+    {:else}
     <p class="muted note">
       A second DuckDNS name (on the same account) that this PC keeps pointed at its address on your network, and that
       goes on the same certificate. Browsers can't check a certificate when connecting to an IP address, so this lets
@@ -104,12 +137,14 @@
         <button class="small" disabled={testing} onclick={testLan}>{testing ? "Testing…" : "Test"}</button>
       {/if}
     </p>
+    {/if}
     {#if testResult}<div class="notice {testResult.ok ? 'ok' : 'warn'}">{testResult.text}</div>{/if}
     <div class="row buttons">
       <button class="primary" disabled={!tlsForm.dirty} onclick={() => store.save((s) => Object.assign(s.tls, tlsForm.draft), "Saved")}>Save</button>
       <button disabled={!tlsForm.dirty} onclick={() => tlsForm.reset()}>Revert</button>
     </div>
 
+    {#if !own}
     <label class="field token">
       DuckDNS token
       <span class="row">
@@ -126,6 +161,7 @@
       </span>
       <span class="hint">Stored in your system's credential store, never shown again.</span>
     </label>
+    {/if}
 
     <div class="toggles">
       <Toggle
@@ -134,12 +170,14 @@
         checked={snap.settings.tls.staging}
         onchange={(v) => store.save((s) => (s.tls.staging = v))}
       />
+      {#if !own}
       <Toggle
         label="Publish IPv6 too"
         hint="Devices with IPv6 reach this PC by name directly, also at home where the router may not loop the IPv4 address back. From outside, your router's IPv6 firewall decides."
         checked={snap.settings.tls.ipv6}
         onchange={(v) => store.save((s) => (s.tls.ipv6 = v))}
       />
+      {/if}
     </div>
 
     {#if snap.tls.phase !== "off"}
@@ -149,18 +187,25 @@
           <span>Expires</span><span>{formatDate(snap.tls.notAfter)}</span>
           <span>Renews</span><span>{formatDate(snap.tls.renewAt)}</span>
         {/if}
-        {#if snap.tls.duckdnsIp}<span>DuckDNS points to</span><code>{snap.tls.duckdnsIp}</code>{/if}
+        {#if snap.tls.duckdnsIp}<span>{own ? "Domain points to" : "DuckDNS points to"}</span><code>{snap.tls.duckdnsIp}</code>{/if}
+        {#if own && snap.tls.duckdnsIpv6}<span>Domain IPv6</span><code>{snap.tls.duckdnsIpv6}</code>{/if}
         {#if snap.tls.lanHost}
           <span>LAN name</span><code>{snap.tls.lanHost}{snap.tls.lanIp ? ` → ${snap.tls.lanIp}` : ""}</code>
         {/if}
-        {#if snap.settings.tls.ipv6}
+        {#if !own && snap.settings.tls.ipv6}
           <span>DuckDNS IPv6</span>
           {#if snap.tls.duckdnsIpv6}<code>{snap.tls.duckdnsIpv6}</code>{:else}<span class="muted"
               >No public IPv6 on this network</span
             >{/if}
         {/if}
       </div>
-      {#if !snap.settings.tls.ipv6 && snap.tls.duckdnsIpv6}
+      {#if own && snap.tls.duckdnsIp && snap.upnp.externalIp && snap.tls.duckdnsIp !== snap.upnp.externalIp}
+        <div class="notice warn">
+          {snap.tls.host} points to {snap.tls.duckdnsIp}, but your public IP is {snap.upnp.externalIp}. Update its A record
+          (or point it at a DuckDNS name with a CNAME) so Let's Encrypt and your friends reach this PC.
+        </div>
+      {/if}
+      {#if !own && !snap.settings.tls.ipv6 && snap.tls.duckdnsIpv6}
         <div class="notice warn">
           DuckDNS still has the IPv6 address {snap.tls.duckdnsIpv6}. Clear it on duckdns.org if it shouldn't be used.
         </div>

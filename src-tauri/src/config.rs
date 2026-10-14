@@ -245,8 +245,12 @@ impl Settings {
 #[serde(default, rename_all = "camelCase")]
 pub struct TlsSettings {
     pub enabled: bool,
+    /// Where the certificate's name comes from.
+    pub provider: TlsProvider,
     /// `name` or `name.duckdns.org`.
     pub duckdns_domain: String,
+    /// The user's own domain (`tv.example.com`), for `TlsProvider::Domain`.
+    pub own_domain: String,
     pub email: String,
     pub staging: bool,
     /// Publish this PC's public IPv6 address on DuckDNS too.
@@ -261,13 +265,25 @@ impl Default for TlsSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            provider: TlsProvider::DuckDns,
             duckdns_domain: String::new(),
+            own_domain: String::new(),
             email: String::new(),
             staging: false,
             ipv6: true,
             lan_domain: String::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum TlsProvider {
+    /// A DuckDNS name, validated through DuckDNS's API (no inbound port).
+    #[default]
+    DuckDns,
+    /// A domain of the user's own pointed at this PC, validated on port 80.
+    Domain,
 }
 
 /// Web pages allowed to use the Syncplay port from a browser (WebSocket and CORS).

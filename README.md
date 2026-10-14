@@ -18,8 +18,8 @@ gives your friends a room to watch in sync and a media library to stream from.
 - Works with your own Plex Media Server: manage its libraries from the control panel and share it with the
   people on your Syncplay server. You install Plex yourself from plex.tv; the app never installs or runs it.
 - Optional UPnP port forwarding, so friends outside your home network can connect. It's off by default.
-- Optional free HTTPS: a [DuckDNS](https://www.duckdns.org) name that follows your home IP, with a
-  Let's Encrypt certificate that is renewed automatically.
+- Optional free HTTPS: a [DuckDNS](https://www.duckdns.org) name that follows your home IP, or a domain of
+  your own, with a Let's Encrypt certificate that is renewed automatically.
 - You choose the ports. Every server can be switched on and off from the control panel or the tray menu.
 
 The control panel is only reachable from your own computer: in the app window, or in a browser through
@@ -155,7 +155,7 @@ minutes, leaving files alone until they've stopped changing for two minutes.
 To change other Jellyfin settings, open Jellyfin (**This PC** → **Open**) and sign in with the
 administrator account.
 
-Default ports: 8096 for HTTP, 8920 for HTTPS (HTTPS is only used once a DuckDNS certificate is ready).
+Default ports: 8096 for HTTP, 8920 for HTTPS (HTTPS is only used once a certificate is ready).
 
 ### Plex
 
@@ -194,15 +194,31 @@ If the Network page reports **double NAT**, your router sits behind another rout
 carrier-grade NAT. Forwards on your own router then can't be reached from the internet; ask your provider
 for a public IP, or forward the ports on the outer router too.
 
-### DuckDNS and HTTPS
+### DuckDNS (or your own domain) and HTTPS
 
 1. Sign in at [duckdns.org](https://www.duckdns.org) and create a subdomain, for example `myname`.
-2. On the **Network** page, switch on **Use DuckDNS and HTTPS**, enter the domain (`myname` or
+2. On the **Network** page, switch on **Use a domain and HTTPS**, keep **Domain type** on DuckDNS, enter the domain (`myname` or
    `myname.duckdns.org`) and save, then paste the **token** from the DuckDNS page and choose **Save token**.
    The token is stored in your system's credential store (Windows Credential Manager, macOS Keychain or the
    Secret Service on Linux) and never shown again.
 3. The app points the name at your public IP (and keeps it updated every 5 minutes), then gets a Let's
    Encrypt certificate using a DNS challenge. This takes about a minute and works without any open port.
+
+**Your own domain instead.** Choose **My own domain** under **Domain type** and enter the name, for
+example `tv.example.com`. No DuckDNS token is needed, but you look after the domain's DNS:
+
+1. At your domain's DNS provider, point the name at your home: an A record with your public IP (the
+   **Network** page shows it), or, if your IP changes, a CNAME to a DuckDNS name that follows it.
+2. Let's Encrypt checks the domain over HTTP on **port 80**, so port 80 must reach this computer. With UPnP
+   on for any server, the app forwards port 80 along with the servers' ports; otherwise forward it on the
+   router. The app only listens on port 80 while it gets or renews the certificate. Some ISPs block port 80
+   on home connections; then this option can't work, and DuckDNS (which needs no open port) still does.
+3. On Linux, ports below 1024 need permission:
+   `sudo setcap cap_net_bind_service=+ep <path to the app>`, or
+   `sudo sysctl net.ipv4.ip_unprivileged_port_start=80`.
+
+The **Network** page shows where the domain points and warns when that isn't your public IP. The LAN name
+for browsers and **Publish IPv6 too** are DuckDNS features and don't apply to an own domain.
 
 The certificate is renewed automatically halfway through its lifetime. Syncplay uses a renewed certificate
 right away; Jellyfin restarts briefly to load it.
@@ -375,9 +391,9 @@ server and network feature is off until you switch it on, and each one only talk
 - **Jellyfin:** downloads Jellyfin and ffmpeg from `repo.jellyfin.org` the first time you switch it on.
   Jellyfin then runs on your computer as its own program; see Jellyfin's documentation for what it does.
 - **UPnP:** asks your router on the local network to add and remove port forwards.
-- **DuckDNS and HTTPS:** sends your DuckDNS token and public IP address to [DuckDNS](https://www.duckdns.org),
-  requests certificates from [Let's Encrypt](https://letsencrypt.org/privacy/) (with the contact email if you
-  enter one), and checks the DNS record through [Google Public DNS](https://developers.google.com/speed/public-dns/privacy)
+- **DuckDNS and HTTPS:** sends your DuckDNS token and public IP address to [DuckDNS](https://www.duckdns.org)
+  (not with your own domain), requests certificates from [Let's Encrypt](https://letsencrypt.org/privacy/) (with
+  the contact email if you enter one), and checks the DNS record through [Google Public DNS](https://developers.google.com/speed/public-dns/privacy)
   and [Cloudflare DNS](https://developers.cloudflare.com/1.1.1.1/privacy/public-dns-resolver/).
 - **Syncplay server:** people you give the address to connect to it. File names, playback and chat are
   passed between them and not stored; the app's log on your computer notes who joined and left which room.

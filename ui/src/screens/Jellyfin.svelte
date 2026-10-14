@@ -230,9 +230,9 @@
         {#if j.https}
           HTTPS is on with the certificate for <code>{snap.tls.host}</code>.
         {:else if snap.settings.tls.enabled}
-          HTTPS turns on once the DuckDNS certificate is ready.
+          HTTPS turns on once the certificate is ready.
         {:else}
-          Set up DuckDNS on the Network page to serve Jellyfin over HTTPS.
+          Set up DuckDNS or your own domain on the Network page to serve Jellyfin over HTTPS.
         {/if}
       </p>
       <div class="row">

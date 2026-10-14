@@ -1,10 +1,11 @@
-//! Certificate lifecycle for the DuckDNS name: load the cached certificate,
-//! issue or renew through ACME, keep the DuckDNS address current, and publish
+//! Certificate lifecycle for the DuckDNS name or the user's own domain: load
+//! the cached certificate, issue or renew through ACME, keep the DuckDNS
+//! address current (an own domain's DNS is the user's), and publish
 //! the active certificate in a [`CertStore`]. The Syncplay server reads the
 //! store on every STARTTLS, so renewed certificates are picked up without a
 //! restart; Jellyfin gets a PFX and a restart from the orchestrator.
 
-use crate::net::acme::{self, AcmeOptions, DuckDns, IssuedCert};
+use crate::net::acme::{self, AcmeOptions, DuckDns, IssuedCert, Validation};
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -67,15 +68,14 @@ fn bundle(cert: &IssuedCert, staging: bool) -> Result<CertBundle, String> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TlsRequest {
-    pub duckdns: DuckDns,
+    /// The DuckDNS name (and LAN name), or the user's own domain.
+    pub validation: Validation,
     pub staging: bool,
     pub email: Option<String>,
-    /// Also publish this PC's public IPv6 address (AAAA), so devices with IPv6
-    /// at home reach it directly instead of through the router's NAT.
+    /// Also publish this PC's public IPv6 address (AAAA) on DuckDNS, so
+    /// devices with IPv6 at home reach it directly instead of through the
+    /// router's NAT.
     pub ipv6: bool,
-    /// A second DuckDNS name kept pointing at this PC's LAN address and added
-    /// to the certificate, so browsers at home connect locally.
-    pub lan: Option<DuckDns>,
 }
 
 #[derive(Debug, Clone, Serialize, Default, PartialEq)]
@@ -88,9 +88,9 @@ pub struct TlsStatus {
     pub renew_at: Option<i64>,
     pub staging: bool,
     pub error: Option<String>,
-    /// Address DuckDNS has on record for the name.
+    /// Address DNS has for the name (DuckDNS's record, or the own domain's A record).
     pub duckdns_ip: Option<String>,
-    /// IPv6 address DuckDNS has on record for the name.
+    /// IPv6 address DNS has for the name.
     pub duckdns_ipv6: Option<String>,
     /// The LAN name, when set, and the LAN address DuckDNS has for it.
     pub lan_host: Option<String>,
@@ -182,15 +182,15 @@ impl TlsManager {
             .store
             .read()
             .as_ref()
-            .is_some_and(|b| b.host == request.duckdns.fqdn() && b.staging == request.staging);
+            .is_some_and(|b| b.host == request.validation.host() && b.staging == request.staging);
         if !keep {
             self.store.write().take();
         }
         *self.status.write() = TlsStatus {
             phase: "issuing",
-            host: Some(request.duckdns.fqdn()),
+            host: Some(request.validation.host()),
             staging: request.staging,
-            lan_host: request.lan.as_ref().map(DuckDns::fqdn),
+            lan_host: request.validation.lan().map(DuckDns::fqdn),
             ..Default::default()
         };
         // Publish a still-valid cached certificate right away so services
@@ -255,10 +255,10 @@ impl TlsManager {
             dir: self.acme_dir.clone(),
             staging: req.staging,
             email: req.email.clone(),
-            duckdns: req.duckdns.clone(),
-            lan: req.lan.clone(),
+            validation: req.validation.clone(),
             duckdns_api: None,
             directory: None,
+            http01_port: None,
         }
     }
 
@@ -270,7 +270,7 @@ impl TlsManager {
         notify: Notify,
     ) {
         let opts = self.options(&req);
-        let host = req.duckdns.fqdn();
+        let host = req.validation.host();
         if let Some(b) = self.current() {
             info!(%host, not_after = b.not_after, "using cached certificate");
         }
@@ -371,7 +371,7 @@ impl TlsManager {
     /// Point the LAN name at this PC's LAN IPv4 when it differs from `last`
     /// (what DuckDNS was last given). Returns the address on record.
     async fn refresh_lan_ip(&self, opts: &AcmeOptions, last: Option<Ipv4Addr>) -> Option<Ipv4Addr> {
-        let lan = opts.lan.as_ref()?;
+        let lan = opts.validation.lan()?;
         let Some(now) = crate::net::ip::primary_lan_ipv4() else {
             return last;
         };
@@ -396,12 +396,34 @@ impl TlsManager {
     }
 
     async fn refresh_ip(&self, opts: &AcmeOptions, ip: &IpSource, ipv6: bool) {
+        let duck = match &opts.validation {
+            Validation::DuckDns { duck, .. } => duck,
+            // The user keeps their domain's DNS; show where it points.
+            Validation::Http { domain } => {
+                let found = acme::resolve_public(domain).await;
+                let v4 = found.iter().find(|a| a.is_ipv4()).map(|a| a.to_string());
+                let v6 = found.iter().find(|a| a.is_ipv6()).map(|a| a.to_string());
+                let unresolved = format!(
+                    "{domain} doesn't resolve yet: add an A record for it (or a CNAME to your DuckDNS name) at your domain's DNS"
+                );
+                let missing = found.is_empty();
+                return self.set_status(|s| {
+                    s.duckdns_ip = v4;
+                    s.duckdns_ipv6 = v6;
+                    if missing && s.phase != "issuing" && s.error.is_none() {
+                        s.error = Some(unresolved);
+                    } else if !missing && s.error.as_deref() == Some(unresolved.as_str()) {
+                        s.error = None;
+                    }
+                });
+            }
+        };
         let v6 = if ipv6 {
             crate::net::ip::global_ipv6()
         } else {
             None
         };
-        match acme::duckdns_set_ip(opts.duckdns_api(), &opts.duckdns, ip(), v6).await {
+        match acme::duckdns_set_ip(opts.duckdns_api(), duck, ip(), v6).await {
             Ok(recorded) => self.set_status(|s| {
                 s.duckdns_ip = recorded.ip.map(|i| i.to_string());
                 s.duckdns_ipv6 = recorded.ipv6.map(|i| i.to_string());

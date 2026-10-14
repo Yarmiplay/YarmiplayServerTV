@@ -107,7 +107,7 @@
           Encrypted connections are available with the certificate for <code>{snap.tls.host}</code>. Connect with that
           name so clients can verify it.
         {:else}
-          Connections are unencrypted. Set up DuckDNS on the Network page to enable TLS.
+          Connections are unencrypted. Set up DuckDNS or your own domain on the Network page to enable TLS.
         {/if}
         {#if access === "passwordOnly"}
           Every client needs the server password, including approved YarmiplayTV devices.

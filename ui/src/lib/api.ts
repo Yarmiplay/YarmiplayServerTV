@@ -138,9 +138,15 @@ export interface PlexSettings {
   savedCustomConnections: string | null;
 }
 
+/** Where the certificate's name comes from: a DuckDNS name, or a domain of your own (validated on port 80). */
+export type TlsProvider = "duckDns" | "domain";
+
 export interface TlsSettings {
   enabled: boolean;
+  provider: TlsProvider;
   duckdnsDomain: string;
+  /** Your own domain, e.g. tv.example.com, for provider "domain". */
+  ownDomain: string;
   email: string;
   staging: boolean;
   /** Publish this PC's public IPv6 address on DuckDNS too. */

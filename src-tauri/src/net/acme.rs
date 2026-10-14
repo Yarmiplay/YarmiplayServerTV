@@ -1,5 +1,7 @@
 //! Let's Encrypt certificate for `<name>.duckdns.org`, validated by DNS-01
-//! through the DuckDNS TXT API, so no inbound port is needed for validation.
+//! through the DuckDNS TXT API, so no inbound port is needed for validation;
+//! or for a domain of the user's own, validated by HTTP-01 on port 80 (the
+//! domain must point at this PC and port 80 reach it).
 //! Ported from GoogleSnakeOnline's `acme.rs` (DuckDNS route only).
 //!
 //! DuckDNS keeps a single TXT record per domain, so only one certificate order
@@ -9,8 +11,11 @@ use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, LetsEncrypt,
     NewAccount, NewOrder, Order, OrderStatus, RetryPolicy,
 };
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
@@ -37,6 +42,9 @@ const TXT_PROPAGATION_TIMEOUT: Duration = Duration::from_secs(120);
 const TXT_POLL_INTERVAL: Duration = Duration::from_secs(4);
 /// Extra settle time after the TXT is visible, for Let's Encrypt's other vantage points.
 const TXT_SETTLE: Duration = Duration::from_secs(10);
+/// The port Let's Encrypt connects to for HTTP-01.
+pub const HTTP01_PORT: u16 = 80;
+const HTTP01_PREFIX: &str = "/.well-known/acme-challenge/";
 
 /// DuckDNS subdomain + account token (the token is never logged or formatted).
 #[derive(Clone, PartialEq, Eq)]
@@ -96,20 +104,75 @@ pub fn normalize_domain(domain: &str) -> Result<String, String> {
     Ok(subdomain)
 }
 
+/// `TV.Example.com.` -> `tv.example.com`: a full domain name of the user's own.
+pub fn normalize_own_domain(domain: &str) -> Result<String, String> {
+    let d = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+    let label_ok = |l: &str| {
+        !l.is_empty()
+            && l.len() <= 63
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    };
+    let labels: Vec<&str> = d.split('.').collect();
+    let tld_ok = labels.last().is_some_and(|t| t.chars().any(|c| c.is_ascii_alphabetic()));
+    if labels.len() < 2 || d.len() > 253 || !labels.iter().all(|l| label_ok(l)) || !tld_ok {
+        return Err(format!("invalid domain {domain:?} (expected e.g. tv.example.com)"));
+    }
+    Ok(d)
+}
+
+/// How Let's Encrypt is shown the server owns its name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Validation {
+    /// DNS-01 through DuckDNS's TXT API.
+    DuckDns {
+        duck: DuckDns,
+        /// A second DuckDNS name (same account) that points at the host's LAN
+        /// address, so browsers at home can connect locally with a valid
+        /// certificate. It goes on the same certificate.
+        lan: Option<DuckDns>,
+    },
+    /// HTTP-01 on port 80 for a domain of the user's own (normalized).
+    Http { domain: String },
+}
+
+impl Validation {
+    /// The certificate's main name.
+    pub fn host(&self) -> String {
+        match self {
+            Self::DuckDns { duck, .. } => duck.fqdn(),
+            Self::Http { domain } => domain.clone(),
+        }
+    }
+
+    pub fn duckdns(&self) -> Option<&DuckDns> {
+        match self {
+            Self::DuckDns { duck, .. } => Some(duck),
+            Self::Http { .. } => None,
+        }
+    }
+
+    pub fn lan(&self) -> Option<&DuckDns> {
+        match self {
+            Self::DuckDns { lan, .. } => lan.as_ref(),
+            Self::Http { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AcmeOptions {
     pub dir: PathBuf,
     pub staging: bool,
     pub email: Option<String>,
-    pub duckdns: DuckDns,
-    /// A second DuckDNS name (same account) that points at the host's LAN
-    /// address, so browsers at home can connect locally with a valid
-    /// certificate. It goes on the same certificate.
-    pub lan: Option<DuckDns>,
+    pub validation: Validation,
     /// DuckDNS API base URL override (tests); `None` = [`DUCKDNS_API`].
     pub duckdns_api: Option<String>,
     /// Custom ACME directory (e.g. Pebble) instead of Let's Encrypt.
     pub directory: Option<String>,
+    /// HTTP-01 port override (tests); `None` = [`HTTP01_PORT`].
+    pub http01_port: Option<u16>,
 }
 
 impl AcmeOptions {
@@ -122,19 +185,19 @@ impl AcmeOptions {
     }
 
     fn cert_dir(&self) -> PathBuf {
-        self.root().join(self.duckdns.fqdn())
+        self.root().join(self.validation.host())
     }
 
     pub fn duckdns_api(&self) -> &str {
         self.duckdns_api.as_deref().unwrap_or(DUCKDNS_API)
     }
 
-    /// The names the certificate must cover: the DuckDNS name, then the LAN name.
+    /// The names the certificate must cover: the main name, then the LAN name.
     pub fn names(&self) -> Vec<String> {
-        let mut names = vec![self.duckdns.fqdn()];
+        let mut names = vec![self.validation.host()];
         names.extend(
-            self.lan
-                .as_ref()
+            self.validation
+                .lan()
                 .map(DuckDns::fqdn)
                 .filter(|n| n != &names[0]),
         );
@@ -143,8 +206,10 @@ impl AcmeOptions {
 
     /// The DuckDNS name `host` belongs to.
     fn duck_for(&self, host: &str) -> Option<&DuckDns> {
-        std::iter::once(&self.duckdns)
-            .chain(self.lan.as_ref())
+        self.validation
+            .duckdns()
+            .into_iter()
+            .chain(self.validation.lan())
             .find(|d| d.fqdn().eq_ignore_ascii_case(host))
     }
 
@@ -368,6 +433,46 @@ async fn wait_for_txt(name: &str, value: &str) -> Result<(), String> {
     }
 }
 
+/// The addresses public DNS has for `name` (A, then AAAA), for showing where
+/// the user's own domain points.
+pub async fn resolve_public(name: &str) -> Vec<IpAddr> {
+    let Ok(client) = http_client(Duration::from_secs(10)) else { return Vec::new() };
+    let mut out = Vec::new();
+    for kind in ["A", "AAAA"] {
+        for url in DOH_URLS {
+            let res = client
+                .get(url)
+                .query(&[("name", name), ("type", kind)])
+                .header("accept", "application/dns-json")
+                .send()
+                .await;
+            let Ok(json) = (match res {
+                Ok(r) => r.json::<serde_json::Value>().await,
+                Err(e) => Err(e),
+            }) else {
+                continue;
+            };
+            out.extend(doh_addresses(&json));
+            break;
+        }
+    }
+    out
+}
+
+/// A and AAAA addresses from a DNS-over-HTTPS JSON answer (CNAMEs followed by the resolver).
+fn doh_addresses(json: &serde_json::Value) -> Vec<IpAddr> {
+    json.get("Answer")
+        .and_then(|a| a.as_array())
+        .map(|answers| {
+            answers
+                .iter()
+                .filter(|a| matches!(a.get("type").and_then(|t| t.as_u64()), Some(1 | 28)))
+                .filter_map(|a| a.get("data")?.as_str()?.parse().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Parse a PEM chain; the leaf must carry `expected` as a DNS SAN.
 pub fn parse_cert(cert_pem: &str, key_pem: &str, expected: &str) -> Result<IssuedCert, String> {
     let (_, pem) = x509_parser::pem::parse_x509_pem(cert_pem.as_bytes())
@@ -417,7 +522,7 @@ pub fn load_cached(opts: &AcmeOptions) -> Option<IssuedCert> {
     let dir = opts.cert_dir();
     let cert = std::fs::read_to_string(dir.join(CERT_FILE)).ok()?;
     let key = std::fs::read_to_string(dir.join(KEY_FILE)).ok()?;
-    match parse_cert(&cert, &key, &opts.duckdns.fqdn()) {
+    match parse_cert(&cert, &key, &opts.validation.host()) {
         Ok(c) => Some(c),
         Err(e) => {
             warn!(dir = %dir.display(), error = %e, "cached certificate invalid");
@@ -479,8 +584,106 @@ async fn load_or_create_account(opts: &AcmeOptions) -> Result<Account, String> {
     Ok(account)
 }
 
-/// DNS-01 issuance for the DuckDNS name (and the LAN name, with its own TXT
-/// record). The TXT records are always cleared afterwards.
+/// A tiny HTTP server answering Let's Encrypt's HTTP-01 requests while an
+/// order runs: `/.well-known/acme-challenge/<token>` -> key authorization.
+pub struct Http01Server {
+    tokens: Arc<parking_lot::Mutex<HashMap<String, String>>>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl Http01Server {
+    /// Listen on `port` (IPv4 required, IPv6 when it can).
+    pub async fn start(port: u16) -> Result<Self, String> {
+        let tokens: Arc<parking_lot::Mutex<HashMap<String, String>>> = Arc::default();
+        let v4 = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                return format!(
+                    "Couldn't listen on port {port} for Let's Encrypt: this system only lets privileged programs use ports below 1024. On Linux, allow it with: sudo setcap cap_net_bind_service=+ep <path to the app>, or: sudo sysctl net.ipv4.ip_unprivileged_port_start=80"
+                );
+            }
+            format!("Couldn't listen on port {port} for Let's Encrypt ({e}). Another program (a web server, IIS, Skype) may be using it: stop it, then renew")
+        })?;
+        let mut listeners = vec![v4];
+        // Where IPv6 sockets are dual-stack, the IPv4 bind already covers it.
+        if let Ok(v6) = tokio::net::TcpListener::bind(("::", port)).await {
+            listeners.push(v6);
+        }
+        let tasks = listeners
+            .into_iter()
+            .map(|l| {
+                let tokens = tokens.clone();
+                tokio::spawn(async move {
+                    while let Ok((stream, _)) = l.accept().await {
+                        let tokens = tokens.clone();
+                        tokio::spawn(async move {
+                            let _ = tokio::time::timeout(
+                                Duration::from_secs(10),
+                                answer_http01(stream, &tokens),
+                            )
+                            .await;
+                        });
+                    }
+                })
+            })
+            .collect();
+        Ok(Self { tokens, tasks })
+    }
+
+    pub fn add(&self, token: String, key_authorization: String) {
+        self.tokens.lock().insert(token, key_authorization);
+    }
+}
+
+impl Drop for Http01Server {
+    fn drop(&mut self) {
+        for t in &self.tasks {
+            t.abort();
+        }
+    }
+}
+
+/// The key authorization for a request line's challenge path, if known.
+fn http01_answer(request: &str, tokens: &HashMap<String, String>) -> Option<String> {
+    let line = request.lines().next()?;
+    let mut parts = line.split_whitespace();
+    let (method, path) = (parts.next()?, parts.next()?);
+    if method != "GET" && method != "HEAD" {
+        return None;
+    }
+    let token = path.strip_prefix(HTTP01_PREFIX)?;
+    tokens.get(token).cloned()
+}
+
+async fn answer_http01(
+    mut stream: tokio::net::TcpStream,
+    tokens: &parking_lot::Mutex<HashMap<String, String>>,
+) {
+    let mut buf = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 1024];
+    while !buf.windows(4).any(|w| w == b"\r\n\r\n") && buf.len() < 8192 {
+        match stream.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+        }
+    }
+    let request = String::from_utf8_lossy(&buf);
+    let answer = http01_answer(&request, &tokens.lock());
+    let reply = match &answer {
+        Some(body) => {
+            info!("answered Let's Encrypt's HTTP-01 request");
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        }
+        None => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+    };
+    let _ = stream.write_all(reply.as_bytes()).await;
+    let _ = stream.shutdown().await;
+}
+
+/// Issuance: DNS-01 for DuckDNS names (each with its own TXT record, always
+/// cleared afterwards), or HTTP-01 on port 80 for the user's own domain.
 async fn issue(opts: &AcmeOptions) -> Result<(String, String), String> {
     let account = load_or_create_account(opts).await?;
     let names = opts.names();
@@ -491,8 +694,13 @@ async fn issue(opts: &AcmeOptions) -> Result<(String, String), String> {
         .await
         .map_err(|e| format!("new order for {}: {e}", names.join(", ")))?;
     info!(names = %names.join(", "), staging = opts.staging, "ACME order started");
-    let result = drive_order(&mut order, opts, &host).await;
-    for duck in std::iter::once(&opts.duckdns).chain(opts.lan.as_ref()) {
+    let http = match &opts.validation {
+        Validation::Http { .. } => Some(Http01Server::start(opts.http01_port.unwrap_or(HTTP01_PORT)).await?),
+        Validation::DuckDns { .. } => None,
+    };
+    let result = drive_order(&mut order, opts, &host, http.as_ref()).await;
+    drop(http);
+    for duck in opts.validation.duckdns().into_iter().chain(opts.validation.lan()) {
         if let Err(e) = duckdns_clear_txt(opts.duckdns_api(), duck).await {
             warn!(error = %e, domain = %duck.fqdn(), "clearing the DuckDNS TXT record failed");
         }
@@ -504,6 +712,7 @@ async fn drive_order(
     order: &mut Order,
     opts: &AcmeOptions,
     host: &str,
+    http: Option<&Http01Server>,
 ) -> Result<(String, String), String> {
     {
         let mut authorizations = order.authorizations();
@@ -518,6 +727,18 @@ async fn drive_order(
                 Identifier::Dns(name) => name.clone(),
                 other => return Err(format!("unexpected identifier {other:?}")),
             };
+            if let Some(http) = http {
+                let mut challenge = authz
+                    .challenge(ChallengeType::Http01)
+                    .ok_or_else(|| format!("no HTTP-01 challenge offered for {name}"))?;
+                http.add(challenge.token.clone(), challenge.key_authorization().as_str().to_string());
+                info!(%name, "answering Let's Encrypt on port 80");
+                challenge
+                    .set_ready()
+                    .await
+                    .map_err(|e| format!("challenge ready: {e}"))?;
+                continue;
+            }
             let duck = opts
                 .duck_for(&name)
                 .ok_or_else(|| format!("{name} isn't one of this server's DuckDNS names"))?
@@ -537,9 +758,14 @@ async fn drive_order(
     }
 
     let policy = RetryPolicy::new().timeout(ORDER_TIMEOUT);
-    let hint = format!(
-        "Let's Encrypt must see the TXT record _acme-challenge.{host} (and the LAN name's, if set) through DuckDNS. Check the DuckDNS token, that both names belong to that account, and that DuckDNS is up."
-    );
+    let hint = match &opts.validation {
+        Validation::Http { .. } => format!(
+            "Let's Encrypt must reach http://{host}/ on port 80. Check that {host} points at your public IP (an A record, or a CNAME to your DuckDNS name), that port 80 is forwarded to this PC (switch on UPnP, or forward it on the router), and that your ISP doesn't block port 80."
+        ),
+        Validation::DuckDns { .. } => format!(
+            "Let's Encrypt must see the TXT record _acme-challenge.{host} (and the LAN name's, if set) through DuckDNS. Check the DuckDNS token, that both names belong to that account, and that DuckDNS is up."
+        ),
+    };
     let status = order
         .poll_ready(&policy)
         .await
@@ -592,7 +818,7 @@ fn cached_is_enough(c: &IssuedCert, names: &[String], now: i64) -> bool {
 /// Reuse a cached certificate unless it is due for renewal (or `force`), else issue a new one.
 /// A failed renewal keeps serving the cached certificate while it is still valid.
 pub async fn load_or_issue(opts: &AcmeOptions, force: bool) -> Result<IssuedCert, String> {
-    let host = opts.duckdns.fqdn();
+    let host = opts.validation.host();
     let now = unix_now();
     let cached = load_cached(opts);
     if let Some(c) = &cached {
@@ -642,10 +868,19 @@ mod tests {
             dir: dir.to_path_buf(),
             staging: true,
             email: None,
-            duckdns: DuckDns::new("yarmiplay", TEST_TOKEN).unwrap(),
-            lan: None,
+            validation: Validation::DuckDns {
+                duck: DuckDns::new("yarmiplay", TEST_TOKEN).unwrap(),
+                lan: None,
+            },
             duckdns_api: None,
             directory: None,
+            http01_port: None,
+        }
+    }
+
+    fn set_lan(o: &mut AcmeOptions, lan: Option<DuckDns>) {
+        if let Validation::DuckDns { lan: l, .. } = &mut o.validation {
+            *l = lan;
         }
     }
 
@@ -806,7 +1041,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut o = opts(dir.path());
         assert_eq!(o.names(), vec!["yarmiplay.duckdns.org".to_string()]);
-        o.lan = Some(DuckDns::new("yarmiplay-lan", TEST_TOKEN).unwrap());
+        set_lan(&mut o, Some(DuckDns::new("yarmiplay-lan", TEST_TOKEN).unwrap()));
         assert_eq!(
             o.names(),
             vec![
@@ -846,7 +1081,7 @@ mod tests {
             !cached_is_enough(&one, &o.names(), now),
             "the LAN name is missing"
         );
-        o.lan = None;
+        set_lan(&mut o, None);
         assert!(cached_is_enough(&one, &o.names(), now));
     }
 
@@ -868,6 +1103,61 @@ mod tests {
             );
         }
         assert!(DuckDns::new("yarmiplay", "  ").is_err());
+    }
+
+    #[test]
+    fn own_domain_normalization() {
+        assert_eq!(normalize_own_domain(" TV.Example.com. ").unwrap(), "tv.example.com");
+        assert_eq!(normalize_own_domain("my-home.co.uk").unwrap(), "my-home.co.uk");
+        for bad in ["", "example", "bad name.com", "-x.com", "a..com", "1.2.3.4", "http://x.com"] {
+            assert!(normalize_own_domain(bad).is_err(), "{bad:?} should be rejected");
+        }
+        let o = AcmeOptions {
+            validation: Validation::Http { domain: "tv.example.com".into() },
+            ..opts(Path::new("acme"))
+        };
+        assert_eq!(o.names(), vec!["tv.example.com".to_string()]);
+        assert!(o.duck_for("tv.example.com").is_none());
+        assert_eq!(o.cert_dir(), Path::new("acme").join("staging").join("tv.example.com"));
+    }
+
+    #[test]
+    fn http01_answers_only_known_tokens() {
+        let tokens: HashMap<String, String> = [("abc".to_string(), "abc.key".to_string())].into();
+        let req = |line: &str| http01_answer(&format!("{line}\r\nHost: x\r\n\r\n"), &tokens);
+        assert_eq!(req("GET /.well-known/acme-challenge/abc HTTP/1.1").as_deref(), Some("abc.key"));
+        assert_eq!(req("GET /.well-known/acme-challenge/nope HTTP/1.1"), None);
+        assert_eq!(req("GET / HTTP/1.1"), None);
+        assert_eq!(req("POST /.well-known/acme-challenge/abc HTTP/1.1"), None);
+    }
+
+    #[tokio::test]
+    async fn http01_server_serves_the_key_authorization() {
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let server = Http01Server::start(port).await.unwrap();
+        server.add("tok".into(), "tok.thumb".into());
+        let client = reqwest::Client::new();
+        let url = |t: &str| format!("http://127.0.0.1:{port}/.well-known/acme-challenge/{t}");
+        let ok = client.get(url("tok")).send().await.unwrap();
+        assert_eq!(ok.status(), 200);
+        assert_eq!(ok.text().await.unwrap(), "tok.thumb");
+        assert_eq!(client.get(url("other")).send().await.unwrap().status(), 404);
+        drop(server);
+    }
+
+    #[test]
+    fn doh_address_parsing() {
+        let json = serde_json::json!({
+            "Status": 0,
+            "Answer": [
+                { "name": "tv.example.com.", "type": 5, "data": "home.duckdns.org." },
+                { "name": "home.duckdns.org.", "type": 1, "data": "203.0.113.7" }
+            ]
+        });
+        assert_eq!(doh_addresses(&json), vec!["203.0.113.7".parse::<IpAddr>().unwrap()]);
     }
 
     #[test]
@@ -894,12 +1184,15 @@ mod tests {
             dir: dir.clone(),
             staging: true,
             email: None,
-            duckdns: DuckDns::new("yarmiplay", &token).unwrap(),
-            lan: None,
+            validation: Validation::DuckDns {
+                duck: DuckDns::new("yarmiplay", &token).unwrap(),
+                lan: None,
+            },
             duckdns_api: None,
             directory: None,
+            http01_port: None,
         };
-        let ip = duckdns_set_ip(o.duckdns_api(), &o.duckdns, None, None)
+        let ip = duckdns_set_ip(o.duckdns_api(), o.validation.duckdns().unwrap(), None, None)
             .await
             .expect("duckdns ip update");
         eprintln!("duckdns ip {ip:?}");

@@ -158,7 +158,7 @@
       </div>
       <p class="sub">Let friends outside your home network connect.</p>
       <div class="kv">
-        <span>Encryption (DuckDNS)</span>
+        <span>Encryption ({snap.settings.tls.provider === "domain" ? "own domain" : "DuckDNS"})</span>
         <span class="pill {tls.kind}">{tls.text}</span>
         {#if snap.tls.host}
           <span>Domain</span><code>{snap.tls.host}</code>

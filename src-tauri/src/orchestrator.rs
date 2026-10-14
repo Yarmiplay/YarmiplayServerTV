@@ -1,11 +1,11 @@
 //! Owns every service and keeps them matching the saved settings. All
 //! changes go through [`App::reconcile`], serialized by an async mutex.
 
-use crate::config::Settings;
+use crate::config::{Settings, TlsProvider};
 use crate::jellyfin::api::JellyfinApi;
 use crate::jellyfin::sort::{self, SortLog, SortPlan, SortResult};
 use crate::jellyfin::{JellyfinDesired, JellyfinManager, JellyfinStatus};
-use crate::net::acme::DuckDns;
+use crate::net::acme::{DuckDns, Validation};
 use crate::net::proxy::LocalProxy;
 use crate::net::upnp::{UpnpManager, UpnpStatus};
 use crate::paths::AppPaths;
@@ -295,6 +295,14 @@ impl App {
             next.plex.saved_custom_connections = cur.plex.saved_custom_connections.clone();
         }
         next.tls.duckdns_domain = next.tls.duckdns_domain.trim().to_string();
+        next.tls.own_domain = next.tls.own_domain.trim().to_string();
+        if !next.tls.own_domain.is_empty() {
+            let d = crate::net::acme::normalize_own_domain(&next.tls.own_domain)?;
+            if d.ends_with(".duckdns.org") {
+                return Err("That's a DuckDNS name: choose DuckDNS instead, so no port is needed".into());
+            }
+            next.tls.own_domain = d;
+        }
         next.tls.lan_domain = next.tls.lan_domain.trim().to_string();
         next.tls.email = next.tls.email.trim().to_string();
         next.validate()?;
@@ -427,21 +435,31 @@ impl App {
         // TLS first so Syncplay and Jellyfin see the right certificate.
         let token = self.duckdns_token.read().clone();
         if s.tls.enabled {
-            let request = match (&token, s.tls.duckdns_domain.is_empty()) {
-                (_, true) => Err("Enter your DuckDNS domain".to_string()),
-                (None, _) => Err("Enter your DuckDNS token".to_string()),
-                (Some(t), false) => {
-                    DuckDns::new(&s.tls.duckdns_domain, t).map(|duckdns| TlsRequest {
-                        duckdns,
-                        staging: s.tls.staging,
-                        email: Some(s.tls.email.clone()).filter(|e| !e.is_empty()),
-                        ipv6: s.tls.ipv6,
-                        lan: Some(s.tls.lan_domain.as_str())
-                            .filter(|d| !d.is_empty())
-                            .and_then(|d| DuckDns::new(d, t).ok()),
-                    })
-                }
+            let validation = match s.tls.provider {
+                TlsProvider::Domain => match s.tls.own_domain.as_str() {
+                    "" => Err("Enter your domain".to_string()),
+                    d => crate::net::acme::normalize_own_domain(d)
+                        .map(|domain| Validation::Http { domain }),
+                },
+                TlsProvider::DuckDns => match (&token, s.tls.duckdns_domain.is_empty()) {
+                    (_, true) => Err("Enter your DuckDNS domain".to_string()),
+                    (None, _) => Err("Enter your DuckDNS token".to_string()),
+                    (Some(t), false) => {
+                        DuckDns::new(&s.tls.duckdns_domain, t).map(|duck| Validation::DuckDns {
+                            duck,
+                            lan: Some(s.tls.lan_domain.as_str())
+                                .filter(|d| !d.is_empty())
+                                .and_then(|d| DuckDns::new(d, t).ok()),
+                        })
+                    }
+                },
             };
+            let request = validation.map(|validation| TlsRequest {
+                validation,
+                staging: s.tls.staging,
+                email: Some(s.tls.email.clone()).filter(|e| !e.is_empty()),
+                ipv6: s.tls.ipv6,
+            });
             match request {
                 Ok(req) => self
                     .tls
@@ -549,6 +567,11 @@ impl App {
         }
         if s.plex.enabled && s.plex.upnp {
             desired.insert(s.plex.port, "Plex".to_string());
+        }
+        // An own domain's certificate is validated on port 80; forward it
+        // whenever the app forwards anything.
+        if s.tls.enabled && s.tls.provider == TlsProvider::Domain && !desired.is_empty() {
+            desired.insert(crate::net::acme::HTTP01_PORT, "Certificate (HTTP)".to_string());
         }
         let changed = *self.upnp_desired.lock() != desired;
         *self.upnp_desired.lock() = desired.clone();
