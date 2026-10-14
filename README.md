@@ -155,7 +155,7 @@ minutes, leaving files alone until they've stopped changing for two minutes.
 To change other Jellyfin settings, open Jellyfin (**This PC** → **Open**) and sign in with the
 administrator account.
 
-Default ports: 8096 for HTTP, 8920 for HTTPS (HTTPS is only used once a certificate is ready).
+Default ports: 8096 for HTTP, 8920 for HTTPS (served by the app once a certificate is ready).
 
 ### Plex
 
@@ -220,8 +220,10 @@ example `tv.example.com`. No DuckDNS token is needed, but you look after the dom
 The **Network** page shows where the domain points and warns when that isn't your public IP. The LAN name
 for browsers and **Publish IPv6 too** are DuckDNS features and don't apply to an own domain.
 
-The certificate is renewed automatically halfway through its lifetime. Syncplay uses a renewed certificate
-right away; Jellyfin restarts briefly to load it.
+The certificate is renewed automatically halfway through its lifetime, and both servers use a renewed one
+right away. Jellyfin's HTTPS port is served by the app, with the same full certificate chain as the Syncplay
+port (Let's Encrypt's chain including the cross-signed root), so older devices that only trust ISRG Root X1
+connect to both; Jellyfin itself only speaks HTTP behind it.
 
 **Test certificates (Let's Encrypt staging)** is useful while trying things out: staging has much higher
 rate limits, but browsers and clients don't trust those certificates. Let's Encrypt allows 5 identical

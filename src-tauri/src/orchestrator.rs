@@ -151,11 +151,6 @@ pub struct Snapshot {
     pub plex_share: ShareStatus,
 }
 
-struct PfxState {
-    fingerprint: String,
-    password: String,
-}
-
 pub struct App {
     pub paths: AppPaths,
     secrets: Secrets,
@@ -170,7 +165,8 @@ pub struct App {
     pub upnp: Arc<UpnpManager>,
     pub updates: Arc<Updates>,
     upnp_desired: Mutex<BTreeMap<u16, String>>,
-    pfx: Mutex<Option<PfxState>>,
+    /// Jellyfin's HTTPS port, served by the app with the full certificate chain.
+    jellyfin_https: crate::jellyfin::https::HttpsFront,
     /// One folder sort at a time (the button and the keep-sorted pass).
     sort_lock: tokio::sync::Mutex<()>,
     applied_fingerprint: Mutex<Option<String>>,
@@ -210,6 +206,7 @@ impl App {
         let jellyfin_token = secrets.get(secrets::JELLYFIN_TOKEN);
         let plex_token = secrets.get(secrets::PLEX_TOKEN);
         let jellyfin = JellyfinManager::new(paths.jellyfin_root(), notify.clone());
+        let tls = TlsManager::new(paths.acme_dir());
         let relay = Relay::new(
             paths.relay_cache_dir(),
             u64::from(settings.syncplay.relay_cache_gb) << 30,
@@ -230,7 +227,8 @@ impl App {
             proxy: Arc::new(LocalProxy::new("Jellyfin")),
             share: Mutex::new(ShareState::default()),
             share_lock: tokio::sync::Mutex::new(()),
-            tls: TlsManager::new(paths.acme_dir()),
+            jellyfin_https: crate::jellyfin::https::HttpsFront::new(tls.store()),
+            tls,
             jellyfin,
             upnp: Arc::new(UpnpManager::default()),
             updates: Updates::new(notify.clone()),
@@ -243,7 +241,6 @@ impl App {
             syncplay: Mutex::new(None),
             syncplay_error: RwLock::new(None),
             upnp_desired: Mutex::new(BTreeMap::new()),
-            pfx: Mutex::new(None),
             sort_lock: tokio::sync::Mutex::new(()),
             applied_fingerprint: Mutex::new(None),
             notify,
@@ -366,25 +363,6 @@ impl App {
     fn ip_source(&self) -> IpSource {
         let upnp = self.upnp.clone();
         Arc::new(move || upnp.external_ip())
-    }
-
-    fn ensure_pfx(&self, bundle: &crate::tls::CertBundle) -> Result<(String, String), String> {
-        let path = self.jellyfin.pfx_path();
-        let mut pfx = self.pfx.lock();
-        if let Some(state) = pfx.as_ref() {
-            if state.fingerprint == bundle.fingerprint && path.is_file() {
-                return Ok((path.to_string_lossy().into_owned(), state.password.clone()));
-            }
-        }
-        let password = hex::encode(rand::random::<[u8; 24]>());
-        let bytes =
-            crate::jellyfin::netconfig::pem_to_pfx(&bundle.cert_pem, &bundle.key_pem, &password)?;
-        crate::paths::write_atomic(&path, &bytes)?;
-        *pfx = Some(PfxState {
-            fingerprint: bundle.fingerprint.clone(),
-            password: password.clone(),
-        });
-        Ok((path.to_string_lossy().into_owned(), password))
     }
 
     /// Bring every service in line with the current settings.
@@ -523,14 +501,14 @@ impl App {
             None
         };
         *self.applied_fingerprint.lock() = cert.as_ref().map(|c| c.fingerprint.clone());
-        let https = cert.as_ref().and_then(|c| match self.ensure_pfx(c) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                warn!(error = %e, "could not prepare the Jellyfin HTTPS certificate");
-                None
-            }
-        });
-        let https_on = https.is_some();
+        // Jellyfin itself speaks plain HTTP; the app serves its HTTPS port with
+        // the certificate's full chain (Jellyfin's own HTTPS would leave out the
+        // cross-signed root that older devices need). A PFX from versions that
+        // let Jellyfin do it goes.
+        let https_on = s.jellyfin.enabled && cert.is_some();
+        let _ = std::fs::remove_file(self.jellyfin.pfx_path());
+        self.jellyfin_https
+            .apply(https_on.then_some((s.jellyfin.https_port, s.jellyfin.http_port)));
         if s.jellyfin.enabled {
             let token = self.jellyfin_token.read().clone();
             self.jellyfin.set_api(
@@ -541,7 +519,7 @@ impl App {
             self.jellyfin.apply(Some(JellyfinDesired {
                 http_port: s.jellyfin.http_port,
                 https_port: s.jellyfin.https_port,
-                https,
+                https: None,
             }));
         } else {
             self.jellyfin.apply(None);
@@ -846,7 +824,12 @@ impl App {
         };
         let tls = self.tls.status();
         let upnp = self.upnp.status();
-        let jellyfin = self.jellyfin.status();
+        let mut jellyfin = self.jellyfin.status();
+        // The app serves Jellyfin's HTTPS port.
+        jellyfin.https = jellyfin.phase == "running" && self.jellyfin_https.active();
+        if jellyfin.error.is_none() {
+            jellyfin.error = self.jellyfin_https.error();
+        }
         let addresses = self.addresses(&s, &jellyfin);
 
         Snapshot {

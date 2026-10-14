@@ -1,6 +1,7 @@
 //! Jellyfin: on-demand install, configuration and a supervised child process.
 
 pub mod api;
+pub mod https;
 pub mod installer;
 pub mod names;
 pub mod netconfig;

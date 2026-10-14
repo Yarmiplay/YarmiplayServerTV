@@ -3,7 +3,7 @@
 //! address current (an own domain's DNS is the user's), and publish
 //! the active certificate in a [`CertStore`]. The Syncplay server reads the
 //! store on every STARTTLS, so renewed certificates are picked up without a
-//! restart; Jellyfin gets a PFX and a restart from the orchestrator.
+//! restart; Jellyfin's HTTPS port is served the same way (`jellyfin::https`).
 
 use crate::net::acme::{self, AcmeOptions, DuckDns, IssuedCert, Validation};
 use parking_lot::{Mutex, RwLock};

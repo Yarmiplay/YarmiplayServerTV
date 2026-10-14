@@ -62,6 +62,15 @@ pub struct MuxListener {
     local: ConnMeta,
 }
 
+impl MuxListener {
+    /// A listener fed by the returned sender: connections accepted (and
+    /// unwrapped from TLS) elsewhere, served by axum.
+    pub fn new(local: SocketAddr) -> (HttpSender, Self) {
+        let (tx, rx) = mpsc::channel(64);
+        (tx, Self { rx, local: ConnMeta { peer: local, tls: true } })
+    }
+}
+
 impl Listener for MuxListener {
     type Io = BoxIo;
     type Addr = ConnMeta;

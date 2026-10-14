@@ -77,6 +77,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.8.5" date="2026-10-14">
+      <description>
+        <p>Jellyfin's HTTPS port sends the full certificate chain, like the Syncplay port, so older devices connect without extra roots; renewed certificates no longer restart Jellyfin</p>
+      </description>
+    </release>
     <release version="1.8.4" date="2026-10-14">
       <description>
         <p>HTTPS with a domain of your own, not only DuckDNS: the certificate is validated on port 80, which UPnP forwards with the servers</p>

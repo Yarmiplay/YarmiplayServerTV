@@ -158,7 +158,7 @@ fn tls_info(store: &CertStore, lan: &[String]) -> Option<TlsInfo> {
 
 /// Listen on IPv6 and IPv4 at once, so devices with IPv6 reach the PC directly
 /// (no NAT); fall back to IPv4 only where IPv6 is unavailable.
-fn bind_dual_stack(port: u16) -> std::io::Result<TcpListener> {
+pub(crate) fn bind_dual_stack(port: u16) -> std::io::Result<TcpListener> {
     use socket2::{Domain, Protocol, Socket, Type};
     let v6 = || -> std::io::Result<std::net::TcpListener> {
         let s = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
