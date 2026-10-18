@@ -13,9 +13,9 @@
   const j = $derived(snap.jellyfin);
   const pill = $derived(jellyfinPill(snap));
   const running = $derived(j.phase === "running");
-  const needsSetup = $derived(running && j.wizardCompleted === false);
-  const needsLogin = $derived(running && j.wizardCompleted === true && !snap.jellyfinSignedIn);
   const signedIn = $derived(running && snap.jellyfinSignedIn);
+  const needsSetup = $derived(running && j.wizardCompleted === false && !snap.settings.jellyfin.setupComplete);
+  const needsLogin = $derived(running && !signedIn && !needsSetup);
 
   const ports = useDraft(() => ({ httpPort: snap.settings.jellyfin.httpPort, httpsPort: snap.settings.jellyfin.httpsPort }));
 

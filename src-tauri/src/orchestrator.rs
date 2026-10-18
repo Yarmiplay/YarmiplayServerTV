@@ -203,7 +203,20 @@ impl App {
         }
         let secrets = Secrets::new(paths.config.clone());
         let duckdns_token = secrets.get(secrets::DUCKDNS_TOKEN);
-        let jellyfin_token = secrets.get(secrets::JELLYFIN_TOKEN);
+        let mut jellyfin_token = secrets.get(secrets::JELLYFIN_TOKEN);
+        if jellyfin_token.is_none() {
+            if let Ok(Some(session)) = crate::jellyfin::db::ensure_admin_session(&paths.jellyfin_root()) {
+                info!(user = %session.user_name, "restored Jellyfin admin session from database");
+                let _ = secrets.set(secrets::JELLYFIN_TOKEN, &session.token);
+                if settings.jellyfin.admin_user.is_none() {
+                    settings.jellyfin.setup_complete = true;
+                    settings.jellyfin.admin_user = Some(session.user_name);
+                    settings.jellyfin.admin_user_id = Some(session.user_id);
+                    let _ = settings.save(&paths.settings_file());
+                }
+                jellyfin_token = Some(session.token);
+            }
+        }
         let plex_token = secrets.get(secrets::PLEX_TOKEN);
         let jellyfin = JellyfinManager::new(paths.jellyfin_root(), notify.clone());
         let tls = TlsManager::new(paths.acme_dir());
@@ -585,6 +598,10 @@ impl App {
     async fn sync_share(self: &Arc<Self>) {
         let _guard = self.share_lock.lock().await;
         let s = self.settings();
+        if s.jellyfin.enabled && self.jellyfin.is_running() && self.jellyfin_token.read().is_none() {
+            self.ensure_jellyfin_auth();
+        }
+        let s = self.settings();
         let want = s.share_effective();
         let ready = s.jellyfin.enabled
             && self.jellyfin.is_running()
@@ -860,8 +877,58 @@ impl App {
         Ok(self.settings.read().jellyfin.http_port)
     }
 
+    /// Attempt to acquire or restore Jellyfin admin authentication from the
+    /// database if no token is currently held.
+    pub fn ensure_jellyfin_auth(&self) -> bool {
+        if self.jellyfin_token.read().is_some() {
+            return true;
+        }
+        self.apply_admin_session(crate::jellyfin::db::ensure_admin_session(&self.paths.jellyfin_root()))
+    }
+
+    /// Force re-provision of an admin session in the database (e.g. after a 401).
+    pub fn reprovision_jellyfin_auth(&self) -> bool {
+        self.apply_admin_session(crate::jellyfin::db::reprovision_admin_session(&self.paths.jellyfin_root()))
+    }
+
+    fn apply_admin_session(&self, res: Result<Option<crate::jellyfin::db::AdminSession>, String>) -> bool {
+        match res {
+            Ok(Some(session)) => {
+                info!(user = %session.user_name, "applied Jellyfin admin session from database");
+                let _ = self.secrets.set(secrets::JELLYFIN_TOKEN, &session.token);
+                *self.jellyfin_token.write() = Some(session.token.clone());
+                let device_id = self.settings.read().jellyfin.device_id.clone();
+                let port = self.settings.read().jellyfin.http_port;
+                self.jellyfin.set_api(Some(JellyfinApi::new(
+                    port,
+                    &device_id,
+                    Some(session.token),
+                )));
+                let _ = self.modify_settings(|s| {
+                    s.jellyfin.setup_complete = true;
+                    if s.jellyfin.admin_user.is_none() {
+                        s.jellyfin.admin_user = Some(session.user_name);
+                    }
+                    if s.jellyfin.admin_user_id.is_none() {
+                        s.jellyfin.admin_user_id = Some(session.user_id);
+                    }
+                });
+                (self.notify)();
+                true
+            }
+            Ok(None) => false,
+            Err(e) => {
+                warn!(error = %e, "could not ensure Jellyfin admin session from database");
+                false
+            }
+        }
+    }
+
     fn jellyfin_api(&self) -> Result<JellyfinApi, String> {
         let port = self.jellyfin_port()?;
+        if self.jellyfin_token.read().is_none() {
+            self.ensure_jellyfin_auth();
+        }
         let token = self
             .jellyfin_token
             .read()
@@ -887,6 +954,7 @@ impl App {
             &device_id,
             Some(session.token),
         )));
+        let _ = crate::jellyfin::db::ensure_admin_session(&self.paths.jellyfin_root());
         self.modify_settings(|s| {
             s.jellyfin.setup_complete = true;
             s.jellyfin.admin_user = Some(session.user_name);
@@ -956,10 +1024,15 @@ impl App {
     async fn with_auth<T>(&self, res: Result<T, String>) -> Result<T, String> {
         if let Err(e) = &res {
             if e.contains("(401)") {
-                let _ = self.secrets.delete(secrets::JELLYFIN_TOKEN);
-                *self.jellyfin_token.write() = None;
-                (self.notify)();
-                return Err("Your Jellyfin sign-in expired. Sign in again.".into());
+                warn!("Jellyfin token rejected (401), attempting to reprovision admin session from database");
+                if self.reprovision_jellyfin_auth() {
+                    return Err("Jellyfin session was refreshed from database. Please retry.".into());
+                } else {
+                    let _ = self.secrets.delete(secrets::JELLYFIN_TOKEN);
+                    *self.jellyfin_token.write() = None;
+                    (self.notify)();
+                    return Err("Your Jellyfin sign-in expired. Sign in again.".into());
+                }
             }
         }
         res
