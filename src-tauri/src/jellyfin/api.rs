@@ -57,6 +57,10 @@ impl JellyfinApi {
         }
     }
 
+    pub fn token(&self) -> Option<&str> {
+        self.token.as_deref()
+    }
+
     #[cfg(test)]
     pub fn with_base(base: &str, token: Option<String>) -> Self {
         Self {

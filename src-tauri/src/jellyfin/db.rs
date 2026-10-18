@@ -39,13 +39,22 @@ fn get_or_create_admin_session(
     if !path.exists() {
         return Ok(None);
     }
-    let conn = rusqlite::Connection::open_with_flags(
-        &path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
-    )
-    .map_err(|e| format!("open jellyfin.db: {e}"))?;
+    let mut attempts = 0;
+    let conn = loop {
+        match rusqlite::Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+        ) {
+            Ok(c) => break c,
+            Err(_e) if attempts < 15 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+            Err(e) => return Err(format!("open jellyfin.db: {e}")),
+        }
+    };
 
-    conn.busy_timeout(std::time::Duration::from_secs(5))
+    conn.busy_timeout(std::time::Duration::from_secs(10))
         .map_err(|e| format!("set busy timeout on jellyfin.db: {e}"))?;
 
     // Find the administrator user (Kind=0 is Administrator permission in Jellyfin)

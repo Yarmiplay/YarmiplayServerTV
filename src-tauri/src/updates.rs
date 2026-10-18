@@ -4,7 +4,7 @@
 //!
 //! Nothing contacts GitHub unless the user clicks "Check for updates" or
 //! turns on automatic updates (`updates.auto`). Then checks run at startup
-//! and every few hours, a found update is downloaded right away, and it
+//! and every 30 minutes, a found update is downloaded right away, and it
 //! installs when nobody is using Syncplay and the install needs no
 //! administrator prompt; .msi and .deb installs wait for a click instead,
 //! since an unanswered prompt would leave the servers down.
@@ -22,7 +22,7 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 use tracing::{info, warn};
 
 const FIRST_CHECK: Duration = Duration::from_secs(60);
-const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+const CHECK_EVERY: Duration = Duration::from_secs(30 * 60);
 /// How often a downloaded update retries installing while Syncplay is busy.
 const INSTALL_RETRY: Duration = Duration::from_secs(10 * 60);
 

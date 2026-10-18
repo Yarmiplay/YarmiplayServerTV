@@ -615,24 +615,28 @@ impl App {
                 st.applied != Some(want) && st.failed_at.is_none_or(|t| t.elapsed() >= SHARE_RETRY)
             };
             if pending {
-                let result = match self.jellyfin_api() {
-                    Ok(api) => {
-                        if want {
-                            if let Err(e) = api.enable_quick_connect().await {
-                                warn!(error = %e, "could not enable Quick Connect");
+                let guest_id = s.jellyfin.guest_user_id.clone();
+                let admin_id = s.jellyfin.admin_user_id.clone();
+                let result = self
+                    .run_with_auth(|api| {
+                        let guest_id = guest_id.clone();
+                        let admin_id = admin_id.clone();
+                        async move {
+                            if want {
+                                if let Err(e) = api.enable_quick_connect().await {
+                                    warn!(error = %e, "could not enable Quick Connect");
+                                }
                             }
+                            crate::jellyfin::share::ensure_guest(
+                                &api,
+                                guest_id.as_deref(),
+                                admin_id.as_deref(),
+                                want,
+                            )
+                            .await
                         }
-                        let res = crate::jellyfin::share::ensure_guest(
-                            &api,
-                            s.jellyfin.guest_user_id.as_deref(),
-                            s.jellyfin.admin_user_id.as_deref(),
-                            want,
-                        )
-                        .await;
-                        self.with_auth(res).await
-                    }
-                    Err(e) => Err(e),
-                };
+                    })
+                    .await;
                 match result {
                     Ok(id) => {
                         if id.is_some() && id != s.jellyfin.guest_user_id {
@@ -654,13 +658,10 @@ impl App {
             }
         }
 
-        let active = want
-            && ready
-            && self.share.lock().applied == Some(true)
-            && self.settings.read().jellyfin.guest_user_id.is_some();
+        let proxy_active = want && s.jellyfin.enabled && self.jellyfin.is_running();
         self.proxy
-            .set_target(active.then_some(s.jellyfin.http_port));
-        let info = active.then(|| {
+            .set_target(proxy_active.then_some(s.jellyfin.http_port));
+        let info = proxy_active.then(|| {
             let j = self.jellyfin.status();
             let a = self.addresses(&s, &j);
             JellyfinShare {
@@ -678,19 +679,98 @@ impl App {
         }
     }
 
+    /// Ensure the guest account exists in Jellyfin, is enabled, and Quick Connect is enabled.
+    /// Returns the guest user ID.
+    async fn ensure_guest_ready(&self) -> Result<String, String> {
+        let s = self.settings();
+        let guest_id = s.jellyfin.guest_user_id.clone();
+        let admin_id = s.jellyfin.admin_user_id.clone();
+        let id = self
+            .run_with_auth(|api| {
+                let guest_id = guest_id.clone();
+                let admin_id = admin_id.clone();
+                async move {
+                    if let Err(e) = api.enable_quick_connect().await {
+                        warn!(error = %e, "could not enable Quick Connect");
+                    }
+                    crate::jellyfin::share::ensure_guest(
+                        &api,
+                        guest_id.as_deref(),
+                        admin_id.as_deref(),
+                        true,
+                    )
+                    .await
+                }
+            })
+            .await?
+            .ok_or_else(|| "Failed to configure Jellyfin guest user".to_string())?;
+
+        if Some(&id) != s.jellyfin.guest_user_id.as_ref() {
+            let _ = self.modify_settings(|n| n.jellyfin.guest_user_id = Some(id.clone()));
+        }
+        *self.share.lock() = ShareState {
+            applied: Some(true),
+            ..Default::default()
+        };
+        Ok(id)
+    }
+
     /// Approve a Quick Connect code from a Syncplay user for the guest account.
+    /// If authorization fails (e.g. guest account missing, Quick Connect disabled, or expired token),
+    /// immediately repairs the state and retries on-demand.
     async fn authorize_guest(&self, code: &str) -> Result<(), String> {
         let s = self.settings();
-        let guest = s
+        if !s.share_effective() {
+            return Err("Jellyfin sharing is off on this server".into());
+        }
+        if !self.jellyfin.is_running() {
+            return Err("Jellyfin is not running".into());
+        }
+
+        // Try fast-path if we already have a known guest user id and applied state
+        let fast_guest = s
             .jellyfin
             .guest_user_id
             .clone()
-            .filter(|_| s.share_effective() && self.share.lock().applied == Some(true))
-            .ok_or("Jellyfin sharing is off on this server")?;
-        let api = self.jellyfin_api()?;
-        let res = api.quick_connect_authorize(code, &guest).await;
-        self.with_auth(res).await?;
-        info!("approved a Jellyfin Quick Connect sign-in for a Syncplay guest");
+            .filter(|_| self.share.lock().applied == Some(true));
+
+        if let Some(guest) = fast_guest {
+            let code_str = code.to_string();
+            let guest_clone = guest.clone();
+            let res = self
+                .run_with_auth(move |api| {
+                    let code_str = code_str.clone();
+                    let guest_clone = guest_clone.clone();
+                    async move {
+                        api.quick_connect_authorize(&code_str, &guest_clone).await
+                    }
+                })
+                .await;
+
+            match res {
+                Ok(()) => {
+                    info!("approved a Jellyfin Quick Connect sign-in for a Syncplay guest");
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!(error = %e, "fast-path Quick Connect authorization failed, repairing guest state and retrying");
+                }
+            }
+        }
+
+        // Slow-path / Self-healing: Ensure guest account and Quick Connect are freshly configured
+        let guest_id = self.ensure_guest_ready().await?;
+        let code_str = code.to_string();
+        self.run_with_auth(move |api| {
+            let code_str = code_str.clone();
+            let guest_id = guest_id.clone();
+            async move {
+                api.quick_connect_authorize(&code_str, &guest_id).await
+            }
+        })
+        .await?;
+
+        info!("approved a Jellyfin Quick Connect sign-in for a Syncplay guest after repair");
         Ok(())
     }
 
@@ -878,12 +958,19 @@ impl App {
     }
 
     /// Attempt to acquire or restore Jellyfin admin authentication from the
-    /// database if no token is currently held.
+    /// database if no token is currently held, or if the current token is out of sync.
     pub fn ensure_jellyfin_auth(&self) -> bool {
-        if self.jellyfin_token.read().is_some() {
-            return true;
+        match crate::jellyfin::db::ensure_admin_session(&self.paths.jellyfin_root()) {
+            Ok(Some(session)) => {
+                let current = self.jellyfin_token.read().clone();
+                if current.as_deref() != Some(&session.token) {
+                    self.apply_admin_session(Ok(Some(session)))
+                } else {
+                    true
+                }
+            }
+            res => self.apply_admin_session(res),
         }
-        self.apply_admin_session(crate::jellyfin::db::ensure_admin_session(&self.paths.jellyfin_root()))
     }
 
     /// Force re-provision of an admin session in the database (e.g. after a 401).
@@ -1021,6 +1108,32 @@ impl App {
         Ok(self.snapshot())
     }
 
+    /// Execute an operation against Jellyfin with the current admin token.
+    /// If Jellyfin rejects the token with 401 Unauthorized, automatically
+    /// reprovisions a fresh admin session from the database and transparently retries.
+    async fn run_with_auth<T, F, Fut>(&self, f: F) -> Result<T, String>
+    where
+        F: Fn(JellyfinApi) -> Fut,
+        Fut: std::future::Future<Output = Result<T, String>>,
+    {
+        let api = self.jellyfin_api()?;
+        match f(api).await {
+            Ok(val) => Ok(val),
+            Err(e) if e.contains("(401)") => {
+                warn!("Jellyfin token rejected (401), reprovisioning admin session from database and retrying");
+                if self.reprovision_jellyfin_auth() {
+                    let fresh_api = self.jellyfin_api()?;
+                    f(fresh_api).await
+                } else {
+                    warn!("could not reprovision Jellyfin admin session from database");
+                    Err(e)
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    #[allow(dead_code)]
     async fn with_auth<T>(&self, res: Result<T, String>) -> Result<T, String> {
         if let Err(e) = &res {
             if e.contains("(401)") {
@@ -1028,10 +1141,8 @@ impl App {
                 if self.reprovision_jellyfin_auth() {
                     return Err("Jellyfin session was refreshed from database. Please retry.".into());
                 } else {
-                    let _ = self.secrets.delete(secrets::JELLYFIN_TOKEN);
-                    *self.jellyfin_token.write() = None;
-                    (self.notify)();
-                    return Err("Your Jellyfin sign-in expired. Sign in again.".into());
+                    warn!("could not reprovision Jellyfin admin session from database");
+                    return Err(e.clone());
                 }
             }
         }
@@ -1039,8 +1150,7 @@ impl App {
     }
 
     pub async fn jellyfin_libraries(&self) -> Result<Vec<crate::jellyfin::api::Library>, String> {
-        let api = self.jellyfin_api()?;
-        self.with_auth(api.libraries().await).await
+        self.run_with_auth(|api| async move { api.libraries().await }).await
     }
 
     pub async fn jellyfin_add_library(
@@ -1052,33 +1162,45 @@ impl App {
         if name.trim().is_empty() || path.trim().is_empty() {
             return Err("A library needs a name and a folder".into());
         }
-        let api = self.jellyfin_api()?;
-        self.with_auth(
-            api.add_library(name.trim(), &collection_type, path.trim())
-                .await,
-        )
+        self.run_with_auth(move |api| {
+            let name = name.trim().to_string();
+            let collection_type = collection_type.clone();
+            let path = path.trim().to_string();
+            async move {
+                api.add_library(&name, &collection_type, &path).await
+            }
+        })
         .await
     }
 
     pub async fn jellyfin_remove_library(&self, name: String) -> Result<(), String> {
-        let api = self.jellyfin_api()?;
-        self.with_auth(api.remove_library(&name).await).await
+        self.run_with_auth(move |api| {
+            let name = name.clone();
+            async move { api.remove_library(&name).await }
+        })
+        .await
     }
 
     pub async fn jellyfin_add_path(&self, library: String, path: String) -> Result<(), String> {
-        let api = self.jellyfin_api()?;
-        self.with_auth(api.add_path(&library, path.trim()).await)
-            .await
+        self.run_with_auth(move |api| {
+            let library = library.clone();
+            let path = path.trim().to_string();
+            async move { api.add_path(&library, &path).await }
+        })
+        .await
     }
 
     pub async fn jellyfin_remove_path(&self, library: String, path: String) -> Result<(), String> {
-        let api = self.jellyfin_api()?;
-        self.with_auth(api.remove_path(&library, &path).await).await
+        self.run_with_auth(move |api| {
+            let library = library.clone();
+            let path = path.clone();
+            async move { api.remove_path(&library, &path).await }
+        })
+        .await
     }
 
     pub async fn jellyfin_rescan(&self) -> Result<(), String> {
-        let api = self.jellyfin_api()?;
-        self.with_auth(api.rescan().await).await
+        self.run_with_auth(|api| async move { api.rescan().await }).await
     }
 
     /// What sorting a library folder into show folders would do.
@@ -1620,5 +1742,133 @@ impl App {
             tokio::join!(jellyfin.shutdown(), upnp.shutdown());
         })
         .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::tempdir;
+
+    fn test_app(dir: &Path) -> Arc<App> {
+        let paths = AppPaths {
+            config: dir.join("config"),
+            data: dir.join("data"),
+        };
+        let _ = paths.ensure();
+        let notify: Notify = Arc::new(|| ());
+        let app = App::new(paths, notify);
+        *app.jellyfin_token.write() = None;
+        app
+    }
+
+    fn init_test_db(root: &Path, token: &str) {
+        let db_dir = root.join("data").join("data");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let conn = rusqlite::Connection::open(db_dir.join("jellyfin.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS Users (Id TEXT PRIMARY KEY, Username TEXT);
+             CREATE TABLE IF NOT EXISTS Permissions (Id INTEGER PRIMARY KEY, Kind INTEGER, Value INTEGER, UserId TEXT);
+             CREATE TABLE IF NOT EXISTS ApiKeys (Id INTEGER PRIMARY KEY AUTOINCREMENT, DateCreated TEXT, DateLastActivity TEXT, Name TEXT, AccessToken TEXT);
+             INSERT INTO Users VALUES ('admin-uuid-1', 'Yarmiplay');
+             INSERT INTO Permissions VALUES (1, 0, 1, 'admin-uuid-1');",
+        )
+        .unwrap();
+        if !token.is_empty() {
+            conn.execute(
+                "INSERT INTO ApiKeys (DateCreated, DateLastActivity, Name, AccessToken) VALUES (datetime('now'), datetime('now'), 'YarmiplayServerTV', ?1)",
+                [token],
+            )
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ensure_jellyfin_auth_syncs_with_db() {
+        let dir = tempdir().unwrap();
+        let app = test_app(dir.path());
+        assert_eq!(*app.jellyfin_token.read(), None);
+
+        // Before DB exists, ensure_jellyfin_auth is false
+        assert!(!app.ensure_jellyfin_auth());
+
+        // Create DB with token
+        init_test_db(&app.paths.jellyfin_root(), "initial_tok_12345");
+        assert!(app.ensure_jellyfin_auth());
+        assert_eq!(app.jellyfin_token.read().as_deref(), Some("initial_tok_12345"));
+
+        // If memory has a stale mismatched token, ensure_jellyfin_auth resyncs from DB
+        *app.jellyfin_token.write() = Some("stale_mismatched_token".into());
+        assert!(app.ensure_jellyfin_auth());
+        assert_eq!(app.jellyfin_token.read().as_deref(), Some("initial_tok_12345"));
+
+        // Reprovision generates a new token in DB and updates memory
+        assert!(app.reprovision_jellyfin_auth());
+        let new_tok = app.jellyfin_token.read().clone().unwrap();
+        assert_ne!(new_tok, "initial_tok_12345");
+        assert_eq!(new_tok.len(), 32);
+
+        // Repeated ensure keeps the new token
+        assert!(app.ensure_jellyfin_auth());
+        assert_eq!(app.jellyfin_token.read().as_deref(), Some(new_tok.as_str()));
+    }
+
+    #[tokio::test]
+    async fn test_run_with_auth_retries_on_401() {
+        let dir = tempdir().unwrap();
+        let app = test_app(dir.path());
+        init_test_db(&app.paths.jellyfin_root(), "tok_initial_abc");
+        assert!(app.ensure_jellyfin_auth());
+        assert_eq!(app.jellyfin_token.read().as_deref(), Some("tok_initial_abc"));
+
+        // Simulate Jellyfin running so jellyfin_api() does not fail on port
+        app.jellyfin.set_phase_for_test("running");
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let c = call_count.clone();
+
+        let result = app
+            .run_with_auth(move |api| {
+                let count = c.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if count == 0 {
+                        // First attempt fails with 401
+                        assert_eq!(api.token(), Some("tok_initial_abc"));
+                        Err("test call: not signed in to Jellyfin (401)".into())
+                    } else {
+                        // Second attempt gets the reprovisioned token and succeeds
+                        assert_ne!(api.token(), Some("tok_initial_abc"));
+                        assert!(api.token().is_some());
+                        Ok("recovered".to_string())
+                    }
+                }
+            })
+            .await;
+
+        assert_eq!(result.unwrap(), "recovered");
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_authorize_guest_guards() {
+        let dir = tempdir().unwrap();
+        let app = test_app(dir.path());
+
+        // Sharing is off by default -> returns error
+        assert_eq!(
+            app.authorize_guest("123456").await.unwrap_err(),
+            "Jellyfin sharing is off on this server"
+        );
+
+        // Turn sharing on, but Jellyfin is not running
+        let _ = app.modify_settings(|s| {
+            s.jellyfin.enabled = true;
+            s.jellyfin.share_with_syncplay = true;
+        });
+        assert_eq!(
+            app.authorize_guest("123456").await.unwrap_err(),
+            "Jellyfin is not running"
+        );
     }
 }

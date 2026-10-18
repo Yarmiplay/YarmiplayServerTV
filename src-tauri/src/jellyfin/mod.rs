@@ -137,6 +137,11 @@ impl JellyfinManager {
         self.status.read().phase == "running"
     }
 
+    #[cfg(test)]
+    pub fn set_phase_for_test(&self, phase: &'static str) {
+        self.set(|s| s.phase = phase);
+    }
+
     pub async fn refresh_info(&self, port: u16) {
         let api = api::JellyfinApi::new(port, "", None);
         if let Ok(info) = api.public_info().await {
