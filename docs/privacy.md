@@ -72,7 +72,7 @@ are read by Jellyfin and never changed or uploaded by the app. The control panel
 own computer.
 
 Uninstalling the Microsoft Store copy deletes its data folder. For the other installers, the folders are listed
-in the [setup guide](https://github.com/Yarmiplay/YarmiplayServerTV#where-things-are-stored), and you can
+in the [setup guide](../setup/#where-things-are-stored), and you can
 delete them.
 
 ## Children

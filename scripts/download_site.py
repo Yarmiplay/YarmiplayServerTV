@@ -304,6 +304,7 @@ BASE_CSS = """ :root { --bg:#0E1116; --surface:#151A21; --surface2:#1E242E; --li
  .top nav { display:flex; flex-wrap:wrap; gap:.2em; }
  .top nav a { color:var(--soft); text-decoration:none; padding:.4em .75em; border-radius:8px; font-weight:500; }
  .top nav a:hover { color:var(--text); background:var(--surface); }
+ .top nav a.active { color:var(--accent); background:var(--tint); font-weight:600; }
  code, pre { font-family:ui-monospace,Consolas,monospace; font-size:.9em; }
  code { background:var(--bg); padding:.1em .35em; border-radius:4px; color:var(--text); overflow-wrap:anywhere; }
  a:focus-visible, summary:focus-visible { outline:3px solid var(--text); outline-offset:3px; border-radius:6px; }
@@ -345,7 +346,7 @@ def render_page(downloads, version, built, windows_signed=False, privacy=False, 
             body = (f'<div class="dl">{buttons}</div>'
                     f'<details><summary>Installation guide</summary><ol>{steps}</ol></details>'
                     f'<details><summary>Uninstall guide</summary><p class="uninstall">{uninstall} Settings and '
-                    f'Jellyfin data stay in your <a href="{REPO_URL}#uninstalling">app-data folder</a>'
+                    f'Jellyfin data stay in your <a href="setup/#where-things-are-stored">app-data folder</a>'
                     + (f' (the {html.escape(store[0])} copy removes them with the app)'
                        if p.key in STORE_LINKS else '') + '.</p></details>'
                     + (f'<details class="sums"><summary>SHA-256</summary>{sums}</details>' if sums else ""))
@@ -359,7 +360,7 @@ def render_page(downloads, version, built, windows_signed=False, privacy=False, 
     feature_cards = "".join(f'<div class="feature"><span class="fi">{icon(name)}</span><h3>{title}</h3><p>{text}</p>'
                             '</div>' for name, title, text in features())
     columns = (
-        ("Help", [(f"{REPO_URL}#readme", "Setup guide"), (f"{REPO_URL}#internet-access", "Internet access"),
+        ("Help", [("setup/", "Setup guide"), ("internet-access/", "Internet access"),
                   (f"{REPO_URL}/issues", "Report a problem")]),
         ("Project", [(HOME_URL, "yarmiplay.com"), (CLIENT_URL, "YarmiplayTV"), (REPO_URL, "Source code")]),
         ("Legal", ([("privacy/", "Privacy")] if privacy else [])
@@ -472,7 +473,7 @@ def render_page(downloads, version, built, windows_signed=False, privacy=False, 
 <body><div class="wrap">
 <header class="top">
  <a class="brand" href="./">{brand()}</a>
- <nav><a href="#download">Download</a><a href="{REPO_URL}#readme">Setup guide</a><a href="{CLIENT_URL}">YarmiplayTV</a><a href="{REPO_URL}">Source</a></nav>
+ <nav><a href="#download">Download</a><a href="setup/">Setup guide</a><a href="internet-access/">Internet access</a><a href="{CLIENT_URL}">YarmiplayTV</a><a href="{REPO_URL}">Source</a></nav>
 </header>
 <main>
 <section class="hero">
@@ -538,52 +539,209 @@ def render_page(downloads, version, built, windows_signed=False, privacy=False, 
 """
 
 
+def slugify(text):
+    clean = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    clean = re.sub(r'[`*]', '', clean)
+    clean = re.sub(r'[^a-zA-Z0-9\s-]', '', clean).strip().lower()
+    return re.sub(r'[\s_]+', '-', clean)
+
+
 def inline_markdown(text):
-    """`code`, **bold** and [text](url) in already-escaped text."""
+    """`code`, **bold**, *italic* and [text](url) in already-escaped text."""
     text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
-    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<i>\1</i>", text)
     return re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", r'<a href="\2">\1</a>', text)
 
 
 def markdown_to_html(md):
-    """The Markdown docs/privacy.md uses: # headings, paragraphs and "- " lists, lines wrapped freely."""
-    blocks, para, items = [], [], []
+    """Parses markdown with headings (+ id slugs), code blocks, blockquotes, lists, tables and paragraphs."""
+    blocks = []
+    para = []
+    list_items = []
+    list_type = None  # "ul" or "ol"
+    quote_lines = []
+    table_lines = []
+    in_code = False
+    code_lines = []
 
-    def flush():
+    def flush_para():
+        nonlocal para
         if para:
             blocks.append(f"<p>{inline_markdown(html.escape(' '.join(para), quote=False))}</p>")
-            para.clear()
-        if items:
-            lis = "".join(f"<li>{inline_markdown(html.escape(i, quote=False))}</li>" for i in items)
-            blocks.append(f"<ul>{lis}</ul>")
-            items.clear()
+            para = []
+
+    def flush_list():
+        nonlocal list_items, list_type
+        if list_items:
+            lis = "".join(f"<li>{inline_markdown(html.escape(i, quote=False))}</li>" for i in list_items)
+            blocks.append(f"<{list_type}>{lis}</{list_type}>")
+            list_items = []
+            list_type = None
+
+    def flush_quote():
+        nonlocal quote_lines
+        if quote_lines:
+            q_text = " ".join(quote_lines)
+            if any(k in q_text for k in ("**Tip", "**Note", "**Warning", "**Important", "**Security", "**Next step")):
+                blocks.append(f'<div class="callout"><p>{inline_markdown(html.escape(q_text, quote=False))}</p></div>')
+            else:
+                blocks.append(f'<blockquote><p>{inline_markdown(html.escape(q_text, quote=False))}</p></blockquote>')
+            quote_lines = []
+
+    def flush_table():
+        nonlocal table_lines
+        if table_lines:
+            rows = []
+            for t_line in table_lines:
+                cells = [c.strip() for c in t_line.split("|")[1:-1]]
+                rows.append(cells)
+            if len(rows) >= 2:
+                header = rows[0]
+                body = rows[2:] if rows[1][0].startswith(":") or rows[1][0].startswith("-") else rows[1:]
+                th_html = "".join(f"<th>{inline_markdown(html.escape(c, quote=False))}</th>" for c in header)
+                tr_html = []
+                for row in body:
+                    tds = "".join(f"<td>{inline_markdown(html.escape(c, quote=False))}</td>" for c in row)
+                    tr_html.append(f"<tr>{tds}</tr>")
+                blocks.append(f'<div class="table-wrap"><table><thead><tr>{th_html}</tr></thead>'
+                              f'<tbody>{"".join(tr_html)}</tbody></table></div>')
+            table_lines = []
+
+    def flush_all():
+        flush_para()
+        flush_list()
+        flush_quote()
+        flush_table()
 
     for line in md.splitlines():
         stripped = line.strip()
-        heading = re.match(r"(#{1,3}) (.+)", stripped)
-        if not stripped:
-            flush()
-        elif heading:
-            flush()
+
+        if in_code:
+            if stripped == "```":
+                in_code = False
+                blocks.append(f"<pre><code>{html.escape(chr(10).join(code_lines))}</code></pre>")
+                code_lines = []
+            else:
+                code_lines.append(line)
+            continue
+
+        if stripped.startswith("```"):
+            flush_all()
+            in_code = True
+            code_lines = []
+            continue
+
+        if stripped == "---" or stripped == "***":
+            flush_all()
+            blocks.append("<hr>")
+            continue
+
+        if stripped.startswith("|") and stripped.endswith("|"):
+            flush_para()
+            flush_list()
+            flush_quote()
+            table_lines.append(stripped)
+            continue
+        elif table_lines:
+            flush_table()
+
+        heading = re.match(r"(#{1,4}) (.+)", stripped)
+        if heading:
+            flush_all()
             level = len(heading.group(1))
-            blocks.append(f"<h{level}>{inline_markdown(html.escape(heading.group(2), quote=False))}</h{level}>")
-        elif stripped.startswith("- "):
-            if para:
-                flush()
-            items.append(stripped[2:])
-        elif items and line.startswith(" "):
-            items[-1] += " " + stripped
-        else:
-            if items:
-                flush()
-            para.append(stripped)
-    flush()
+            h_text = heading.group(2).strip()
+            slug = slugify(h_text)
+            blocks.append(f'<h{level} id="{slug}">{inline_markdown(html.escape(h_text, quote=False))}</h{level}>')
+            continue
+
+        if stripped.startswith(">"):
+            flush_para()
+            flush_list()
+            content = stripped.lstrip(">").strip()
+            quote_lines.append(content)
+            continue
+        elif quote_lines:
+            flush_quote()
+
+        ul_match = re.match(r"^[-*]\s+(.+)", stripped)
+        if ul_match:
+            flush_para()
+            if list_type != "ul":
+                flush_list()
+                list_type = "ul"
+            list_items.append(ul_match.group(1))
+            continue
+
+        ol_match = re.match(r"^(\d+)\.\s+(.+)", stripped)
+        if ol_match:
+            flush_para()
+            if list_type != "ol":
+                flush_list()
+                list_type = "ol"
+            list_items.append(ol_match.group(2))
+            continue
+
+        if list_items and (line.startswith("   ") or line.startswith("\t") or line.startswith("  ")):
+            list_items[-1] += " " + stripped
+            continue
+        elif list_items and not stripped:
+            continue
+        elif list_items:
+            flush_list()
+
+        if not stripped:
+            flush_para()
+            continue
+
+        para.append(stripped)
+
+    flush_all()
+    if in_code and code_lines:
+        blocks.append(f"<pre><code>{html.escape(chr(10).join(code_lines))}</code></pre>")
+
     return "\n".join(blocks)
 
 
-def render_doc(md, description, site_url=None, path=""):
+def render_doc(md, description, site_url=None, path="", active_nav="", next_nav=None, prev_nav=None,
+               version="dev", built="", windows_signed=False, privacy=True):
     """A Markdown document as a page in the download page's style, one folder below it."""
-    title = next((l[2:].strip() for l in md.splitlines() if l.startswith("# ")), NAME)
+    lines = md.splitlines()
+    title = next((l[2:].strip() for l in lines if l.startswith("# ")), NAME)
+    body_md = "\n".join(l for l in lines if not l.startswith("# "))
+
+    nav_cards = []
+    if prev_nav:
+        nav_cards.append(
+            f'<a class="nav-card prev" href="{html.escape(prev_nav[1])}">'
+            f'<span class="nav-dir">&larr; Previous</span>'
+            f'<strong class="nav-title">{html.escape(prev_nav[0])}</strong>'
+            f'<span class="nav-desc">{html.escape(prev_nav[2])}</span></a>'
+        )
+    if next_nav:
+        nav_cards.append(
+            f'<a class="nav-card next" href="{html.escape(next_nav[1])}">'
+            f'<span class="nav-dir">Next &rarr;</span>'
+            f'<strong class="nav-title">{html.escape(next_nav[0])}</strong>'
+            f'<span class="nav-desc">{html.escape(next_nav[2])}</span></a>'
+        )
+    nav_html = f'<nav class="doc-nav" aria-label="Related guides">{"".join(nav_cards)}</nav>' if nav_cards else ""
+
+    doc_columns = (
+        ("Help", [("../setup/", "Setup guide"), ("../internet-access/", "Internet access"),
+                  (f"{REPO_URL}/issues", "Report a problem")]),
+        ("Project", [(HOME_URL, "yarmiplay.com"), (CLIENT_URL, "YarmiplayTV"), (REPO_URL, "Source code")]),
+        ("Legal", ([("../privacy/", "Privacy")] if privacy else [])
+         + ([(f"{REPO_URL}#code-signing-policy", "Code signing policy")] if windows_signed else [])),
+    )
+    footer_columns = "".join(
+        f'<div><h4>{col_title}</h4><ul>'
+        + "".join(f'<li><a href="{html.escape(href)}">{html.escape(label)}</a></li>' for href, label in links)
+        + "</ul></div>" for col_title, links in doc_columns if links)
+
+    active_setup = ' class="active"' if active_nav == "setup" else ''
+    active_internet = ' class="active"' if active_nav == "internet-access" else ''
+
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -593,25 +751,83 @@ def render_doc(md, description, site_url=None, path=""):
 <link rel="icon" href="../logo.svg" type="image/svg+xml">
 <style>
 {BASE_CSS}
- body {{ line-height:1.6; }}
- .wrap {{ max-width:52em; }}
- main {{ padding:2em 0 3em; }}
- h1 {{ font-size:clamp(1.9em,5vw,2.4em); letter-spacing:-.02em; line-height:1.15; margin:0 0 .6em; }}
- h2 {{ font-size:1.35em; margin:1.8em 0 .4em; letter-spacing:-.01em; }}
- h3 {{ font-size:1.1em; margin:1.4em 0 .3em; }}
+ body {{ line-height:1.65; }}
+ .wrap {{ max-width:56em; }}
+ main {{ padding:1.5em 0 3.5em; }}
+ .doc-hero {{ margin-bottom:2em; padding-bottom:1.5em; border-bottom:1px solid var(--line); }}
+ .crumb {{ font-size:.85em; color:var(--muted); margin-bottom:.8em; }}
+ .crumb a {{ color:var(--muted); text-decoration:none; }}
+ .crumb a:hover {{ color:var(--text); }}
+ .eyebrow {{ display:inline-block; color:var(--accent); background:var(--tint); font-weight:600; font-size:.85em;
+            padding:.25em .8em; border-radius:99px; margin:0 0 1em; }}
+ h1 {{ font-size:clamp(2.1em,5vw,2.8em); letter-spacing:-.03em; line-height:1.15; margin:0 0 .35em; }}
+ .doc-sub {{ color:var(--soft); font-size:1.15em; margin:0; line-height:1.5; }}
+ h2 {{ font-size:1.5em; margin:2.2em 0 .5em; letter-spacing:-.02em; padding-bottom:.3em; border-bottom:1px solid var(--line); color:var(--text); }}
+ h3 {{ font-size:1.22em; margin:1.6em 0 .4em; color:var(--text); }}
+ h4 {{ font-size:1.05em; margin:1.3em 0 .3em; color:var(--soft); }}
  p, li {{ color:var(--soft); }}
+ hr {{ border:0; border-top:1px solid var(--line); margin:2.5em 0; }}
  code {{ background:var(--surface); }}
- .end {{ border-top:1px solid var(--line); margin-top:3em; padding-top:1.5em; color:var(--muted); }}
+ pre {{ background:#07090C; border:1px solid var(--line); border-radius:12px; padding:1em 1.25em; overflow-x:auto; margin:1.2em 0; }}
+ pre code {{ background:transparent; padding:0; border-radius:0; color:#E8ECF2; }}
+ .callout {{ background:linear-gradient(135deg,rgba(61,165,244,.12),var(--surface)); border-left:4px solid var(--accent);
+           border-radius:0 12px 12px 0; padding:1em 1.3em; margin:1.5em 0; box-shadow:0 4px 16px -4px rgba(0,0,0,.3); }}
+ .callout p {{ margin:0; color:var(--text); }}
+ .callout b {{ color:var(--accent); }}
+ .table-wrap {{ overflow-x:auto; margin:1.5em 0; border:1px solid var(--line); border-radius:12px; }}
+ table {{ width:100%; border-collapse:collapse; text-align:left; font-size:.95em; }}
+ th {{ background:var(--surface2); color:var(--text); font-weight:600; padding:.75em 1em; border-bottom:2px solid var(--line); white-space:nowrap; }}
+ td {{ padding:.75em 1em; border-bottom:1px solid var(--line); color:var(--soft); }}
+ tr:last-child td {{ border-bottom:0; }}
+ tr:nth-child(even) td {{ background:rgba(255,255,255,.015); }}
+ tr:hover td {{ background:var(--surface); }}
+ ol, ul {{ padding-left:1.4em; }}
+ li {{ margin:.35em 0; }}
+ li::marker {{ color:var(--accent); }}
+ #table-of-contents + ul, #table-of-contents + ol {{
+   background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:1.2em 1.8em; margin:1em 0 2em; list-style-type:none;
+ }}
+ #table-of-contents + ul li, #table-of-contents + ol li {{ margin:.4em 0; }}
+ #table-of-contents + ul a, #table-of-contents + ol a {{ text-decoration:none; font-weight:500; }}
+ #table-of-contents + ul a:hover, #table-of-contents + ol a:hover {{ text-decoration:underline; }}
+ .doc-nav {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1em; margin:3em 0 2em; }}
+ .nav-card {{ display:flex; flex-direction:column; padding:1.2em 1.4em; background:var(--surface); border:1px solid var(--line);
+             border-radius:14px; text-decoration:none; color:inherit; transition:border-color .15s, transform .15s; }}
+ .nav-card:hover {{ border-color:var(--accent); transform:translateY(-2px); }}
+ .nav-dir {{ font-size:.82em; font-weight:600; text-transform:uppercase; letter-spacing:.05em; color:var(--accent); margin-bottom:.3em; }}
+ .nav-title {{ font-size:1.1em; color:var(--text); margin-bottom:.25em; }}
+ .nav-desc {{ font-size:.88em; color:var(--muted); line-height:1.4; }}
+ footer {{ display:grid; grid-template-columns:1.6fr repeat(3,1fr); gap:1.5em; border-top:1px solid var(--line);
+          margin-top:4em; padding:2.5em 0 3em; color:var(--muted); font-size:.93em; }}
+ footer p {{ margin:.7em 0 0; font-size:.92em; }}
+ footer h4 {{ color:var(--text); margin:.3em 0 .7em; font-size:.8em; text-transform:uppercase; letter-spacing:.08em; }}
+ footer ul {{ list-style:none; padding:0; margin:0; }}
+ footer li + li {{ margin-top:.4em; }}
+ footer ul a {{ color:var(--muted); text-decoration:none; }}
+ footer ul a:hover {{ color:var(--text); }}
+ @media (max-width:760px) {{ footer {{ grid-template-columns:1fr 1fr; }} footer > div:first-child {{ grid-column:1/-1; }} }}
 </style></head>
 <body><div class="wrap">
 <header class="top">
  <a class="brand" href="../">{brand("../")}</a>
- <nav><a href="../#download">Download</a><a href="{REPO_URL}#readme">Setup guide</a></nav>
+ <nav><a href="../#download">Download</a><a href="../setup/"{active_setup}>Setup guide</a><a href="../internet-access/"{active_internet}>Internet access</a><a href="{CLIENT_URL}">YarmiplayTV</a><a href="{REPO_URL}">Source</a></nav>
 </header>
 <main>
-{markdown_to_html(md)}
-<p class="end"><a href="../">{NAME} downloads</a> &middot; <a href="{HOME_URL}">yarmiplay.com</a></p>
-</main></div></body></html>
+<div class="doc-hero">
+ <div class="crumb"><a href="../">Home</a> &rsaquo; Documentation</div>
+ <span class="eyebrow">{NAME} documentation</span>
+ <h1>{html.escape(title)}</h1>
+ <p class="doc-sub">{html.escape(description)}</p>
+</div>
+{markdown_to_html(body_md)}
+{nav_html}
+</main>
+<footer>
+ <div><a class="brand" href="../">{brand("../")}</a>
+ <p>Version {html.escape(version)} &middot; built {html.escape(built)}</p></div>
+ {footer_columns}
+</footer>
+</div></body></html>
 """
 
 
@@ -645,19 +861,37 @@ def build(dist, out, version, windows_signed=False, site_url=None):
     shots = os.path.join(ROOT, "docs", "store", "screenshots")
     if os.path.isdir(shots):
         shutil.copytree(shots, os.path.join(out, "screenshots"))
-    pages = [""]
-    privacy = os.path.join(ROOT, "docs", "privacy.md")
-    if os.path.isfile(privacy):
-        os.makedirs(os.path.join(out, "privacy"))
-        with open(privacy, encoding="utf-8") as src, \
-                open(os.path.join(out, "privacy", "index.html"), "w", encoding="utf-8") as f:
-            f.write(render_doc(src.read(), f"Privacy policy of {NAME}: what the app stores and sends.",
-                               site_url, "privacy/"))
-        pages.append("privacy/")
     now = datetime.datetime.now(datetime.timezone.utc)
     built = now.strftime("%Y-%m-%d %H:%M UTC")
+
+    DOCS = [
+        ("setup.md", "setup", f"Setup guide for {NAME}: first-run, Syncplay, Jellyfin, Plex and data storage.",
+         ("Internet Access Guide", "../internet-access/", "Port forwarding, UPnP, DuckDNS, and automatic free HTTPS"),
+         None),
+        ("internet-access.md", "internet-access", f"Internet access guide for {NAME}: port forwarding, DuckDNS, and free HTTPS.",
+         ("Downloads", "../#download", f"Download {NAME} for Windows, macOS, or Linux"),
+         ("Setup Guide", "../setup/", "First-run setup, Syncplay, Jellyfin, and Plex configuration")),
+        ("privacy.md", "privacy", f"Privacy policy of {NAME}: what the app stores and sends.",
+         None,
+         ("Setup Guide", "../setup/", "First-run setup, Syncplay, Jellyfin, and Plex configuration")),
+    ]
+    pages = [""]
+    for filename, slug, desc, next_nav, prev_nav in DOCS:
+        doc_src = os.path.join(ROOT, "docs", filename)
+        if os.path.isfile(doc_src):
+            doc_dir = os.path.join(out, slug)
+            os.makedirs(doc_dir, exist_ok=True)
+            with open(doc_src, encoding="utf-8") as src, \
+                    open(os.path.join(doc_dir, "index.html"), "w", encoding="utf-8") as f:
+                f.write(render_doc(src.read(), desc, site_url, f"{slug}/", active_nav=slug,
+                                   next_nav=next_nav, prev_nav=prev_nav,
+                                   version=version, built=built, windows_signed=windows_signed,
+                                   privacy=os.path.isfile(os.path.join(ROOT, "docs", "privacy.md"))))
+            pages.append(f"{slug}/")
+
+    has_privacy = os.path.isfile(os.path.join(ROOT, "docs", "privacy.md"))
     with open(os.path.join(out, "index.html"), "w", encoding="utf-8") as f:
-        f.write(render_page(downloads, version, built, windows_signed, os.path.isfile(privacy), site_url))
+        f.write(render_page(downloads, version, built, windows_signed, has_privacy, site_url))
     if site_url:
         with open(os.path.join(out, "sitemap.xml"), "w", encoding="utf-8") as f:
             f.write(sitemap(site_url, pages, now.strftime("%Y-%m-%d")))

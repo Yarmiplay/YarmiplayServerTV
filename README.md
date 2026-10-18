@@ -6,6 +6,7 @@ gives your friends a room to watch in sync and a media library to stream from.
 
 **[Download YarmiplayServerTV](https://servertv.yarmiplay.com/)**, or on Windows get it from the
 [Microsoft Store](https://apps.microsoft.com/detail/9P6B9C1KXFFQ) (Jellyfin built in, updated by the Store).
+For online guides, visit the **[Setup Guide](https://servertv.yarmiplay.com/setup/)** and **[Internet Access Guide](https://servertv.yarmiplay.com/internet-access/)**.
 
 - A Syncplay 1.7.6-compatible server built in: rooms, passwords, chat, readiness, shared playlists, and
   encrypted connections (TLS) when a certificate is available. You can also admit only the YarmiplayTV
@@ -35,7 +36,7 @@ or internet can change your settings.
    menu to stop everything.
 2. On the **Dashboard**, switch on the Syncplay server, the Jellyfin server, or both.
 3. Give your friends the addresses shown on the dashboard. **On your network** works at home; **Over the
-   internet** needs the steps in [Internet access](#internet-access).
+   internet** needs the steps in the [Internet access guide](https://servertv.yarmiplay.com/internet-access/) (or see below).
 
 **Start with system** (Dashboard, or the tray menu) starts the app minimized to the tray when you log in.
 

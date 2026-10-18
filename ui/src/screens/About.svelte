@@ -7,7 +7,9 @@
   let { snap }: { snap: Snapshot } = $props();
 
   const links = [
-    { label: "Website", url: "https://servertv.yarmiplay.com/", hint: "Downloads and the setup guide" },
+    { label: "Website", url: "https://servertv.yarmiplay.com/", hint: "Downloads for Windows, macOS and Linux" },
+    { label: "Setup guide", url: "https://servertv.yarmiplay.com/setup/", hint: "How to configure Syncplay, Jellyfin and Plex" },
+    { label: "Internet access", url: "https://servertv.yarmiplay.com/internet-access/", hint: "Port forwarding, DuckDNS and free HTTPS" },
     { label: "YarmiplayTV", url: "https://tv.yarmiplay.com/", hint: "The watch-together app this server is made for" },
     { label: "Source code", url: "https://github.com/Yarmiplay/YarmiplayServerTV", hint: "Report problems and follow development on GitHub" },
   ];
