@@ -77,6 +77,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.8.8" date="2026-10-19">
+      <description>
+        <p>New 3D brand identity with server blade chassis and streamlined orbital sync</p>
+      </description>
+    </release>
     <release version="1.8.7" date="2026-10-19">
       <description>
         <p>Jellyfin: connection-driven instant self-healing with proxy decoupling and resilient SQLite retries; auto-update check frequency updated to every 30 minutes.</p>
