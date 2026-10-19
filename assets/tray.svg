@@ -1,7 +1,122 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <path d="M8,6 L8,58 L48,32 Z" fill="#FFFFFF"/>
-  <path d="M26,14 L26,50 L54,32 Z" fill="#FFFFFF" fill-opacity="0.55"/>
-  <rect x="38" y="40" width="24" height="22" rx="5" fill="#FFFFFF"/>
-  <rect x="42" y="45" width="16" height="4" rx="2" fill="#000000" fill-opacity="0.6"/>
-  <rect x="42" y="53" width="16" height="4" rx="2" fill="#000000" fill-opacity="0.6"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108">
+  <defs>
+    <linearGradient id="logo-bg" x1="20%" y1="0%" x2="80%" y2="100%">
+      <stop offset="0%" stop-color="#1B2B43"/>
+      <stop offset="45%" stop-color="#101B2B"/>
+      <stop offset="100%" stop-color="#080D16"/>
+    </linearGradient>
+    <linearGradient id="squircle-rim" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#70A8DB" stop-opacity="0.35"/>
+      <stop offset="25%" stop-color="#2D527C" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#0E1E33" stop-opacity="0.05"/>
+    </linearGradient>
+    <radialGradient id="ambient-bloom" cx="52%" cy="54%" r="48%">
+      <stop offset="0%" stop-color="#1E6CB5" stop-opacity="0.32"/>
+      <stop offset="50%" stop-color="#103E70" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#080D16" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="prism-top" x1="33.3" y1="25.1" x2="82.9" y2="53.9" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#80E2F8"/>
+      <stop offset="26%" stop-color="#D8FBFF"/>
+      <stop offset="42%" stop-color="#FFFFFF"/>
+      <stop offset="68%" stop-color="#B2EEFF"/>
+      <stop offset="100%" stop-color="#60C8F6"/>
+    </linearGradient>
+    <linearGradient id="prism-spine" x1="33.3" y1="25.1" x2="33.3" y2="82.7" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#34D2FB"/>
+      <stop offset="45%" stop-color="#19B2FD"/>
+      <stop offset="100%" stop-color="#097CE8"/>
+    </linearGradient>
+    <linearGradient id="prism-bottom" x1="48.7" y1="53.8" x2="38" y2="78" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1876D0"/>
+      <stop offset="35%" stop-color="#0F5EB8"/>
+      <stop offset="70%" stop-color="#094590"/>
+      <stop offset="100%" stop-color="#06326E"/>
+    </linearGradient>
+    <linearGradient id="server-front" x1="22" y1="34" x2="22" y2="78" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3AD4FB"/>
+      <stop offset="42%" stop-color="#1496F0"/>
+      <stop offset="100%" stop-color="#0A5EC4"/>
+    </linearGradient>
+    <linearGradient id="server-side" x1="56" y1="34" x2="68" y2="74" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1C86E0"/>
+      <stop offset="100%" stop-color="#06326E"/>
+    </linearGradient>
+    <linearGradient id="ring-glow-grad" x1="30" y1="30" x2="75" y2="75" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00A2E8" stop-opacity="0.45"/>
+      <stop offset="40%" stop-color="#00D2FF" stop-opacity="0.6"/>
+      <stop offset="80%" stop-color="#00F0FF" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#6DF7FF" stop-opacity="0.95"/>
+    </linearGradient>
+    <linearGradient id="ring-core-grad" x1="30" y1="30" x2="75" y2="75" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#5CD7FF"/>
+      <stop offset="50%" stop-color="#8EECFF"/>
+      <stop offset="85%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#B2F5FF"/>
+    </linearGradient>
+    <filter id="neon-glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="2.2" result="blur1"/>
+      <feGaussianBlur stdDeviation="4.5" result="blur2"/>
+      <feMerge>
+        <feMergeNode in="blur2"/>
+        <feMergeNode in="blur1"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="node-glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="2.4" result="glow"/>
+      <feMerge>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <clipPath id="tile-clip">
+      <rect x="7" y="7" width="94" height="94" rx="22"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#tile-clip)">
+    <rect x="7" y="7" width="94" height="94" rx="22" fill="url(#logo-bg)"/>
+    <rect x="7" y="7" width="94" height="94" rx="22" fill="url(#ambient-bloom)"/>
+
+    <g transform="rotate(-37.46 54.77 57.85)">
+      <ellipse cx="54.77" cy="57.85" rx="41.41" ry="23.85" fill="none" stroke="url(#ring-glow-grad)" stroke-width="3.6" filter="url(#neon-glow)"/>
+      <ellipse cx="54.77" cy="57.85" rx="41.41" ry="23.85" fill="none" stroke="url(#ring-core-grad)" stroke-width="1.8"/>
+      <ellipse cx="54.77" cy="57.85" rx="41.41" ry="23.85" fill="none" stroke="#FFFFFF" stroke-width="0.7" stroke-opacity="0.85"/>
+    </g>
+
+    <polygon points="23,40 57,40 57,82 23,82" fill="#000000" fill-opacity="0.28" filter="url(#neon-glow)"/>
+    <polygon points="53,36 63,26 63,72 53,82" fill="url(#server-side)"/>
+    <polygon points="19,36 29,26 63,26 53,36" fill="url(#prism-top)"/>
+    <polygon points="19,36 53,36 53,82 19,82" fill="url(#server-front)"/>
+    <line x1="19" y1="36" x2="53" y2="36" stroke="#FFFFFF" stroke-width="0.55" stroke-opacity="0.7" stroke-linecap="round"/>
+    <line x1="53" y1="36" x2="63" y2="26" stroke="#FFFFFF" stroke-width="0.4" stroke-opacity="0.55" stroke-linecap="round"/>
+
+    <g fill="#071422">
+      <rect x="24" y="44" width="24" height="7" rx="1.4"/>
+      <rect x="24" y="56" width="24" height="7" rx="1.4"/>
+      <rect x="24" y="68" width="24" height="7" rx="1.4"/>
+    </g>
+    <g fill="#16324F">
+      <rect x="26" y="46.2" width="12" height="1.5" rx="0.7"/>
+      <rect x="26" y="58.2" width="12" height="1.5" rx="0.7"/>
+      <rect x="26" y="70.2" width="12" height="1.5" rx="0.7"/>
+    </g>
+    <g fill="#E9FBFF">
+      <circle cx="44.2" cy="47.5" r="1.15"/>
+      <circle cx="44.2" cy="59.5" r="1.15"/>
+      <circle cx="44.2" cy="71.5" r="1.15"/>
+    </g>
+
+    <circle cx="71.23" cy="75.23" r="9.4" fill="#00E5FF" fill-opacity="0.42" filter="url(#node-glow)"/>
+    <g transform="translate(71.23 75.23) scale(0.38) translate(-49.85 -53.89)">
+      <polygon points="48.73,53.79 82.90,53.89 33.33,82.69" fill="url(#prism-bottom)"/>
+      <polygon points="33.33,25.10 48.73,53.79 33.33,82.69" fill="url(#prism-spine)"/>
+      <polygon points="33.33,25.10 82.90,53.89 48.73,53.79" fill="url(#prism-top)"/>
+      <line x1="48.73" y1="53.79" x2="82.90" y2="53.89" stroke="#FFFFFF" stroke-width="0.7" stroke-opacity="0.9" stroke-linecap="round"/>
+      <line x1="33.33" y1="25.10" x2="48.73" y2="53.79" stroke="#FFFFFF" stroke-width="0.55" stroke-opacity="0.7" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <rect x="7.4" y="7.4" width="93.2" height="93.2" rx="21.6" fill="none" stroke="url(#squircle-rim)" stroke-width="0.8"/>
 </svg>

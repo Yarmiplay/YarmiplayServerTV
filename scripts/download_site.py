@@ -230,7 +230,7 @@ ILLUSTRATION = (
     '<g clip-path="url(#art-win)">'
     '<rect x="10" y="30" width="470" height="28" fill="#0A0D12"/>'
     '<text x="44" y="48" font-size="10" fill="#9AA4B2">YarmiplayServerTV</text>'
-    '<path d="M24 38V50L33 44Z" fill="#3DA5F4"/>'
+    '<image href="logo.svg" x="16" y="33" width="22" height="22"/>'
     '<rect x="10" y="58" width="112" height="292" fill="#151A21"/>'
     '<rect x="20" y="70" width="92" height="26" rx="7" fill="#212733"/>'
     '<text x="30" y="87" font-size="10.5" font-weight="600" fill="#E8ECF2">Dashboard</text>'
