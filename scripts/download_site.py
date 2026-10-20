@@ -308,7 +308,7 @@ BASE_CSS = """ :root { --bg:#0E1116; --surface:#151A21; --surface2:#1E242E; --li
  code, pre { font-family:ui-monospace,Consolas,monospace; font-size:.9em; }
  code { background:var(--bg); padding:.1em .35em; border-radius:4px; color:var(--text); overflow-wrap:anywhere; }
  a:focus-visible, summary:focus-visible { outline:3px solid var(--text); outline-offset:3px; border-radius:6px; }
- @media (max-width:620px) { .wrap { padding:0 16px; } .top nav a:not(:first-child) { display:none; } }
+ @media (max-width:620px) { .wrap { padding:0 16px; } .top nav a:nth-child(n+3) { display:none; } }
  @media (min-width:1600px) { body { font-size:20px; } .wrap { max-width:1500px; } }"""
 
 BRAND = f'<img src="{{root}}logo.svg" alt=""><span>Yarmiplay<span>ServerTV</span></span>'
@@ -473,7 +473,7 @@ def render_page(downloads, version, built, windows_signed=False, privacy=False, 
 <body><div class="wrap">
 <header class="top">
  <a class="brand" href="./">{brand()}</a>
- <nav><a href="#download">Download</a><a href="setup/">Setup guide</a><a href="internet-access/">Internet access</a><a href="{CLIENT_URL}">YarmiplayTV</a><a href="{REPO_URL}">Source</a></nav>
+ <nav><a href="{HOME_URL}">Home</a><a href="#download">Download</a><a href="setup/">Setup guide</a><a href="internet-access/">Internet access</a><a href="{CLIENT_URL}">YarmiplayTV</a><a href="{REPO_URL}">Source</a></nav>
 </header>
 <main>
 <section class="hero">
@@ -810,7 +810,7 @@ def render_doc(md, description, site_url=None, path="", active_nav="", next_nav=
 <body><div class="wrap">
 <header class="top">
  <a class="brand" href="../">{brand("../")}</a>
- <nav><a href="../#download">Download</a><a href="../setup/"{active_setup}>Setup guide</a><a href="../internet-access/"{active_internet}>Internet access</a><a href="{CLIENT_URL}">YarmiplayTV</a><a href="{REPO_URL}">Source</a></nav>
+ <nav><a href="{HOME_URL}">Home</a><a href="../#download">Download</a><a href="../setup/"{active_setup}>Setup guide</a><a href="../internet-access/"{active_internet}>Internet access</a><a href="{CLIENT_URL}">YarmiplayTV</a><a href="{REPO_URL}">Source</a></nav>
 </header>
 <main>
 <div class="doc-hero">
