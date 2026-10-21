@@ -124,7 +124,7 @@ You can configure exactly who is permitted to connect to your Syncplay server:
 
 - **Anyone:** Anyone who knows your address can connect and join any room.
 - **Password only:** All users must provide the server password you define.
-- **Password or approved devices:** Friends with YarmiplayTV devices you have approved connect seamlessly without typing a password; other clients must enter the password.
+- **Password or approved devices:** Friends with YarmiplayTV devices you have approved connect seamlessly without typing a password; other clients must enter the password. **Approve devices that join with the password** is on by default: a YarmiplayTV device that enters the password is added to the approved list, so it can join without the password next time.
 - **Approved devices only:** Only explicitly approved YarmiplayTV devices can join. Standard Syncplay clients without approval keys are turned away.
 
 ### Approving YarmiplayTV devices

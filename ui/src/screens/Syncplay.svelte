@@ -113,6 +113,9 @@
           Every client needs the server password, including approved YarmiplayTV devices.
         {:else if access === "password"}
           Clients need the server password{vanilla ? "." : ", except YarmiplayTV devices you approved."}
+          {#if !vanilla && snap.settings.syncplay.autoApprovePassword}
+            A YarmiplayTV device that joins with the password is added to that list.
+          {/if}
         {:else if access === "approved"}
           Only YarmiplayTV devices you approve can join; official Syncplay clients are turned away.
         {:else}
@@ -153,6 +156,16 @@
       <label class="field">Max chat message length<input type="number" min="1" bind:value={form.draft.maxChatMessageLength} /></label>
       <label class="field">Max username length<input type="number" min="1" bind:value={form.draft.maxUsernameLength} /></label>
     </div>
+    {#if form.draft.access === "password"}
+      <Toggle
+        label="Approve devices that join with the password"
+        hint={vanilla
+          ? "Does nothing while vanilla Syncplay mode is on"
+          : "A YarmiplayTV device that enters the server password is added to the approved list, so next time it can join without the password"}
+        checked={form.draft.autoApprovePassword}
+        onchange={(v) => (form.draft.autoApprovePassword = v)}
+      />
+    {/if}
     <label class="field motd">
       Welcome message
       <textarea

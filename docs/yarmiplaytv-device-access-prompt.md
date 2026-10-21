@@ -142,8 +142,11 @@ Other outcomes are a plain `{"Error": {"message": ...}}` and a closed connection
 1. The client sends the Hello (with the password if the user has one) and answers the challenge.
 2. If the key is approved: `status approved` and the Hello reply, whatever the password.
 3. If not, the server checks the Hello's password:
-   - correct: the Hello reply follows directly, **without** a status message. The marker says
-     `"device": "none"`.
+   - correct, and the host's **Approve devices that join with the password** setting is on (the default):
+     the device is added to the approved list, then `status approved` and the Hello reply. The marker says
+     `"device": "approved"`. The next connection with this key does not need the password.
+   - correct, and that setting is off: the Hello reply follows directly, **without** a status message. The
+     marker says `"device": "none"`.
    - missing or wrong, with `requestAccess: true`: `status pending`, as in approved mode.
    - missing or wrong, with `requestAccess: false`: the official error, `Password required` or `Wrong password
      supplied`.
@@ -244,7 +247,10 @@ public key, the device name and the username. The private key stays on the devic
     land in the room. Reconnect: no approval needed. Deny a second device. Remove the first device while it's
     in a room: it sees "revoked".
   - **Password or approved devices:** an approved device joins without the password; an unapproved one
-    joins with the right password; with a wrong password and **Request access** it goes to pending.
+    joins with the right password and, while **Approve devices that join with the password** is on, is
+    approved (`status approved`, then `"device": "approved"`). With that setting off, the same login gets
+    the Hello reply with `"device": "none"` and no status message. A wrong password and **Request access**
+    goes to pending.
   - **Password only:** no challenge; an approved device without the password gets `Password required`, and
     with it joins with `"device": "none"`.
   - **Anyone:** no challenge; the marker shows `"access": "open"`.

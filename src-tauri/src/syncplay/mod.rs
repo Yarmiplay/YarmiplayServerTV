@@ -23,6 +23,7 @@ impl From<&crate::config::SyncplaySettings> for SyncplayOptions {
         Self {
             access: s.access,
             password,
+            auto_approve_password: s.auto_approve_password,
             motd: s.motd.clone(),
             isolate_rooms: s.isolate_rooms,
             disable_chat: s.disable_chat,

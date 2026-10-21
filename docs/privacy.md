@@ -35,11 +35,13 @@ until you switch it on, and each one only talks to what it needs.
   joined and left which room. While a certificate is loaded, the server tells connecting YarmiplayTV apps the
   certificate's name and this computer's addresses on your network, and answers YarmiplayTV discovery requests
   from devices on your local network with the same, so they can connect encrypted at home.
-- **Approved devices** (when you choose **Password** or **Approved devices only**): a YarmiplayTV device that
-  asks to join sends its public key, a device name and its username. Requests you haven't answered, including
-  the device's IP address, are kept in memory only and forgotten after a day or when the app quits. For each
-  device you approve, the app saves its public key, name, approval date, when it was last seen and the username
-  it last used, on your computer only, until you remove it.
+- **Approved devices** (when you choose **Password or approved devices** or **Approved devices only**): a
+  YarmiplayTV device that asks to join sends its public key, a device name and its username. Requests you
+  haven't answered, including the device's IP address, are kept in memory only and forgotten after a day or
+  when the app quits. For each device you approve, the app saves its public key, name, approval date, when it
+  was last seen and the username it last used, on your computer only, until you remove it. With **Approve
+  devices that join with the password** on (the default), a device that joins with the server password is
+  saved the same way.
 - **File relay** (on by default, off in vanilla Syncplay mode): YarmiplayTV users in a room can play a video
   file that someone else in the room has. The file's bytes travel from that person's device through your
   computer to the people watching, and are cached on your computer's disk so each part is sent only once. The

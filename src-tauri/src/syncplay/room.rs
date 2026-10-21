@@ -46,6 +46,8 @@ pub struct SyncplayOptions {
     pub access: SyncplayAccess,
     /// Checked whenever it is set, except in `approved` mode.
     pub password: String,
+    /// In `password` mode, remember a YarmiplayTV device that joins with the password.
+    pub auto_approve_password: bool,
     /// Welcome message sent in the Hello reply.
     pub motd: String,
     pub isolate_rooms: bool,
@@ -70,6 +72,7 @@ impl Default for SyncplayOptions {
         Self {
             access: SyncplayAccess::Open,
             password: String::new(),
+            auto_approve_password: true,
             motd: String::new(),
             isolate_rooms: false,
             disable_chat: false,
@@ -366,6 +369,11 @@ impl ServerState {
             self.drop_watcher(*id, Some(status), "The host removed this device");
         }
         ids.len()
+    }
+
+    /// Password mode: add a device that joined with the password to the approved list.
+    pub fn auto_approve_password(&self) -> bool {
+        self.opts.auto_approve_password
     }
 
     /// Check the Hello's password (when one is set).

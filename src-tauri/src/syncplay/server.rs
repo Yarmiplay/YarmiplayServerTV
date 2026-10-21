@@ -697,7 +697,42 @@ impl Handshake<'_> {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         if self.mode == SyncplayAccess::Password {
-            match self.shared.state.lock().password_ok(self.hello) {
+            let (password, auto_approve) = {
+                let state = self.shared.state.lock();
+                (state.password_ok(self.hello), state.auto_approve_password())
+            };
+            match password {
+                Ok(()) if auto_approve => {
+                    let username = self
+                        .hello
+                        .get("username")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .trim();
+                    match self.store.remember(
+                        &fp,
+                        field("publicKey"),
+                        field("deviceName"),
+                        username,
+                    ) {
+                        Ok(()) => {
+                            info!(
+                                fingerprint = %fp,
+                                "approved a Syncplay device that joined with the password"
+                            );
+                            self.status("approved", &fp);
+                            (self.shared.notify)();
+                            return Some(Some(fp));
+                        }
+                        Err(e) => {
+                            warn!(
+                                error = %e,
+                                "could not save the device that joined with the password"
+                            );
+                            return Some(None);
+                        }
+                    }
+                }
                 Ok(()) => return Some(None),
                 Err(e) if !request => {
                     self.fail(&e);
@@ -1143,17 +1178,59 @@ mod tests {
         send(&mut c, hello_with("bo", true, None)).await;
         answer(&mut c, &other, false, "password").await;
         assert_eq!(error_of(&rest(&mut c).await), "Password required");
-        // ...and with it gets in without an approved key.
+        assert!(!store.is_approved(&other.fingerprint()));
+        // ...and with it is added to the approved list (on by default).
         let mut c = connect(&server).await;
         send(&mut c, hello_with("cy", true, Some("pw"))).await;
         answer(&mut c, &other, false, "password").await;
+        expect_status(&mut c, "approved", &other).await;
         let h = read_until_key(&mut c, "Hello").await;
-        assert_eq!(h["Hello"]["features"]["yarmiplay"]["device"], "none");
-        // A wrong password with requestAccess waits for the host.
+        assert_eq!(h["Hello"]["features"]["yarmiplay"]["device"], "approved");
+        let saved = store
+            .status()
+            .approved
+            .into_iter()
+            .find(|d| d.fingerprint == other.fingerprint())
+            .unwrap();
+        assert_eq!(saved.name, "Test device");
+        assert_eq!(saved.last_username, "cy");
+        // Next time the password is unnecessary.
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("cy", true, None)).await;
+        answer(&mut c, &other, false, "password").await;
+        expect_status(&mut c, "approved", &other).await;
+        // A different key with a wrong password and requestAccess waits for the host.
+        let third = DeviceKey::new();
         let mut c = connect(&server).await;
         send(&mut c, hello_with("di", true, Some("nope"))).await;
-        answer(&mut c, &other, true, "password").await;
-        expect_status(&mut c, "pending", &other).await;
+        answer(&mut c, &third, true, "password").await;
+        expect_status(&mut c, "pending", &third).await;
+        server.stop();
+    }
+
+    #[tokio::test]
+    async fn password_does_not_approve_when_the_toggle_is_off() {
+        let store = Arc::new(DeviceStore::in_memory());
+        let opts = SyncplayOptions {
+            access: SyncplayAccess::Password,
+            password: "pw".into(),
+            auto_approve_password: false,
+            ..SyncplayOptions::default()
+        };
+        let ext = Extensions {
+            devices: Some(store.clone()),
+            ..Extensions::default()
+        };
+        let server = SyncplayServer::start(0, opts, Arc::default(), Arc::new(|| {}), ext)
+            .await
+            .unwrap();
+        let key = DeviceKey::new();
+        let mut c = connect(&server).await;
+        send(&mut c, hello_with("cy", true, Some("pw"))).await;
+        answer(&mut c, &key, false, "password").await;
+        let h = read_until_key(&mut c, "Hello").await;
+        assert_eq!(h["Hello"]["features"]["yarmiplay"]["device"], "none");
+        assert!(!store.is_approved(&key.fingerprint()));
         server.stop();
     }
 

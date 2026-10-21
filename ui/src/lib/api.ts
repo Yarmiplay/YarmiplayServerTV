@@ -79,6 +79,11 @@ export interface SyncplaySettings {
   access: SyncplayAccess;
   /** Used in the two password modes only. */
   password: string;
+  /**
+   * In "password or approved devices" mode, add a YarmiplayTV device to the approved list when it
+   * joins with the password. On by default.
+   */
+  autoApprovePassword: boolean;
   /** Welcome message shown to clients when they join. */
   motd: string;
   isolateRooms: boolean;

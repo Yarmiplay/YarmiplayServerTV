@@ -286,6 +286,41 @@ impl DeviceStore {
         Ok(inner.pending.remove(i))
     }
 
+    /// Add a device that proved its key and the server password. A request
+    /// already waiting for this key is approved as well.
+    pub fn remember(
+        &self,
+        fingerprint: &str,
+        public_key: &str,
+        name: &str,
+        username: &str,
+    ) -> Result<(), String> {
+        let mut inner = self.inner.lock();
+        if inner
+            .file
+            .devices
+            .iter()
+            .any(|d| d.fingerprint == fingerprint)
+        {
+            return Ok(());
+        }
+        let pending = Self::take_pending(&mut inner, fingerprint).ok();
+        let now = unix_now();
+        inner.file.devices.push(ApprovedDevice {
+            fingerprint: fingerprint.to_string(),
+            public_key: public_key.to_string(),
+            name: clean_name(name),
+            approved_at: now,
+            last_seen: now,
+            last_username: username.to_string(),
+        });
+        let saved = self.save(&inner);
+        if let Some(p) = pending {
+            let _ = p.decision.send(Decision::Approved);
+        }
+        saved
+    }
+
     pub fn approve(&self, fingerprint: &str) -> Result<(), String> {
         let mut inner = self.inner.lock();
         let p = Self::take_pending(&mut inner, fingerprint)?;
@@ -522,6 +557,31 @@ mod tests {
         assert_eq!(store.status().approved[0].name.len(), MAX_DEVICE_NAME);
         store.remove("A").unwrap();
         assert!(!store.is_approved("A"));
+    }
+
+    #[test]
+    fn a_password_login_approves_a_waiting_device() {
+        let store = DeviceStore::in_memory();
+        let rx = store.request("A", "ka", "Phone", "ana", "1.1.1.1").unwrap();
+        store.remember("A", "ka", "Living room", "cy").unwrap();
+        assert_eq!(*rx.borrow(), Decision::Approved);
+        assert!(store.status().pending.is_empty());
+        let saved = &store.status().approved[0];
+        assert_eq!(saved.name, "Living room");
+        assert_eq!(saved.last_username, "cy");
+        store.remember("A", "ka", "Living room", "cy").unwrap();
+        assert_eq!(store.status().approved.len(), 1);
+        store.remember("B", "kb", "TV\u{7}", "bo").unwrap();
+        assert_eq!(
+            store
+                .status()
+                .approved
+                .iter()
+                .find(|d| d.fingerprint == "B")
+                .unwrap()
+                .name,
+            "TV"
+        );
     }
 
     #[test]

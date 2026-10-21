@@ -76,7 +76,8 @@ The server reports itself as Syncplay 1.7.6.
 - **Password only:** every client needs the server password, including YarmiplayTV devices you approved.
   Switching to this mode disconnects anyone who got in with an approved device instead of the password.
 - **Password or approved devices:** clients need the server password, except YarmiplayTV devices you
-  approved.
+  approved. **Approve devices that join with the password** (on by default) adds a YarmiplayTV device
+  to that list when it joins with the password, so it can join without the password next time.
 - **Approved devices only:** only YarmiplayTV devices you approved. Official Syncplay clients are turned
   away with a message saying so. Switching to this mode disconnects everyone who isn't on an approved device.
 

@@ -77,6 +77,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.9.3" date="2026-10-22">
+      <description>
+        <p>Password or approved devices can add a YarmiplayTV device to the approved list when it joins with the password. On by default.</p>
+      </description>
+    </release>
     <release version="1.9.2" date="2026-10-20">
       <description>
         <p>New app icon: a server rack with the YarmiplayTV play prism.</p>

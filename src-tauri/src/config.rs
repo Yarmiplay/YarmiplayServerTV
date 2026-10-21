@@ -77,6 +77,9 @@ pub struct SyncplaySettings {
     /// Plain text; shown in the UI so it can be shared with friends. Used in
     /// the `passwordOnly` and `password` modes only.
     pub password: String,
+    /// In `password` mode, a YarmiplayTV device that joins with the password
+    /// is added to the approved list. On by default.
+    pub auto_approve_password: bool,
     /// Welcome message, sent to clients as the Hello reply's `motd`.
     pub motd: String,
     pub isolate_rooms: bool,
@@ -112,6 +115,7 @@ impl Default for SyncplaySettings {
             port: 8999,
             access: SyncplayAccess::Open,
             password: String::new(),
+            auto_approve_password: true,
             motd: String::new(),
             isolate_rooms: false,
             disable_chat: false,
@@ -398,6 +402,7 @@ mod tests {
         assert!(s.browser.enabled);
         assert!(!s.updates.auto);
         assert!(s.syncplay.file_relay && !s.syncplay.vanilla_mode);
+        assert!(s.syncplay.auto_approve_password);
         assert_eq!(s.syncplay.relay_cache_gb, 10);
         assert!(!s.jellyfin.share_with_syncplay);
     }
@@ -466,6 +471,11 @@ mod tests {
         assert!(serde_json::to_string(&s)
             .unwrap()
             .contains(r#""access":"passwordOnly""#));
+        let s = Settings::parse(r#"{"syncplay":{"autoApprovePassword":false}}"#).unwrap();
+        assert!(!s.syncplay.auto_approve_password);
+        assert!(serde_json::to_string(&s)
+            .unwrap()
+            .contains(r#""autoApprovePassword":false"#));
     }
 
     #[test]
