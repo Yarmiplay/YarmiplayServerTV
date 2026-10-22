@@ -1,3 +1,4 @@
+<!-- Inset on purpose: a tray glyph that touches the edges looks cramped. The desktop icon is logo.svg. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108">
   <defs>
     <linearGradient id="tile" x1="20%" y1="0%" x2="80%" y2="100%">
