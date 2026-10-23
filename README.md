@@ -144,7 +144,7 @@ Microsoft Store and Snap copies come with that same Jellyfin built in and downlo
 When Jellyfin is running, the **Jellyfin** page asks you to create the administrator account. That's the
 whole first-run setup: the app configures the language, remote access and Quick Connect for you. Then add
 libraries: give each one a name, pick the kind of content (movies, shows, music…) and choose a folder.
-You can add more folders, remove libraries and start a scan from the same page.
+You can add more folders, remove libraries, and **Refresh libraries** to scan them for new files.
 
 **Sort into shows**: episodes lying loose in a library folder show up in Jellyfin as unrelated videos with no
 episode numbers. The button on each folder moves them into a folder per show, and per season when the name

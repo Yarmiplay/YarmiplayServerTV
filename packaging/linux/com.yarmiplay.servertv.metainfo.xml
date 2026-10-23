@@ -77,6 +77,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.9.5" date="2026-10-23">
+      <description>
+        <p>Refresh libraries on the Jellyfin page scans every library and reloads the list.</p>
+      </description>
+    </release>
     <release version="1.9.4" date="2026-10-23">
       <description>
         <p>The desktop icon fills its tile.</p>

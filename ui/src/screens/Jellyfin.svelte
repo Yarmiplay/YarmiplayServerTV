@@ -74,6 +74,15 @@
     }
   }
 
+  let refreshing = $state(false);
+  async function refreshLibraries() {
+    if (refreshing) return;
+    refreshing = true;
+    await store.run(() => api.jellyfinRescan(), "Refreshing libraries");
+    await loadLibraries();
+    refreshing = false;
+  }
+
   $effect(() => {
     if (signedIn && libraries === null) loadLibraries();
   });
@@ -289,7 +298,9 @@
           </p>
         </div>
         <div class="row">
-          <button class="small" onclick={() => store.run(() => api.jellyfinRescan(), "Scanning libraries")}>Scan all</button>
+          <button class="small" disabled={refreshing} onclick={refreshLibraries}>
+            {refreshing ? "Refreshing…" : "Refresh libraries"}
+          </button>
           <button class="small" onclick={async () => (store.snap = await api.jellyfinLogout())}>Sign out</button>
         </div>
       </div>

@@ -197,7 +197,7 @@ YarmiplayServerTV **owns and manages Jellyfin**:
 
 1. On the **Jellyfin** page, click **Add library**.
 2. Give your library a display name, choose the content type (Movies, TV Shows, Music, etc.), and select the folder on your hard drive where the media is stored.
-3. Click **Scan libraries** whenever you add new media files to update the metadata.
+3. Click **Refresh libraries** whenever you add new media files. Jellyfin scans every library, and the list on the page reloads.
 
 ### Sort into shows
 
