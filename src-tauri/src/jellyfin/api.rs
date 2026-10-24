@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::path::Path;
 
 #[derive(Clone)]
 pub struct JellyfinApi {
@@ -235,6 +236,7 @@ impl JellyfinApi {
         .map(|_| ())
     }
 
+    /// Deletes the virtual folder only. Jellyfin does not remove the media files.
     pub async fn remove_library(&self, name: &str) -> Result<(), String> {
         Self::send(
             self.req(reqwest::Method::DELETE, "/Library/VirtualFolders")
@@ -243,6 +245,25 @@ impl JellyfinApi {
         )
         .await
         .map(|_| ())
+    }
+
+    /// Drops virtual folders that have no media left. Returns the names removed.
+    ///
+    /// A library is empty when it has no folders, or every folder is missing or
+    /// contains no media files. A folder that still has a file is kept even if
+    /// Jellyfin has not indexed it yet. Nothing in those folders is deleted.
+    pub async fn remove_empty_libraries(&self) -> Result<Vec<String>, String> {
+        let libs = self.libraries().await?;
+        let mut removed = Vec::new();
+        for lib in libs {
+            let name = lib.name.trim();
+            if name.is_empty() || !library_locations_empty(&lib.locations) {
+                continue;
+            }
+            self.remove_library(name).await?;
+            removed.push(name.to_string());
+        }
+        Ok(removed)
     }
 
     pub async fn add_path(&self, library: &str, path: &str) -> Result<(), String> {
@@ -380,6 +401,65 @@ impl JellyfinApi {
     }
 }
 
+/// Operating-system bookkeeping, not user media. A folder of only these is empty.
+const NON_MEDIA_FILES: &[&str] = &[".DS_Store", "Thumbs.db", "desktop.ini", ".directory"];
+
+/// True when there is nothing left to scan: no locations, or every location is
+/// missing or a directory tree with no media files.
+///
+/// A path that cannot be read is kept. A disconnected drive often isn't
+/// `NotFound`, and a library must not be dropped when we can't see inside it.
+pub fn library_locations_empty(locations: &[String]) -> bool {
+    locations.iter().all(|location| {
+        let location = location.trim();
+        location.is_empty() || location_gone_or_empty(Path::new(location))
+    })
+}
+
+fn location_gone_or_empty(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
+        Ok(meta) if meta.is_dir() => directory_has_no_media(path),
+        Ok(_) => false,
+    }
+}
+
+/// True when `path` contains no media. Read errors count as "has media".
+fn directory_has_no_media(path: &Path) -> bool {
+    let entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(_) => return false,
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => return false,
+        };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => return false,
+        };
+        if file_type.is_dir() {
+            if !directory_has_no_media(&entry.path()) {
+                return false;
+            }
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_str().unwrap_or("");
+        if NON_MEDIA_FILES
+            .iter()
+            .any(|ignored| name.eq_ignore_ascii_case(ignored))
+        {
+            continue;
+        }
+        // A file or a symlink is content. Symlinks are not followed.
+        return false;
+    }
+    true
+}
+
 pub(crate) fn hostname() -> String {
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
@@ -455,5 +535,124 @@ mod tests {
         let libs = api.libraries().await.unwrap();
         assert_eq!(libs[0].name, "Movies");
         assert_eq!(libs[0].locations, vec!["D:\\Movies"]);
+    }
+
+    fn touch(dir: &std::path::Path, name: &str) {
+        std::fs::write(dir.join(name), b"x").unwrap();
+    }
+
+    #[test]
+    fn empty_locations_are_libraries_with_nothing_to_scan() {
+        let root = tempfile::tempdir().unwrap();
+        let empty = root.path().join("empty");
+        let nested = empty.join("Season 01");
+        std::fs::create_dir_all(&nested).unwrap();
+        touch(&nested, ".DS_Store");
+        touch(&empty, "Thumbs.db");
+
+        let with_media = root.path().join("movies");
+        std::fs::create_dir_all(with_media.join("extra")).unwrap();
+        touch(&with_media.join("extra"), "Movie.mkv");
+        let video = with_media.join("extra").join("Movie.mkv");
+
+        let gone = root.path().join("does-not-exist");
+        let file = root.path().join("not-a-folder.mkv");
+        touch(root.path(), "not-a-folder.mkv");
+
+        assert!(library_locations_empty(&[]));
+        assert!(library_locations_empty(&[String::new(), "  ".into()]));
+        assert!(library_locations_empty(&[empty.display().to_string()]));
+        assert!(library_locations_empty(&[gone.display().to_string()]));
+        assert!(!library_locations_empty(&[with_media
+            .display()
+            .to_string()]));
+        assert!(!library_locations_empty(&[
+            gone.display().to_string(),
+            with_media.display().to_string(),
+        ]));
+        assert!(!library_locations_empty(&[file.display().to_string()]));
+        assert!(video.is_file());
+        assert!(nested.join(".DS_Store").is_file());
+
+        #[cfg(unix)]
+        {
+            let link_dir = root.path().join("link");
+            std::fs::create_dir(&link_dir).unwrap();
+            std::os::unix::fs::symlink(&video, link_dir.join("link.mkv")).unwrap();
+            assert!(!library_locations_empty(&[link_dir.display().to_string()]));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_directory_is_kept() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("locked");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0)).unwrap();
+        let empty = library_locations_empty(&[dir.display().to_string()]);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(!empty, "a directory we cannot read is not empty");
+    }
+
+    #[tokio::test]
+    async fn remove_empty_libraries_only_deletes_the_library_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let empty = root.path().join("empty");
+        std::fs::create_dir_all(empty.join("Season 02")).unwrap();
+        touch(&empty.join("Season 02"), "desktop.ini");
+        let movies = root.path().join("movies");
+        std::fs::create_dir_all(&movies).unwrap();
+        let video = movies.join("Movie.mkv");
+        touch(&movies, "Movie.mkv");
+        let gone = root.path().join("gone");
+
+        let body = serde_json::json!([
+            {"Name":"Empty","CollectionType":"tvshows","Locations":[empty],"ItemId":"a"},
+            {"Name":"Movies","CollectionType":"movies","Locations":[movies, gone],"ItemId":"b"},
+            {"Name":"Missing","CollectionType":"music","Locations":[gone],"ItemId":"c"},
+            {"Name":"NoFolders","Locations":[],"ItemId":"d"},
+            {"Name":"  ","Locations":[gone],"ItemId":"e"},
+        ])
+        .to_string();
+
+        let seen: Arc<Mutex<Vec<Request>>> = Arc::default();
+        let seen2 = seen.clone();
+        let base = serve(Arc::new(move |req: Request| {
+            let reply = match (req.method.as_str(), req.path.as_str()) {
+                ("GET", "/Library/VirtualFolders") => (200, body.clone()),
+                ("DELETE", "/Library/VirtualFolders") => (200, String::new()),
+                _ => (500, format!("unexpected {} {}", req.method, req.path)),
+            };
+            seen2.lock().unwrap().push(req);
+            reply
+        }))
+        .await;
+
+        let api = JellyfinApi::with_base(&base, Some("tok".into()));
+        let removed = api.remove_empty_libraries().await.unwrap();
+        assert_eq!(removed, vec!["Empty", "Missing", "NoFolders"]);
+
+        let seen = seen.lock().unwrap();
+        let deletes: Vec<&Request> = seen.iter().filter(|r| r.method == "DELETE").collect();
+        assert_eq!(deletes.len(), 3);
+        assert!(deletes.iter().all(|r| r.path == "/Library/VirtualFolders"));
+        assert!(deletes
+            .iter()
+            .all(|r| r.query.get("refreshLibrary").map(String::as_str) == Some("true")));
+        assert_eq!(
+            deletes
+                .iter()
+                .filter_map(|r| r.query.get("name").map(String::as_str))
+                .collect::<Vec<_>>(),
+            vec!["Empty", "Missing", "NoFolders"]
+        );
+        assert!(video.is_file(), "media files stay on disk");
+        assert!(empty.join("Season 02").join("desktop.ini").is_file());
+        assert!(movies.is_dir());
     }
 }

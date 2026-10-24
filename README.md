@@ -145,6 +145,8 @@ When Jellyfin is running, the **Jellyfin** page asks you to create the administr
 whole first-run setup: the app configures the language, remote access and Quick Connect for you. Then add
 libraries: give each one a name, pick the kind of content (movies, shows, music…) and choose a folder.
 You can add more folders, remove libraries, and **Refresh libraries** to scan them for new files.
+Refresh also removes a library whose folders are missing or empty. It removes only that library
+entry, never the files in those folders.
 
 **Sort into shows**: episodes lying loose in a library folder show up in Jellyfin as unrelated videos with no
 episode numbers. The button on each folder moves them into a folder per show, and per season when the name
