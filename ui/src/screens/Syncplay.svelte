@@ -10,7 +10,8 @@
   let { snap }: { snap: Snapshot } = $props();
 
   const form = useDraft(() => {
-    const { enabled, upnp, vanillaMode, fileRelay, relayCacheGb, webOrigins, ...rest } = snap.settings.syncplay;
+    const { enabled, upnp, vanillaMode, fileRelay, voice, relayCacheGb, webOrigins, ...rest } =
+      snap.settings.syncplay;
     return rest;
   });
   const cache = useDraft(() => ({ relayCacheGb: snap.settings.syncplay.relayCacheGb }));
@@ -292,7 +293,7 @@
       label="Vanilla Syncplay mode"
       hint={access === "approved" && !vanilla
         ? "Choose another way to join first: approved devices need YarmiplayTV features"
-        : "Behave exactly like the official Syncplay server. YarmiplayTV features such as approved devices, the file relay, and Jellyfin and Plex sharing are off."}
+        : "Behave exactly like the official Syncplay server. YarmiplayTV features such as approved devices, the file relay, voice chat, and Jellyfin and Plex sharing are off."}
       disabled={access === "approved" && !vanilla}
       checked={vanilla}
       onchange={(v) => store.save((s) => (s.syncplay.vanillaMode = v))}
@@ -305,6 +306,15 @@
       disabled={vanilla}
       checked={snap.settings.syncplay.fileRelay && !vanilla}
       onchange={(v) => store.save((s) => (s.syncplay.fileRelay = v))}
+    />
+    <Toggle
+      label="Voice chat"
+      hint={vanilla
+        ? OFF_IN_VANILLA
+        : "People in a room can talk. Audio is relayed through this PC and not recorded. On by default."}
+      disabled={vanilla}
+      checked={snap.settings.syncplay.voice && !vanilla}
+      onchange={(v) => store.save((s) => (s.syncplay.voice = v))}
     />
     <div class="cache" class:off={vanilla || !snap.settings.syncplay.fileRelay}>
       <label class="field">
@@ -346,7 +356,9 @@
   <section class="card">
     <Toggle
       label="Forward the port with UPnP"
-      hint={`Asks your router to forward TCP ${snap.settings.syncplay.port} to this PC`}
+      hint={snap.settings.syncplay.voice && !vanilla
+        ? `Asks your router to forward TCP ${snap.settings.syncplay.port}, plus voice chat on UDP 9000 and TCP 9000`
+        : `Asks your router to forward TCP ${snap.settings.syncplay.port} to this PC`}
       checked={snap.settings.syncplay.upnp}
       onchange={(v) => store.save((s) => (s.syncplay.upnp = v))}
     />

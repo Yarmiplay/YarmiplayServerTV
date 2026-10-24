@@ -93,6 +93,8 @@ pub struct SyncplaySettings {
     pub vanilla_mode: bool,
     /// Let YarmiplayTV clients stream each other's files through this server.
     pub file_relay: bool,
+    /// Relay voice between people in a Syncplay room. On by default; off in vanilla mode.
+    pub voice: bool,
     /// Disk space the relay cache may use, in GB.
     pub relay_cache_gb: u32,
     /// Let Syncplay users create managed rooms, where only operators control playback.
@@ -105,6 +107,10 @@ pub struct SyncplaySettings {
 impl SyncplaySettings {
     pub fn relay_effective(&self) -> bool {
         self.file_relay && !self.vanilla_mode
+    }
+
+    pub fn voice_effective(&self) -> bool {
+        self.voice && !self.vanilla_mode
     }
 }
 
@@ -125,6 +131,7 @@ impl Default for SyncplaySettings {
             upnp: false,
             vanilla_mode: false,
             file_relay: true,
+            voice: true,
             relay_cache_gb: 10,
             managed_rooms: true,
             web_origins: default_web_origins(),
@@ -402,6 +409,7 @@ mod tests {
         assert!(s.browser.enabled);
         assert!(!s.updates.auto);
         assert!(s.syncplay.file_relay && !s.syncplay.vanilla_mode);
+        assert!(s.syncplay.voice);
         assert!(s.syncplay.auto_approve_password);
         assert_eq!(s.syncplay.relay_cache_gb, 10);
         assert!(!s.jellyfin.share_with_syncplay);
@@ -414,6 +422,7 @@ mod tests {
         assert!(s.syncplay.relay_effective() && s.share_effective());
         s.syncplay.vanilla_mode = true;
         assert!(!s.syncplay.relay_effective() && !s.share_effective());
+        assert!(!s.syncplay.voice_effective());
     }
 
     #[test]

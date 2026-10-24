@@ -167,8 +167,8 @@
         <span>Port forwarding (UPnP)</span>
         <span class="pill {upnp.kind}">{upnp.text}</span>
         {#if snap.upnp.externalIp}<span>Public IP</span><code>{snap.upnp.externalIp}</code>{/if}
-        {#each snap.upnp.mappings as m (m.port)}
-          <span>{m.label} <span class="muted">TCP {m.port}</span></span>
+        {#each snap.upnp.mappings as m (`${m.protocol}-${m.port}`)}
+          <span>{m.label} <span class="muted">{m.protocol} {m.port}</span></span>
           <span class="pill {mappingKind[m.state]}" title={m.error ?? ""}>{mappingLabel[m.state]}</span>
         {/each}
       </div>

@@ -8,6 +8,7 @@ pub mod mux;
 pub mod protocol;
 pub mod room;
 pub mod server;
+pub mod voice;
 
 pub use crate::config::SyncplayAccess;
 pub use room::{RoomInfo, SyncplayOptions};

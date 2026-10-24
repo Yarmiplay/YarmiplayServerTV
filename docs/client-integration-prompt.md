@@ -92,6 +92,10 @@ Right after that Hello, the server sends the session:
 `plex` is only present from YarmiplayServerTV 1.7.0; older servers send no `plex` key and no
 `capabilities.plex`. Treat a missing key as `false` / unavailable.
 
+`capabilities.voice` is present from YarmiplayServerTV 2.0.0. A missing key means no voice. The voice
+messages, the packet layout, and the browser WebSocket are specified in
+[VOICE_PROTOCOL.md](VOICE_PROTOCOL.md). `GET /yarmiplay/info` never includes `voice`.
+
 A `Yarmiplay` message can carry several sub-commands at once (like `Set`); handle every key you
 know and ignore the rest.
 

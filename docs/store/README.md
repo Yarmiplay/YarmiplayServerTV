@@ -37,9 +37,9 @@ transcoding wants more).
 ## Age ratings (IARC)
 
 Category "All other app types". Answer **Yes** only to "users can interact or exchange content" (the Syncplay
-server relays room chat between the people who connect) and, among its follow-ups, to "interactions can be
+server relays room chat, and voice chat relays audio, between the people who connect) and, among its follow-ups, to "interactions can be
 limited to invited friends" (server password). Everything else is No. The result is 3+ / Everyone with
-"Users Interact".
+"Users Interact". The app does not use a microphone; the people talking use theirs in YarmiplayTV.
 
 ## Store listing (English)
 
@@ -53,6 +53,7 @@ limited to invited friends" (server password). Everything else is No. The result
 >
 > SYNCPLAY SERVER
 > • A Syncplay 1.7.6-compatible server built in: rooms, passwords, chat, readiness and shared playlists
+> • Voice chat in a room, relayed through your PC and not recorded
 > • Works with YarmiplayTV and the Syncplay desktop client
 > • Encrypted connections (TLS) once a certificate is set up
 >

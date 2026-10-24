@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "YarmiplayServerTV",
-  "version": "1.9.6",
+  "version": "2.0.0",
   "identifier": "com.yarmiplay.servertv",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -33,7 +33,7 @@
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUyNTZGQzJGQzIwQkVDNDcKUldSSDdBdkNML3hXVXZWTS9ueDZwNUMrbkRhbEs3RWxZRFhtZ2RQb0F4K1ppTGlGTlpYMG5RU1MK",
       "endpoints": ["https://github.com/Yarmiplay/YarmiplayServerTV/releases/latest/download/latest.json"],
       "windows": {
-        "installMode": "passive"
+        "installMode": "quiet"
       }
     }
   },
@@ -60,7 +60,8 @@
         "upgradeCode": "6f3e2b1c-8d4a-4f7e-9b2c-5a1d3e7f9c42"
       },
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerHooks": "windows/hooks.nsh"
       }
     },
     "macOS": {

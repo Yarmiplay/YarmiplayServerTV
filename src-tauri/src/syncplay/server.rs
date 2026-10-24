@@ -10,6 +10,7 @@ use super::ext::{self, Effect, JellyfinShare, PlexShare, TlsInfo};
 use super::mux::{self, ConnMeta, HttpSender, Sniff};
 use super::protocol::{line, now_secs, MAX_LINE_LENGTH};
 use super::room::{Access, ConnId, Out, RoomInfo, ServerState, SyncplayOptions};
+use super::voice::{self, VoiceHub, VoiceRuntime};
 use crate::config::SyncplayAccess;
 use crate::net::proxy::LocalProxy;
 use crate::relay::Relay;
@@ -54,6 +55,8 @@ pub struct Extensions {
     pub devices: Option<Arc<DeviceStore>>,
     /// Where the MyAnimeList passthrough goes (tests point it elsewhere).
     pub mal_upstream: Option<mux::MalUpstream>,
+    /// Voice relay, filled in once its sockets are bound. Shared with the HTTP mux.
+    pub voice: Arc<Mutex<Option<Arc<VoiceHub>>>>,
 }
 
 pub struct SyncplayServer {
@@ -65,13 +68,14 @@ pub struct SyncplayServer {
     discovery: Option<JoinHandle<()>>,
 }
 
-struct Shared {
+pub(crate) struct Shared {
     state: Arc<Mutex<ServerState>>,
     tls: CertStore,
     next_id: AtomicU64,
     notify: ChangeNotify,
     ext: Extensions,
     http: HttpSender,
+    voice_rt: Mutex<Option<VoiceRuntime>>,
 }
 
 impl Shared {
@@ -214,6 +218,7 @@ impl SyncplayServer {
             notify: notify.clone(),
             ext,
             http: http_tx,
+            voice_rt: Mutex::new(None),
         });
         shared.relay_on(&opts);
         {
@@ -292,6 +297,73 @@ impl SyncplayServer {
         self.shared.dispatch();
     }
 
+    pub(crate) fn voice_control(&self) -> Arc<Shared> {
+        self.shared.clone()
+    }
+
+    /// Listen on UDP and TCP 9000. A bind failure is logged and leaves voice off;
+    /// Syncplay itself keeps running.
+    pub async fn ensure_voice(&self) {
+        self.shared.ensure_voice().await;
+    }
+
+    /// Hand an already-bound relay to the server. Tests use an ephemeral port.
+    pub fn install_voice(&self, rt: VoiceRuntime) {
+        self.shared.install_voice(rt);
+    }
+
+    pub fn stop_voice(&self) {
+        self.shared.stop_voice();
+    }
+}
+
+impl Shared {
+    /// Listen on UDP and TCP 9000. A bind failure is logged and leaves voice off.
+    pub(crate) async fn ensure_voice(self: &Arc<Self>) {
+        if self.voice_rt.lock().is_some() {
+            self.state.lock().set_voice_enabled(true);
+            return;
+        }
+        match VoiceRuntime::bind(voice::PORT, voice::PORT).await {
+            Ok(rt) => {
+                self.install_voice(rt);
+                info!(
+                    udp = voice::PORT,
+                    tcp = voice::PORT,
+                    "voice relay listening"
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, port = voice::PORT, "voice relay failed to listen; voice stays off");
+            }
+        }
+    }
+
+    pub(crate) fn install_voice(self: &Arc<Self>, rt: VoiceRuntime) {
+        *self.ext.voice.lock() = Some(rt.hub.clone());
+        {
+            let mut st = self.state.lock();
+            st.set_voice_enabled(true);
+            st.attach_voice(Some(rt.hub.clone()));
+        }
+        if let Some(old) = self.voice_rt.lock().replace(rt) {
+            old.shutdown();
+        }
+    }
+
+    /// Drop the listeners and every seat.
+    pub(crate) fn stop_voice(&self) {
+        if let Some(rt) = self.voice_rt.lock().take() {
+            rt.shutdown();
+        }
+        *self.ext.voice.lock() = None;
+        let mut st = self.state.lock();
+        st.set_voice_enabled(false);
+        st.attach_voice(None);
+    }
+}
+
+impl SyncplayServer {
     /// What extension sessions are told about the shared Jellyfin.
     pub fn set_jellyfin(&self, share: Option<JellyfinShare>) {
         self.shared.state.lock().set_jellyfin(share);
@@ -334,6 +406,9 @@ impl SyncplayServer {
         }
         if let Some(r) = &self.shared.ext.relay {
             r.detach();
+        }
+        if let Some(rt) = self.shared.voice_rt.lock().take() {
+            rt.shutdown();
         }
     }
 }

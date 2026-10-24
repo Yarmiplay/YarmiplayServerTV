@@ -1,6 +1,6 @@
 [package]
 name = "yarmiplayservertv"
-version = "1.9.6"
+version = "2.0.0"
 description = "Host a Syncplay server and a Jellyfin server from your desktop"
 authors = ["Yarmiplay"]
 license = "GPL-3.0-or-later"
@@ -43,6 +43,8 @@ rusqlite = { version = "0.33", features = ["bundled"] }
 # Approved Syncplay devices: P-256 signatures (ring is rustls's provider already)
 ring = "0.17"
 base64 = "0.22"
+# Voice relay: AES-256-GCM, the same algorithm a browser's WebCrypto can open.
+aes-gcm = "0.10"
 
 # Networking, UPnP and ACME (ported from GoogleSnakeOnline)
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-webpki-roots-no-provider"] }

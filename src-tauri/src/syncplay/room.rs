@@ -15,10 +15,12 @@ use super::managed;
 use super::protocol::{
     self, line, truncate, PingService, MAX_FILENAME_LENGTH, MAX_ROOM_NAME_LENGTH,
 };
+use super::voice::{Activity, Join, VoiceHub};
 use crate::config::SyncplayAccess;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub type ConnId = u64;
@@ -285,6 +287,9 @@ pub struct ServerState {
     plex: Option<PlexShare>,
     tls: Option<TlsInfo>,
     effects: Vec<Effect>,
+    /// Server "Voice chat" switch. On until the host turns it off.
+    voice_enabled: bool,
+    voice: Option<Arc<VoiceHub>>,
 }
 
 impl ServerState {
@@ -299,6 +304,8 @@ impl ServerState {
             plex: None,
             tls: None,
             effects: Vec::new(),
+            voice_enabled: true,
+            voice: None,
         };
         s.set_options(opts);
         s
@@ -319,6 +326,7 @@ impl ServerState {
         }
         self.opts = opts;
         if revoke {
+            self.close_voice_all("vanilla");
             self.revoke_sessions();
         } else if self.capabilities() != before {
             self.broadcast_ext_state();
@@ -475,13 +483,169 @@ impl ServerState {
             (Some(t), false) => json!({ "name": t.name }),
             _ => Value::Null,
         };
+        let mut caps = self.capabilities();
+        if let Some(obj) = caps.as_object_mut() {
+            // The public probe is allowed before login, so it does not mention voice.
+            obj.remove("voice");
+        }
         json!({
             "server": "YarmiplayServerTV",
             "version": env!("CARGO_PKG_VERSION"),
             "protocol": ext::PROTOCOL,
-            "capabilities": self.capabilities(),
+            "capabilities": caps,
             "tls": tls,
         })
+    }
+
+    /// Host switch. Off closes every seat and drops the capability.
+    pub fn set_voice_enabled(&mut self, on: bool) {
+        if self.voice_enabled == on {
+            return;
+        }
+        let before = self.capabilities();
+        self.voice_enabled = on;
+        if !self.voice_offered() {
+            self.close_voice_all("disabled");
+        }
+        if self.capabilities() != before {
+            self.broadcast_ext_state();
+        }
+    }
+
+    /// Install or remove the relay. `None` closes seats. The listeners live elsewhere.
+    pub fn attach_voice(&mut self, hub: Option<Arc<VoiceHub>>) {
+        let before = self.capabilities();
+        if hub.is_none() {
+            let reason = if self.opts.vanilla_mode {
+                "vanilla"
+            } else {
+                "disabled"
+            };
+            self.close_voice_all(reason);
+        }
+        self.voice = hub;
+        if self.capabilities() != before {
+            self.broadcast_ext_state();
+        }
+    }
+
+    fn voice_offered(&self) -> bool {
+        !self.opts.vanilla_mode
+            && self.voice_enabled
+            && self.voice.as_ref().is_some_and(|h| h.listening())
+    }
+
+    fn voice_descriptor(&self) -> Option<Value> {
+        if !self.voice_offered() {
+            return None;
+        }
+        self.voice.as_ref().map(|h| h.descriptor())
+    }
+
+    fn close_voice_all(&mut self, reason: &str) {
+        let Some(hub) = self.voice.clone() else {
+            return;
+        };
+        let msg = voice_closed(reason);
+        for id in hub.close_all() {
+            self.send_ext(id, "voiceClosed", msg.clone());
+        }
+    }
+
+    /// Drop one seat. `room` is where the peers still are (the room before a move).
+    fn end_voice(&mut self, id: ConnId, reason: &str, room: Option<&str>) {
+        let Some(hub) = self.voice.clone() else {
+            return;
+        };
+        let room = room.map(str::to_string).or_else(|| hub.room_of(id));
+        if !hub.leave(id) {
+            return;
+        }
+        self.send_ext(id, "voiceClosed", voice_closed(reason));
+        if let Some(room) = room {
+            self.push_voice_peers(&room);
+        }
+    }
+
+    fn push_voice_peers(&self, room: &str) {
+        let Some(hub) = &self.voice else {
+            return;
+        };
+        for id in hub.conns_in(room) {
+            self.send_ext(id, "voicePeers", hub.peers_message(room, id));
+        }
+    }
+
+    fn voice_join(&mut self, id: ConnId, value: &Value) {
+        let version = value.get("version").and_then(Value::as_u64).unwrap_or(0);
+        if !self.voice_offered() {
+            let reason = if self.opts.vanilla_mode {
+                "vanilla"
+            } else {
+                "disabled"
+            };
+            self.send_ext(id, "voiceClosed", voice_closed(reason));
+            return;
+        }
+        let Some(hub) = self.voice.clone() else {
+            self.send_ext(id, "voiceClosed", voice_closed("disabled"));
+            return;
+        };
+        let (name, room) = {
+            let w = &self.watchers[&id];
+            (w.name.clone(), w.room.clone())
+        };
+        match hub.join(id, &room, &name, version) {
+            Join::Version => {
+                self.send_ext(id, "voiceClosed", voice_closed("version"));
+            }
+            Join::Full => {
+                self.send_ext(id, "voiceClosed", voice_closed("full"));
+            }
+            Join::Joined(info) => {
+                if info.replaced {
+                    self.send_ext(id, "voiceClosed", voice_closed("replaced"));
+                }
+                self.send_ext(id, "voiceJoined", info.joined_message());
+                self.push_voice_peers(&room);
+            }
+        }
+    }
+
+    fn voice_leave(&mut self, id: ConnId) {
+        let room = self.voice.as_ref().and_then(|h| h.room_of(id));
+        self.end_voice(id, "left", room.as_deref());
+    }
+
+    fn voice_activity(&mut self, id: ConnId, value: &Value) {
+        let Some(speaking) = value.get("speaking").and_then(Value::as_bool) else {
+            return;
+        };
+        let Some(hub) = self.voice.clone() else {
+            return;
+        };
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        if let Activity::Update {
+            room,
+            participant_id,
+            username,
+            speaking,
+        } = hub.activity(id, speaking, now_ms)
+        {
+            let msg = json!({
+                "participantId": participant_id,
+                "username": username,
+                "speaking": speaking,
+            });
+            for peer in hub.conns_in(&room) {
+                if peer != id {
+                    self.send_ext(peer, "voiceActivity", msg.clone());
+                }
+            }
+        }
     }
 
     pub fn take_effects(&mut self) -> Vec<Effect> {
@@ -498,6 +662,7 @@ impl ServerState {
             "roomSettings": on,
             "websocket": on,
             "mal": on,
+            "voice": self.voice_offered(),
         })
     }
 
@@ -560,12 +725,17 @@ impl ServerState {
     }
 
     fn broadcast_ext_state(&self) {
-        let caps = self.capabilities();
-        let jf = self.jellyfin_message();
-        let plex = self.plex_message();
-        let tls = self.tls_message();
+        let mut body = json!({
+            "capabilities": self.capabilities(),
+            "jellyfin": self.jellyfin_message(),
+            "plex": self.plex_message(),
+            "tls": self.tls_message(),
+        });
+        if let Some(v) = self.voice_descriptor() {
+            body["voice"] = v;
+        }
         for w in self.watchers.values().filter(|w| w.ext.is_some()) {
-            w.send(json!({ "Yarmiplay": { "capabilities": caps, "jellyfin": jf, "plex": plex, "tls": tls } }));
+            w.send(json!({ "Yarmiplay": body }));
         }
     }
 
@@ -670,7 +840,7 @@ impl ServerState {
             "maxFilenameLength": MAX_FILENAME_LENGTH,
         });
         if let Some(s) = session {
-            f["yarmiplay"] = json!({
+            let mut y = json!({
                 "server": "YarmiplayServerTV",
                 "version": env!("CARGO_PKG_VERSION"),
                 "protocol": s.protocol,
@@ -679,6 +849,10 @@ impl ServerState {
                 "access": self.opts.access.as_str(),
                 "device": if device { "approved" } else { "none" },
             });
+            if let Some(v) = self.voice_descriptor() {
+                y["voice"] = v;
+            }
+            f["yarmiplay"] = y;
         }
         f
     }
@@ -829,14 +1003,18 @@ impl ServerState {
         }));
         if let Some(s) = &w.ext {
             // The room's settings ride with the session: a client takes them only once it has one.
-            w.send(json!({ "Yarmiplay": {
+            let mut body = json!({
                 "session": { "token": s.token, "protocol": s.protocol },
                 "capabilities": self.capabilities(),
                 "jellyfin": self.jellyfin_message(),
                 "plex": self.plex_message(),
                 "tls": self.tls_message(),
                 "roomSettings": self.room_settings_message(&w.room),
-            } }));
+            });
+            if let Some(v) = self.voice_descriptor() {
+                body["voice"] = v;
+            }
+            w.send(json!({ "Yarmiplay": body }));
         }
         tracing::info!(user = %name, room = %w.room, client = %version, ext = w.ext.is_some(), "Syncplay user joined");
         Ok(())
@@ -883,7 +1061,15 @@ impl ServerState {
 
     fn set_watcher_room(&mut self, id: ConnId, room_name: &str, as_join: bool, now: f64) {
         let room_name = truncate(room_name, MAX_ROOM_NAME_LENGTH);
+        let previous = self
+            .watchers
+            .get(&id)
+            .map(|w| w.room.clone())
+            .unwrap_or_default();
         self.move_watcher(id, &room_name, now);
+        if !as_join && previous != room_name && !previous.is_empty() {
+            self.end_voice(id, "room", Some(&previous));
+        }
         if as_join {
             let w = &self.watchers[&id];
             let others: Vec<ConnId> = self.audience(id).into_iter().filter(|m| *m != id).collect();
@@ -1096,6 +1282,9 @@ impl ServerState {
                     }
                 }
                 "roomSettings" => self.set_room_settings(id, value),
+                "voiceJoin" => self.voice_join(id, value),
+                "voiceLeave" => self.voice_leave(id),
+                "voiceActivity" => self.voice_activity(id, value),
                 "uploadFailed" => {
                     let upload = value.get("id").and_then(Value::as_str).unwrap_or("");
                     let error = value.get("error").and_then(Value::as_str).unwrap_or("");
@@ -1502,6 +1691,7 @@ impl ServerState {
         if !self.watchers.contains_key(&id) {
             return;
         }
+        let voice_room = self.voice.as_ref().and_then(|h| h.room_of(id));
         let msg = self.user_setting(id, None, Some(json!({ "left": true })));
         let others: Vec<ConnId> = self.audience(id).into_iter().filter(|m| *m != id).collect();
         self.send_to(&others, &msg);
@@ -1511,6 +1701,13 @@ impl ServerState {
                 self.effects.push(Effect::Left { conn: id });
             }
             tracing::info!(user = %w.name, room = %w.room, "Syncplay user left");
+        }
+        // The signaling socket is gone, so there is no voiceClosed. Peers still hear the seat drop.
+        if let Some(room) = voice_room {
+            if let Some(hub) = self.voice.clone() {
+                hub.leave(id);
+                self.push_voice_peers(&room);
+            }
         }
     }
 
@@ -2645,4 +2842,255 @@ mod tests {
         let motd = hello["Hello"]["motd"].as_str().unwrap();
         assert_eq!(motd.chars().count(), protocol::MAX_MOTD_LENGTH);
     }
+
+    fn yarmiplay_of(out: &[Value], key: &str) -> Vec<Value> {
+        out.iter()
+            .filter_map(|m| m.get("Yarmiplay").and_then(|y| y.get(key)).cloned())
+            .collect()
+    }
+
+    fn with_voice(s: &mut ServerState) {
+        s.attach_voice(Some(super::super::voice::VoiceHub::open_for_test()));
+    }
+
+    #[test]
+    fn voice_follows_the_toggle_the_listener_and_vanilla_mode() {
+        let mut s = ServerState::new(SyncplayOptions::default());
+        let mut a = join_ext(&mut s, 1, "alice", "movie");
+        let hello = drain(&mut a)
+            .into_iter()
+            .find(|m| m.get("Hello").is_some())
+            .unwrap();
+        assert_eq!(
+            hello["Hello"]["features"]["yarmiplay"]["capabilities"]["voice"],
+            false
+        );
+        assert!(s.ext_info()["capabilities"].get("voice").is_none());
+
+        with_voice(&mut s);
+        let out = drain(&mut a);
+        assert_eq!(out[0]["Yarmiplay"]["capabilities"]["voice"], true);
+        assert_eq!(out[0]["Yarmiplay"]["voice"]["transport"], "yv1");
+        assert_eq!(out[0]["Yarmiplay"]["voice"]["maxParticipants"], 8);
+        assert!(s.ext_info()["capabilities"].get("voice").is_none());
+
+        s.set_voice_enabled(false);
+        let out = drain(&mut a);
+        assert_eq!(out[0]["Yarmiplay"]["capabilities"]["voice"], false);
+        assert!(out[0]["Yarmiplay"].get("voice").is_none());
+
+        s.set_voice_enabled(true);
+        drain(&mut a);
+        s.handle_message(
+            1,
+            &msg(json!({ "Yarmiplay": { "voiceJoin": { "version": 1 } } })),
+            1.0,
+        );
+        drain(&mut a);
+        s.set_options(SyncplayOptions {
+            vanilla_mode: true,
+            ..SyncplayOptions::default()
+        });
+        let out = drain(&mut a);
+        assert_eq!(out[0]["Yarmiplay"]["voiceClosed"]["reason"], "vanilla");
+        assert_eq!(out[1]["Yarmiplay"]["capabilities"]["voice"], false);
+    }
+
+    #[test]
+    fn voice_join_is_ignored_without_an_extension_session() {
+        let mut s = ServerState::new(SyncplayOptions::default());
+        with_voice(&mut s);
+        let mut a = join(&mut s, 1, "alice", "movie", 0.0);
+        drain(&mut a);
+        s.handle_message(
+            1,
+            &msg(json!({ "Yarmiplay": { "voiceJoin": { "version": 1 } } })),
+            1.0,
+        );
+        assert!(drain(&mut a).is_empty());
+    }
+
+    #[test]
+    fn two_seats_share_a_room_and_a_third_room_is_not_told() {
+        let mut s = ServerState::new(SyncplayOptions::default());
+        with_voice(&mut s);
+        let mut a = join_ext(&mut s, 1, "alice", "movie");
+        let mut b = join_ext(&mut s, 2, "bob", "movie");
+        let mut c = join_ext(&mut s, 3, "carol", "other");
+        drain(&mut a);
+        drain(&mut b);
+        drain(&mut c);
+        s.handle_message(
+            1,
+            &msg(json!({ "Yarmiplay": { "voiceJoin": { "version": 1 } } })),
+            1.0,
+        );
+        s.handle_message(
+            2,
+            &msg(json!({ "Yarmiplay": { "voiceJoin": { "version": 1 } } })),
+            1.0,
+        );
+        s.handle_message(
+            3,
+            &msg(json!({ "Yarmiplay": { "voiceJoin": { "version": 1 } } })),
+            1.0,
+        );
+        let to_a = drain(&mut a);
+        let to_b = drain(&mut b);
+        let to_c = drain(&mut c);
+        assert_eq!(yarmiplay_of(&to_a, "voiceJoined")[0]["participantId"], "c1");
+        assert!(
+            yarmiplay_of(&to_a, "voiceJoined")[0]["key"]
+                .as_str()
+                .unwrap()
+                .len()
+                > 20
+        );
+        let peers_b = &yarmiplay_of(&to_b, "voicePeers");
+        let last = peers_b.last().unwrap();
+        assert_eq!(last["peers"].as_array().unwrap().len(), 2);
+        assert_eq!(last["self"], "c2");
+        assert_eq!(
+            yarmiplay_of(&to_c, "voicePeers").last().unwrap()["peers"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(yarmiplay_of(&to_a, "voicePeers").last().unwrap()["peers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["participantId"] != "c3"));
+
+        s.handle_message(
+            1,
+            &msg(json!({ "Yarmiplay": { "voiceActivity": { "speaking": true } } })),
+            1.1,
+        );
+        assert_eq!(
+            yarmiplay_of(&drain(&mut b), "voiceActivity")[0]["participantId"],
+            "c1"
+        );
+        assert!(yarmiplay_of(&drain(&mut a), "voiceActivity").is_empty());
+        assert!(yarmiplay_of(&drain(&mut c), "voiceActivity").is_empty());
+    }
+
+    #[test]
+    fn room_change_and_disconnect_close_the_seat() {
+        let mut s = ServerState::new(SyncplayOptions::default());
+        with_voice(&mut s);
+        let mut a = join_ext(&mut s, 1, "alice", "movie");
+        let mut b = join_ext(&mut s, 2, "bob", "movie");
+        drain(&mut a);
+        drain(&mut b);
+        s.handle_message(
+            1,
+            &msg(json!({ "Yarmiplay": { "voiceJoin": { "version": 1 } } })),
+            1.0,
+        );
+        s.handle_message(
+            2,
+            &msg(json!({ "Yarmiplay": { "voiceJoin": { "version": 1 } } })),
+            1.0,
+        );
+        drain(&mut a);
+        drain(&mut b);
+
+        s.handle_message(
+            1,
+            &msg(json!({ "Set": { "room": { "name": "other" } } })),
+            2.0,
+        );
+        let to_a = drain(&mut a);
+        assert_eq!(yarmiplay_of(&to_a, "voiceClosed")[0]["reason"], "room");
+        let to_b = drain(&mut b);
+        let peers = yarmiplay_of(&to_b, "voicePeers");
+        assert_eq!(peers.last().unwrap()["peers"].as_array().unwrap().len(), 1);
+
+        s.handle_message(2, &msg(json!({ "Yarmiplay": { "voiceLeave": {} } })), 3.0);
+        let to_b = drain(&mut b);
+        assert_eq!(yarmiplay_of(&to_b, "voiceClosed")[0]["reason"], "left");
+
+        // Both back in the same room, then alice's Syncplay connection drops.
+        s.handle_message(
+            1,
+            &msg(json!({ "Set": { "room": { "name": "movie" } } })),
+            4.0,
+        );
+        drain(&mut a);
+        drain(&mut b);
+        s.handle_message(
+            1,
+            &msg(json!({ "Yarmiplay": { "voiceJoin": { "version": 1 } } })),
+            5.0,
+        );
+        s.handle_message(
+            2,
+            &msg(json!({ "Yarmiplay": { "voiceJoin": { "version": 1 } } })),
+            5.0,
+        );
+        drain(&mut a);
+        drain(&mut b);
+        s.remove(1);
+        let to_b = drain(&mut b);
+        assert!(
+            yarmiplay_of(&to_b, "voiceClosed").is_empty(),
+            "a dead socket gets no voiceClosed"
+        );
+        assert_eq!(
+            yarmiplay_of(&to_b, "voicePeers").last().unwrap()["peers"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_ninth_voice_seat_is_told_the_room_is_full() {
+        let mut s = ServerState::new(SyncplayOptions::default());
+        with_voice(&mut s);
+        let mut last = None;
+        for i in 1..=8 {
+            let mut rx = join_ext(&mut s, i, &format!("u{i}"), "movie");
+            drain(&mut rx);
+            s.handle_message(
+                i,
+                &msg(json!({ "Yarmiplay": { "voiceJoin": { "version": 1 } } })),
+                1.0,
+            );
+            assert!(
+                !yarmiplay_of(&drain(&mut rx), "voiceJoined").is_empty(),
+                "seat {i}"
+            );
+            last = Some(rx);
+        }
+        let mut ninth = join_ext(&mut s, 9, "late", "movie");
+        drain(&mut ninth);
+        s.handle_message(
+            9,
+            &msg(json!({ "Yarmiplay": { "voiceJoin": { "version": 1 } } })),
+            1.0,
+        );
+        assert_eq!(
+            yarmiplay_of(&drain(&mut ninth), "voiceClosed")[0]["reason"],
+            "full"
+        );
+        drop(last);
+    }
+}
+
+fn voice_closed(reason: &str) -> Value {
+    let message = match reason {
+        "left" => "You left voice chat",
+        "disabled" => "Voice chat is off on this server",
+        "vanilla" => "Voice chat is off in vanilla Syncplay mode",
+        "full" => "This room's voice chat is full",
+        "room" => "You changed rooms",
+        "replaced" => "Voice chat reconnected",
+        "version" => "This voice version is not supported",
+        _ => "Voice chat stopped",
+    };
+    json!({ "reason": reason, "message": message })
 }
