@@ -7,6 +7,7 @@
   import Toggle from "../lib/Toggle.svelte";
   import Address from "../lib/Address.svelte";
   import Libraries from "../lib/Libraries.svelte";
+  import LibraryBrowser from "../lib/LibraryBrowser.svelte";
 
   let { snap }: { snap: Snapshot } = $props();
 
@@ -378,6 +379,7 @@
         </div>
       {/if}
     </section>
+    <LibraryBrowser {libraries} />
   {/if}
 
   <section class="card">

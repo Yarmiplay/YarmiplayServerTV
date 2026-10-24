@@ -227,7 +227,7 @@ If you prefer Plex Media Server, you can install it from [plex.tv](https://www.p
 - **Microsoft Store & Snap:** Automatically kept up-to-date by your operating system.
 - **Standalone Windows (.exe, including an older .msi install) & Linux (.deb / AppImage):**
   - Click **Check for updates** on the Dashboard or tray menu to check for new releases.
-  - Turn on **Automatic updates** to check periodically and automatically update when no active Syncplay rooms are in use.
+  - Turn on **Automatic updates** to check periodically and automatically update when no active Syncplay rooms are in use. Jellyfin libraries refresh on that same schedule. Empty libraries are removed. Media files are only deleted when you confirm a delete in the library browser.
   - Every update binary is cryptographically verified against the developer's release signing key before installation.
 
 ---

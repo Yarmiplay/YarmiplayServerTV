@@ -129,6 +129,7 @@ async fn serve(handle: AppHandle, stop: watch::Receiver<bool>) {
         .route("/api/auth", get(auth))
         .route("/api/events", get(events))
         .route("/api/invoke/{command}", post(invoke))
+        .route("/api/jellyfin-image/{item_id}/{kind}", get(jellyfin_image))
         .fallback(get(asset))
         .layer(middleware::from_fn(check_host))
         .with_state(handle);
@@ -337,6 +338,19 @@ async fn dispatch(h: &AppHandle, command: &str, a: &Value) -> Result<Value, Stri
         "jellyfin_sort" => ok(cmd::jellyfin_sort(app(), arg(a, "path")?).await?),
         "jellyfin_sort_undo" => ok(cmd::jellyfin_sort_undo(app(), arg(a, "path")?).await?),
         "jellyfin_sorted_folders" => ok(cmd::jellyfin_sorted_folders(app()).await?),
+        "jellyfin_browse" => ok(cmd::jellyfin_browse(
+            app(),
+            arg(a, "parentId")?,
+            arg(a, "start")?,
+            arg(a, "limit")?,
+        )
+        .await?),
+        "jellyfin_delete_item" => {
+            ok(cmd::jellyfin_delete_item(app(), arg(a, "itemId")?, arg(a, "confirmed")?).await?)
+        }
+        "jellyfin_artwork" => {
+            ok(cmd::jellyfin_artwork(app(), arg(a, "itemId")?, arg(a, "kind")?).await?)
+        }
         "plex_link_start" => ok(cmd::plex_link_start(app()).await?),
         "plex_link_cancel" => ok(cmd::plex_link_cancel(app())),
         "plex_logout" => ok(cmd::plex_logout(app()).await?),
@@ -389,6 +403,35 @@ async fn dispatch(h: &AppHandle, command: &str, a: &Value) -> Result<Value, Stri
             Ok(Value::Null)
         }
         _ => Err(format!("unknown command `{command}`")),
+    }
+}
+
+/// Same-origin image for the browser control panel. The session cookie is
+/// enough: an `<img>` cannot send the CSRF header. The bytes come from the
+/// local Jellyfin server, not from this app's disk.
+async fn jellyfin_image(
+    State(handle): State<AppHandle>,
+    headers: HeaderMap,
+    Path((item_id, kind)): Path<(String, String)>,
+) -> Response {
+    if !has_session(&headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match handle
+        .state::<Arc<App>>()
+        .jellyfin_artwork(&item_id, &kind)
+        .await
+    {
+        Ok((bytes, content_type)) => (
+            [
+                (header::CONTENT_TYPE, content_type),
+                (header::CACHE_CONTROL, "private, max-age=86400".to_string()),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
 

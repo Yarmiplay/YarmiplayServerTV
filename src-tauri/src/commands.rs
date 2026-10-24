@@ -28,9 +28,10 @@ pub async fn update_settings(
     let snap = app.inner().update_settings(settings).await?;
     if snap.settings.updates.auto && !before.auto {
         crate::updates::turned_on(&handle);
-    } else if snap.settings.updates.auto
-        && snap.settings.updates.interval_minutes != before.interval_minutes
-    {
+    }
+    // The Jellyfin library refresh shares this interval, so it wakes even when
+    // automatic updates stay off.
+    if snap.settings.updates.interval_minutes != before.interval_minutes {
         app.updates.schedule_changed();
     }
     if !snap.settings.browser.enabled {
@@ -157,6 +158,42 @@ pub async fn jellyfin_sort_undo(app: AppState<'_>, path: String) -> Result<usize
 #[tauri::command]
 pub async fn jellyfin_sorted_folders(app: AppState<'_>) -> Result<Vec<String>, String> {
     Ok(app.jellyfin_sorted_folders())
+}
+
+#[tauri::command]
+pub async fn jellyfin_browse(
+    app: AppState<'_>,
+    parent_id: String,
+    start: u32,
+    limit: u32,
+) -> Result<crate::jellyfin::library::MediaPage, String> {
+    app.jellyfin_browse(parent_id, start, limit).await
+}
+
+#[tauri::command]
+pub async fn jellyfin_delete_item(
+    app: AppState<'_>,
+    item_id: String,
+    confirmed: bool,
+) -> Result<(), String> {
+    app.jellyfin_delete_item(item_id, confirmed).await
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JellyfinArtwork {
+    pub content_type: String,
+    pub data: Vec<u8>,
+}
+
+#[tauri::command]
+pub async fn jellyfin_artwork(
+    app: AppState<'_>,
+    item_id: String,
+    kind: String,
+) -> Result<JellyfinArtwork, String> {
+    let (data, content_type) = app.jellyfin_artwork(&item_id, &kind).await?;
+    Ok(JellyfinArtwork { content_type, data })
 }
 
 #[tauri::command]

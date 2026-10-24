@@ -118,6 +118,7 @@ pub fn run() {
             state.start();
             web::apply(&handle, state.settings().browser.enabled);
             updates::start(handle.clone());
+            jellyfin::schedule::start(handle.clone());
             if !minimized {
                 tray::show_main(&handle);
             }
@@ -149,6 +150,9 @@ pub fn run() {
             commands::jellyfin_sort,
             commands::jellyfin_sort_undo,
             commands::jellyfin_sorted_folders,
+            commands::jellyfin_browse,
+            commands::jellyfin_delete_item,
+            commands::jellyfin_artwork,
             commands::plex_link_start,
             commands::plex_link_cancel,
             commands::plex_logout,

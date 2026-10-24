@@ -1048,6 +1048,14 @@ impl App {
         }
     }
 
+    /// Scheduled refresh runs only while Jellyfin is up and the wizard is done.
+    pub fn jellyfin_refresh_allowed(&self) -> bool {
+        let settings = self.settings.read();
+        settings.jellyfin.enabled
+            && settings.jellyfin.setup_complete
+            && self.jellyfin.status().phase == "running"
+    }
+
     fn jellyfin_api(&self) -> Result<JellyfinApi, String> {
         let port = self.jellyfin_port()?;
         if self.jellyfin_token.read().is_none() {
@@ -1256,6 +1264,67 @@ impl App {
                 Err(e) => warn!(error = %e, "removing empty Jellyfin libraries"),
             }
             api.rescan().await
+        })
+        .await
+    }
+
+    /// One page of shows, seasons, episodes or movies under a Jellyfin item.
+    pub async fn jellyfin_browse(
+        &self,
+        parent_id: String,
+        start: u32,
+        limit: u32,
+    ) -> Result<crate::jellyfin::library::MediaPage, String> {
+        let parent = crate::jellyfin::library::require_item_id(&parent_id)?.to_string();
+        let user = self.settings().jellyfin.admin_user_id;
+        self.run_with_auth(move |api| {
+            let parent = parent.clone();
+            let user = user.clone();
+            async move {
+                api.list_children(user.as_deref(), &parent, start, limit)
+                    .await
+            }
+        })
+        .await
+    }
+
+    /// Delete one Jellyfin item, or one version of it, after the user confirms.
+    /// Empty libraries are then removed the same way a manual refresh removes them.
+    /// The media delete itself has already happened if that second step fails.
+    pub async fn jellyfin_delete_item(
+        &self,
+        item_id: String,
+        confirmed: bool,
+    ) -> Result<(), String> {
+        crate::jellyfin::library::deletion_allowed(confirmed)?;
+        let id = crate::jellyfin::library::require_item_id(&item_id)?.to_string();
+        self.run_with_auth(move |api| {
+            let id = id.clone();
+            async move { api.delete_item(&id).await }
+        })
+        .await?;
+        info!(item = %item_id, "deleted a Jellyfin item");
+        if let Err(e) = self
+            .run_with_auth(|api| async move { api.remove_empty_libraries().await })
+            .await
+        {
+            warn!(error = %e, "removing empty Jellyfin libraries after a delete");
+        }
+        Ok(())
+    }
+
+    /// Poster, logo or episode-thumb bytes from the local Jellyfin server.
+    pub async fn jellyfin_artwork(
+        &self,
+        item_id: &str,
+        kind: &str,
+    ) -> Result<(Vec<u8>, String), String> {
+        let id = crate::jellyfin::library::require_item_id(item_id)?.to_string();
+        let kind = crate::jellyfin::library::ImageKind::parse(kind)
+            .ok_or_else(|| "Unknown image type".to_string())?;
+        self.run_with_auth(move |api| {
+            let id = id.clone();
+            async move { api.artwork(&id, kind).await }
         })
         .await
     }
