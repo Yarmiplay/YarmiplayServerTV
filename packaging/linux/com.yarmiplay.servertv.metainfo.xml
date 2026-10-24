@@ -77,6 +77,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="2.0.1" date="2026-10-24">
+      <description>
+        <p>The tray icon uses the same crop as the app icon, so it fills the tray slot.</p>
+      </description>
+    </release>
     <release version="2.0.0" date="2026-10-24">
       <description>
         <p>Voice chat in Syncplay rooms, relayed through this PC and not recorded. The Windows setup upgrades an older MSI install and keeps settings.</p>
