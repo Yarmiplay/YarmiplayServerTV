@@ -85,13 +85,16 @@ impl JellyfinApi {
         h
     }
 
-    fn req(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+    pub(crate) fn req(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
         self.client
             .request(method, format!("{}{path}", self.base))
             .header("Authorization", self.auth_header())
     }
 
-    async fn send(rb: reqwest::RequestBuilder, what: &str) -> Result<reqwest::Response, String> {
+    pub(crate) async fn send(
+        rb: reqwest::RequestBuilder,
+        what: &str,
+    ) -> Result<reqwest::Response, String> {
         let resp = rb
             .send()
             .await

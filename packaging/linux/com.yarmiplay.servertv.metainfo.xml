@@ -77,6 +77,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="2.0.2" date="2026-10-24">
+      <description>
+        <p>Browse Jellyfin shows and movies with their artwork, delete one only after confirming its name, and refresh libraries on the update-check schedule.</p>
+      </description>
+    </release>
     <release version="2.0.1" date="2026-10-24">
       <description>
         <p>The tray icon fills the tray slot. Automatic update checks stay every 30 minutes unless you choose another schedule. The download page offers the Windows setup only.</p>

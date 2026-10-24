@@ -388,6 +388,48 @@ export interface Library {
   itemId: string | null;
 }
 
+/** A poster, logo or episode still that Jellyfin has a tag for. */
+export interface ImageRef {
+  kind: string;
+  tag: string;
+}
+
+/** One video file of an episode or movie. */
+export interface MediaFile {
+  id: string;
+  name: string;
+  path: string;
+  /** True when deleting this file also removes the episode or movie. */
+  removesItem: boolean;
+}
+
+/** A show, season, episode, movie or folder in the library browser. */
+export interface MediaCard {
+  id: string;
+  name: string;
+  kind: string;
+  year: number | null;
+  indexNumber: number | null;
+  parentIndexNumber: number | null;
+  seriesName: string | null;
+  childCount: number | null;
+  poster: ImageRef | null;
+  logo: ImageRef | null;
+  files: MediaFile[];
+  canDrill: boolean;
+}
+
+export interface MediaPage {
+  items: MediaCard[];
+  total: number;
+  start: number;
+}
+
+export interface JellyfinArtwork {
+  contentType: string;
+  data: number[];
+}
+
 /** One episode a sort moves into its show's folder. */
 export interface SortMove {
   file: string;
@@ -447,6 +489,13 @@ export const api = {
   jellyfinSort: (path: string) => invoke<SortResult>("jellyfin_sort", { path }),
   jellyfinSortUndo: (path: string) => invoke<number>("jellyfin_sort_undo", { path }),
   jellyfinSortedFolders: () => invoke<string[]>("jellyfin_sorted_folders"),
+  jellyfinBrowse: (parentId: string, start: number, limit: number) =>
+    invoke<MediaPage>("jellyfin_browse", { parentId, start, limit }),
+  /** Deletes only when `confirmed` is true. The dialog is what sets that. */
+  jellyfinDeleteItem: (itemId: string, confirmed: boolean) =>
+    invoke<void>("jellyfin_delete_item", { itemId, confirmed }),
+  jellyfinArtwork: (itemId: string, kind: string) =>
+    invoke<JellyfinArtwork>("jellyfin_artwork", { itemId, kind }),
   plexLinkStart: () => invoke<Snapshot>("plex_link_start"),
   plexLinkCancel: () => invoke<Snapshot>("plex_link_cancel"),
   plexLogout: () => invoke<Snapshot>("plex_logout"),

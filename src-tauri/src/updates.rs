@@ -27,7 +27,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 use tracing::{info, warn};
 
-const FIRST_CHECK: Duration = Duration::from_secs(60);
+pub(crate) const FIRST_CHECK: Duration = Duration::from_secs(60);
 /// How often a downloaded update retries installing while Syncplay is busy.
 const INSTALL_RETRY: Duration = Duration::from_secs(10 * 60);
 
@@ -59,8 +59,11 @@ pub struct Updates {
     /// Set by the Windows exit hook once it has stopped the services.
     services_stopped: AtomicBool,
     notify: Notify,
-    /// Wakes the schedule loop when the interval changes, so it applies without a restart.
+    /// Wakes the update-check loop when the interval changes.
     schedule: tokio::sync::Notify,
+    /// Wakes the Jellyfin library refresh, which shares that interval.
+    /// A separate `Notify` so one `notify_one` cannot leave the other loop asleep.
+    library_schedule: tokio::sync::Notify,
 }
 
 impl Updates {
@@ -83,12 +86,20 @@ impl Updates {
             services_stopped: AtomicBool::new(false),
             notify,
             schedule: tokio::sync::Notify::new(),
+            library_schedule: tokio::sync::Notify::new(),
         })
     }
 
-    /// The control panel saved a new check interval while automatic updates are on.
+    /// The control panel saved a new check interval. Update checks and the
+    /// Jellyfin library refresh both wait on this.
     pub fn schedule_changed(&self) {
         self.schedule.notify_one();
+        self.library_schedule.notify_one();
+    }
+
+    /// Wakes when [`Self::schedule_changed`] runs, so a new interval applies live.
+    pub fn library_schedule_listener(&self) -> tokio::sync::futures::Notified<'_> {
+        self.library_schedule.notified()
     }
 
     pub fn status(&self) -> UpdateStatus {
@@ -180,6 +191,12 @@ pub fn start(handle: AppHandle) {
 /// previous check finished; `None` means there has not been one yet.
 pub fn check_is_due(auto: bool, since_last: Option<Duration>, interval: Duration) -> bool {
     auto && since_last.is_none_or(|elapsed| elapsed >= interval)
+}
+
+/// Jellyfin library refresh uses the same interval as update checks, including
+/// when automatic updates are off. `None` means the first refresh is due.
+pub fn library_refresh_is_due(since_last: Option<Duration>, interval: Duration) -> bool {
+    since_last.is_none_or(|elapsed| elapsed >= interval)
 }
 
 /// Called when the user turns automatic updates on, so they needn't wait
@@ -362,7 +379,7 @@ pub async fn install(handle: &AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_is_due, updater_name};
+    use super::{check_is_due, library_refresh_is_due, updater_name};
     use std::time::Duration;
 
     #[test]
@@ -394,6 +411,16 @@ mod tests {
         assert!(check_is_due(true, Some(half_hour), half_hour));
         assert!(check_is_due(true, Some(quarter), quarter));
         assert!(!check_is_due(true, Some(quarter), day));
+        assert!(
+            library_refresh_is_due(None, half_hour),
+            "the first library refresh is due even when automatic updates are off"
+        );
+        assert!(!library_refresh_is_due(
+            Some(Duration::from_secs(29 * 60)),
+            half_hour
+        ));
+        assert!(library_refresh_is_due(Some(half_hour), half_hour));
+        assert!(library_refresh_is_due(Some(quarter), quarter));
         assert!(
             check_is_due(true, Some(Duration::from_secs(12 * 60 * 60)), quarter),
             "shortening the interval makes the next check due without a restart"

@@ -58,7 +58,8 @@ Copies from the Microsoft Store or the Snap Store are updated by those stores an
 
 **Check for updates** (Dashboard, or the tray menu) looks for a newer release here on GitHub and downloads
 it; **Install** then restarts the app into the new version. Switch on **Automatic updates** on the Dashboard to
-check on a schedule (every 30 minutes unless you pick another) and install new versions while nobody is using Syncplay. Copies installed with the
+check on a schedule (every 30 minutes unless you pick another) and install new versions while nobody is using Syncplay.
+Jellyfin libraries refresh on that same schedule, and a library whose folders are empty is removed. That refresh does not delete media files. Copies installed with the
 `.msi` or `.deb` package need administrator permission to update, so for those the new version is downloaded
 and waits for you to click **Install**. Every update is checked against the app's update signing key before
 it installs. Versions before 1.1.0 can't update themselves; install 1.1.0 or later from the download page once.
@@ -145,6 +146,8 @@ When Jellyfin is running, the **Jellyfin** page asks you to create the administr
 whole first-run setup: the app configures the language, remote access and Quick Connect for you. Then add
 libraries: give each one a name, pick the kind of content (movies, shows, music…) and choose a folder.
 You can add more folders, remove libraries, and **Refresh libraries** to scan them for new files.
+The same page browses shows and movies with their Jellyfin artwork, then seasons and episodes.
+Deleting a show, a season, an episode or a file asks you to confirm the name, then uses Jellyfin's own delete so the files and the library stay in step.
 Refresh also removes a library whose folders are missing or empty. It removes only that library
 entry, never the files in those folders.
 

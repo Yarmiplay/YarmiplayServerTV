@@ -4,9 +4,11 @@ pub mod api;
 pub mod db;
 pub mod https;
 pub mod installer;
+pub mod library;
 pub mod names;
 pub mod netconfig;
 pub mod process;
+pub mod schedule;
 pub mod share;
 pub mod sort;
 

@@ -31,6 +31,7 @@
     });
   }
 
+  const canSelfUpdate = $derived(!snap.update.managedBy && snap.update.supported);
   const sp = $derived(syncplayPill(snap));
   const jf = $derived(jellyfinPill(snap));
   const px = $derived(plexPill(snap));
@@ -219,7 +220,7 @@
           : `You're running version ${snap.version}.`}
       </p>
       {#if snap.update.error}<div class="notice err">{snap.update.error}</div>{/if}
-      {#if !snap.update.managedBy && snap.update.supported}
+      {#if canSelfUpdate}
         <Toggle
           label="Automatic updates"
           hint={snap.update.unattended
@@ -228,6 +229,8 @@
           checked={snap.settings.updates.auto}
           onchange={(v) => store.save((s) => (s.updates.auto = v))}
         />
+      {/if}
+      {#if canSelfUpdate || snap.settings.jellyfin.enabled}
         <label class="field">
           Check every
           <select
@@ -246,6 +249,11 @@
             <option value="1440">Daily</option>
           </select>
         </label>
+        {#if snap.settings.jellyfin.enabled}
+          <p class="muted note">Jellyfin libraries refresh on this schedule. Empty libraries are removed, and media files stay until you delete them.</p>
+        {/if}
+      {/if}
+      {#if canSelfUpdate}
         <div class="actions">
           {#if snap.update.phase === "ready"}
             <button class="primary" onclick={() => store.run(api.installUpdate)}>
