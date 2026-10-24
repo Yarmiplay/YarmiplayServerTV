@@ -1,5 +1,5 @@
-<!-- Inset on purpose: a tray glyph that touches the edges looks cramped. The desktop icon is logo.svg. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108">
+<!-- Same crop as logo.svg so the glyph fills the tray slot. A 0 0 108 108 viewBox leaves a margin and the icon looks small. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="7 7 94 94">
   <defs>
     <linearGradient id="tile" x1="20%" y1="0%" x2="80%" y2="100%">
       <stop offset="0%" stop-color="#1B2B43"/>

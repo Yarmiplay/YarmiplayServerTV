@@ -223,11 +223,29 @@
         <Toggle
           label="Automatic updates"
           hint={snap.update.unattended
-            ? "Checks GitHub every few hours and installs new versions when nobody is using Syncplay"
-            : "Checks GitHub every few hours and downloads new versions. This copy was installed with an .msi or .deb package, which asks for administrator permission, so installing waits for you"}
+            ? "Downloads and installs new versions when nobody is using Syncplay"
+            : "Downloads new versions. This copy was installed with an .msi or .deb package, which asks for administrator permission, so installing waits for you"}
           checked={snap.settings.updates.auto}
           onchange={(v) => store.save((s) => (s.updates.auto = v))}
         />
+        <label class="field">
+          Check every
+          <select
+            value={String(snap.settings.updates.intervalMinutes)}
+            onchange={(e) => {
+              const minutes = Number(e.currentTarget.value);
+              store.save((s) => (s.updates.intervalMinutes = minutes));
+            }}
+          >
+            <option value="15">15 minutes</option>
+            <option value="30">30 minutes</option>
+            <option value="60">1 hour</option>
+            <option value="120">2 hours</option>
+            <option value="360">6 hours</option>
+            <option value="720">12 hours</option>
+            <option value="1440">Daily</option>
+          </select>
+        </label>
         <div class="actions">
           {#if snap.update.phase === "ready"}
             <button class="primary" onclick={() => store.run(api.installUpdate)}>

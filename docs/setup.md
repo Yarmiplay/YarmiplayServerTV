@@ -45,7 +45,7 @@ YarmiplayServerTV lets you host your own **Syncplay server** and **Jellyfin serv
 You have two easy ways to install on Windows 10 or 11 (64-bit):
 
 1. **Microsoft Store (Recommended):** Install from the [Microsoft Store](https://apps.microsoft.com/detail/9P6B9C1KXFFQ). The Store edition has Jellyfin pre-bundled (no extra downloads needed) and updates automatically in the background.
-2. **Standalone installer (.exe):** Download it from the [download page](../#download). It upgrades an older .msi install (Windows asks once) and keeps your settings. If Windows SmartScreen displays a warning, click **More info** and select **Run anyway**. Standalone copies check for updates and update themselves with your permission. A .msi is still published so older installs can update.
+2. **Standalone installer (.exe):** Download it from the [download page](../#download). It upgrades an older .msi install (Windows asks once) and keeps your settings. If Windows SmartScreen displays a warning, click **More info** and select **Run anyway**. Standalone copies check for updates and update themselves with your permission.
 
 ### macOS
 
@@ -225,7 +225,7 @@ If you prefer Plex Media Server, you can install it from [plex.tv](https://www.p
 ## Updates
 
 - **Microsoft Store & Snap:** Automatically kept up-to-date by your operating system.
-- **Standalone Windows (.msi / .exe) & Linux (.deb / AppImage):**
+- **Standalone Windows (.exe, including an older .msi install) & Linux (.deb / AppImage):**
   - Click **Check for updates** on the Dashboard or tray menu to check for new releases.
   - Turn on **Automatic updates** to check periodically and automatically update when no active Syncplay rooms are in use.
   - Every update binary is cryptographically verified against the developer's release signing key before installation.

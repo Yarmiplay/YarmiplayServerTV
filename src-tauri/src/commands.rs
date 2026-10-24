@@ -24,10 +24,14 @@ pub async fn update_settings(
     app: AppState<'_>,
     settings: Settings,
 ) -> Result<Snapshot, String> {
-    let auto_before = app.settings().updates.auto;
+    let before = app.settings().updates;
     let snap = app.inner().update_settings(settings).await?;
-    if snap.settings.updates.auto && !auto_before {
+    if snap.settings.updates.auto && !before.auto {
         crate::updates::turned_on(&handle);
+    } else if snap.settings.updates.auto
+        && snap.settings.updates.interval_minutes != before.interval_minutes
+    {
+        app.updates.schedule_changed();
     }
     if !snap.settings.browser.enabled {
         // Open browser tabs learn why they are about to be disconnected.
@@ -130,12 +134,18 @@ pub async fn jellyfin_rescan(app: AppState<'_>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn jellyfin_sort_preview(app: AppState<'_>, path: String) -> Result<crate::jellyfin::sort::SortPlan, String> {
+pub async fn jellyfin_sort_preview(
+    app: AppState<'_>,
+    path: String,
+) -> Result<crate::jellyfin::sort::SortPlan, String> {
     app.jellyfin_sort_preview(path).await
 }
 
 #[tauri::command]
-pub async fn jellyfin_sort(app: AppState<'_>, path: String) -> Result<crate::jellyfin::sort::SortResult, String> {
+pub async fn jellyfin_sort(
+    app: AppState<'_>,
+    path: String,
+) -> Result<crate::jellyfin::sort::SortResult, String> {
     app.jellyfin_sort(path).await
 }
 

@@ -16,13 +16,50 @@ pub struct Settings {
     pub updates: UpdateSettings,
 }
 
+/// Minutes between automatic update checks. The control panel offers these.
+pub const UPDATE_INTERVALS: [u32; 7] = [15, 30, 60, 120, 360, 720, 1440];
+
+/// Checks that never saved an interval stay on the previous built-in schedule.
+pub fn default_update_interval() -> u32 {
+    30
+}
+
+/// Unknown values (including a missing field that deserialized as 0) become 30 minutes.
+pub fn normalize_update_interval(minutes: u32) -> u32 {
+    if UPDATE_INTERVALS.contains(&minutes) {
+        minutes
+    } else {
+        default_update_interval()
+    }
+}
+
 /// Updates from the latest GitHub release (see `crate::updates`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct UpdateSettings {
     /// Check GitHub on a schedule, download what's new and install it when
     /// nobody is using Syncplay. Off until the user opts in.
     pub auto: bool,
+    /// How often to check, in minutes. One of [`UPDATE_INTERVALS`].
+    #[serde(default = "default_update_interval")]
+    pub interval_minutes: u32,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self {
+            auto: false,
+            interval_minutes: default_update_interval(),
+        }
+    }
+}
+
+impl UpdateSettings {
+    pub fn interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(
+            u64::from(normalize_update_interval(self.interval_minutes)) * 60,
+        )
+    }
 }
 
 /// Access to the control panel from a web browser on this PC (see `crate::web`).
@@ -408,11 +445,27 @@ mod tests {
         assert_eq!(s.syncplay.max_chat_message_length, 150);
         assert!(s.browser.enabled);
         assert!(!s.updates.auto);
+        assert_eq!(s.updates.interval_minutes, 30);
         assert!(s.syncplay.file_relay && !s.syncplay.vanilla_mode);
         assert!(s.syncplay.voice);
         assert!(s.syncplay.auto_approve_password);
         assert_eq!(s.syncplay.relay_cache_gb, 10);
         assert!(!s.jellyfin.share_with_syncplay);
+    }
+
+    #[test]
+    fn update_interval_defaults_to_thirty_minutes_and_keeps_a_saved_choice() {
+        let bare: Settings = serde_json::from_str(r#"{"updates":{"auto":true}}"#).unwrap();
+        assert!(bare.updates.auto);
+        assert_eq!(bare.updates.interval_minutes, 30);
+        assert_eq!(bare.updates.interval().as_secs(), 30 * 60);
+
+        let chosen: Settings =
+            serde_json::from_str(r#"{"updates":{"intervalMinutes":120}}"#).unwrap();
+        assert_eq!(chosen.updates.interval_minutes, 120);
+        assert_eq!(normalize_update_interval(7), 30);
+        assert_eq!(normalize_update_interval(1440), 1440);
+        assert_eq!(Settings::default().updates.interval_minutes, 30);
     }
 
     #[test]

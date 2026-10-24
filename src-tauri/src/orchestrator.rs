@@ -307,6 +307,8 @@ impl App {
             next.plex.saved_custom_connections = cur.plex.saved_custom_connections.clone();
         }
         next.tls.duckdns_domain = next.tls.duckdns_domain.trim().to_string();
+        next.updates.interval_minutes =
+            crate::config::normalize_update_interval(next.updates.interval_minutes);
         next.tls.own_domain = next.tls.own_domain.trim().to_string();
         if !next.tls.own_domain.is_empty() {
             let d = crate::net::acme::normalize_own_domain(&next.tls.own_domain)?;
