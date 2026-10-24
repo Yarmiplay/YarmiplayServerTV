@@ -1199,8 +1199,26 @@ impl App {
         .await
     }
 
-    pub async fn jellyfin_rescan(&self) -> Result<(), String> {
+    /// Scan for new and removed files. Does not remove library entries.
+    async fn rescan_jellyfin(&self) -> Result<(), String> {
         self.run_with_auth(|api| async move { api.rescan().await }).await
+    }
+
+    /// Refresh libraries: drop virtual folders that no longer have any media,
+    /// then scan what's left. Media files are never deleted.
+    pub async fn jellyfin_rescan(&self) -> Result<(), String> {
+        self.run_with_auth(|api| async move {
+            match api.remove_empty_libraries().await {
+                Ok(names) => {
+                    for name in &names {
+                        info!(library = %name, "removed empty Jellyfin library");
+                    }
+                }
+                Err(e) => warn!(error = %e, "removing empty Jellyfin libraries"),
+            }
+            api.rescan().await
+        })
+        .await
     }
 
     /// What sorting a library folder into show folders would do.
@@ -1214,7 +1232,7 @@ impl App {
     pub async fn jellyfin_sort(&self, path: String) -> Result<SortResult, String> {
         let result = self.sort_folder(path).await?;
         if result.moved > 0 {
-            self.jellyfin_rescan().await?;
+            self.rescan_jellyfin().await?;
         }
         Ok(result)
     }
@@ -1231,7 +1249,7 @@ impl App {
         })
         .await
         .map_err(|e| e.to_string())??;
-        self.jellyfin_rescan().await?;
+        self.rescan_jellyfin().await?;
         Ok(back)
     }
 
@@ -1271,7 +1289,7 @@ impl App {
             }
         }
         if moved > 0 {
-            if let Err(e) = self.jellyfin_rescan().await {
+            if let Err(e) = self.rescan_jellyfin().await {
                 warn!(error = %e, "rescan after sorting");
             }
         }
