@@ -58,7 +58,7 @@ Copies from the Microsoft Store or the Snap Store are updated by those stores an
 
 **Check for updates** (Dashboard, or the tray menu) looks for a newer release here on GitHub and downloads
 it; **Install** then restarts the app into the new version. Switch on **Automatic updates** on the Dashboard to
-check every few hours and install new versions while nobody is using Syncplay. Copies installed with the
+check on a schedule (every 30 minutes unless you pick another) and install new versions while nobody is using Syncplay. Copies installed with the
 `.msi` or `.deb` package need administrator permission to update, so for those the new version is downloaded
 and waits for you to click **Install**. Every update is checked against the app's update signing key before
 it installs. Versions before 1.1.0 can't update themselves; install 1.1.0 or later from the download page once.

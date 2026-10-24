@@ -5,8 +5,9 @@ downloads and install steps.
 
   python scripts/download_site.py --dist dist --out _site [--version 0.1.0] [--site-url URL]
 
-Files in --dist are sorted onto platforms by extension (.msi/.exe: Windows, .dmg: macOS, .deb/.AppImage: Linux)
-and copied under stable names such as YarmiplayServerTV.msi, so links keep working across builds. Platforms
+Files in --dist are sorted onto platforms by extension (.exe: Windows, .dmg: macOS, .deb/.AppImage: Linux)
+and copied under stable names such as YarmiplayServerTV.exe, so links keep working across builds. A .msi in
+--dist is ignored: 1.9.x installs still update from the GitHub release, but the website does not offer it. Platforms
 without a file or store listing show how to build from source. The Linux card's main button is the Snap Store.
 <site>/privacy/ is docs/privacy.md (the Microsoft Store privacy policy) and
 <site>/screenshots/ is docs/store/screenshots (the AppStream metainfo links there). With --site-url the pages carry canonical URLs and link-preview tags, and the site a
@@ -59,7 +60,6 @@ LINUX_STORES = [
 # main button.
 EXTENSIONS = {
     ".exe": ("windows", "Installer (.exe)"),
-    ".msi": ("windows", "Older installer (.msi)"),
     ".dmg": ("macos", "Disk image (.dmg)"),
     ".deb": ("linux", "Debian / Ubuntu (.deb)"),
     ".appimage": ("linux", "AppImage"),

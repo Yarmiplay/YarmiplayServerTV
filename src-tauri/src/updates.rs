@@ -3,8 +3,9 @@
 //! in tauri.conf.json, and the plugin refuses anything it didn't sign.
 //!
 //! Nothing contacts GitHub unless the user clicks "Check for updates" or
-//! turns on automatic updates (`updates.auto`). Then checks run at startup
-//! and every 30 minutes, a found update is downloaded right away, and it
+//! turns on automatic updates (`updates.auto`). Then checks run about a
+//! minute after startup and again on the saved schedule (30 minutes unless
+//! the user picked another), a found update is downloaded right away, and it
 //! installs when nobody is using Syncplay and the install needs no
 //! administrator prompt; .msi and .deb installs wait for a click instead,
 //! since an unanswered prompt would leave the servers down.
@@ -27,7 +28,6 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 use tracing::{info, warn};
 
 const FIRST_CHECK: Duration = Duration::from_secs(60);
-const CHECK_EVERY: Duration = Duration::from_secs(30 * 60);
 /// How often a downloaded update retries installing while Syncplay is busy.
 const INSTALL_RETRY: Duration = Duration::from_secs(10 * 60);
 
@@ -59,6 +59,8 @@ pub struct Updates {
     /// Set by the Windows exit hook once it has stopped the services.
     services_stopped: AtomicBool,
     notify: Notify,
+    /// Wakes the schedule loop when the interval changes, so it applies without a restart.
+    schedule: tokio::sync::Notify,
 }
 
 impl Updates {
@@ -80,7 +82,13 @@ impl Updates {
             busy: tokio::sync::Mutex::new(()),
             services_stopped: AtomicBool::new(false),
             notify,
+            schedule: tokio::sync::Notify::new(),
         })
+    }
+
+    /// The control panel saved a new check interval while automatic updates are on.
+    pub fn schedule_changed(&self) {
+        self.schedule.notify_one();
     }
 
     pub fn status(&self) -> UpdateStatus {
@@ -131,20 +139,47 @@ pub fn start(handle: AppHandle) {
         return;
     }
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(FIRST_CHECK).await;
+        let schedule = handle.state::<Arc<App>>().updates.clone();
         let mut last_check: Option<Instant> = None;
+        let mut started = false;
         loop {
-            let auto = handle.state::<Arc<App>>().settings().updates.auto;
-            if auto && last_check.is_none_or(|t| t.elapsed() >= CHECK_EVERY) {
+            let updates = handle.state::<Arc<App>>().settings().updates;
+            let interval = updates.interval();
+            let wait = if !started {
+                FIRST_CHECK
+            } else if updates.auto {
+                let until = last_check
+                    .map(|t| interval.saturating_sub(t.elapsed()))
+                    .unwrap_or(Duration::ZERO);
+                until.min(INSTALL_RETRY).max(Duration::from_secs(1))
+            } else {
+                INSTALL_RETRY
+            };
+            tokio::select! {
+                _ = tokio::time::sleep(wait) => {}
+                _ = schedule.schedule.notified() => {}
+            }
+            started = true;
+            let updates = handle.state::<Arc<App>>().settings().updates;
+            if check_is_due(
+                updates.auto,
+                last_check.map(|t| t.elapsed()),
+                updates.interval(),
+            ) {
                 last_check = Some(Instant::now());
                 let _ = check(&handle).await;
             }
-            if auto {
+            if updates.auto {
                 auto_install(&handle).await;
             }
-            tokio::time::sleep(INSTALL_RETRY).await;
         }
     });
+}
+
+/// Whether an automatic check should run. `since_last` is how long ago the
+/// previous check finished; `None` means there has not been one yet.
+pub fn check_is_due(auto: bool, since_last: Option<Duration>, interval: Duration) -> bool {
+    auto && since_last.is_none_or(|elapsed| elapsed >= interval)
 }
 
 /// Called when the user turns automatic updates on, so they needn't wait
@@ -327,7 +362,8 @@ pub async fn install(handle: &AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::updater_name;
+    use super::{check_is_due, updater_name};
+    use std::time::Duration;
 
     #[test]
     fn windows_installer_hook_upgrades_the_msi_and_keeps_settings() {
@@ -338,6 +374,30 @@ mod tests {
         assert!(text.to_ascii_lowercase().contains("appdata"));
         let lower = text.to_ascii_lowercase();
         assert!(!lower.contains("rmdir") && !lower.contains("delete \"$appdata"));
+    }
+
+    #[test]
+    fn the_schedule_follows_the_saved_interval() {
+        let half_hour = Duration::from_secs(30 * 60);
+        let quarter = Duration::from_secs(15 * 60);
+        let day = Duration::from_secs(24 * 60 * 60);
+        assert!(!check_is_due(false, None, half_hour));
+        assert!(
+            check_is_due(true, None, half_hour),
+            "the first check is due"
+        );
+        assert!(!check_is_due(
+            true,
+            Some(Duration::from_secs(29 * 60)),
+            half_hour
+        ));
+        assert!(check_is_due(true, Some(half_hour), half_hour));
+        assert!(check_is_due(true, Some(quarter), quarter));
+        assert!(!check_is_due(true, Some(quarter), day));
+        assert!(
+            check_is_due(true, Some(Duration::from_secs(12 * 60 * 60)), quarter),
+            "shortening the interval makes the next check due without a restart"
+        );
     }
 
     #[test]

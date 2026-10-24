@@ -168,6 +168,8 @@ export interface BrowserSettings {
 
 export interface UpdateSettings {
   auto: boolean;
+  /** Minutes between automatic checks. One of 15, 30, 60, 120, 360, 720, 1440. */
+  intervalMinutes: number;
 }
 
 export interface Settings {

@@ -79,7 +79,7 @@
   <releases>
     <release version="2.0.1" date="2026-10-24">
       <description>
-        <p>The tray icon uses the same crop as the app icon, so it fills the tray slot.</p>
+        <p>The tray icon fills the tray slot. Automatic update checks stay every 30 minutes unless you choose another schedule. The download page offers the Windows setup only.</p>
       </description>
     </release>
     <release version="2.0.0" date="2026-10-24">
