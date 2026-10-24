@@ -1,13 +1,14 @@
 # YarmiplayServerTV privacy policy
 
-Effective 12 October 2026. This policy covers the YarmiplayServerTV app for Windows, macOS and Linux, including
+Effective 24 October 2026. This policy covers the YarmiplayServerTV app for Windows, macOS and Linux, including
 the copy from the Microsoft Store.
 
 ## Summary
 
 YarmiplayServerTV doesn't collect any data. It has no accounts of its own, no analytics, no advertising and no
-crash reporting, and the developer runs no servers that the app talks to. Every server and network feature is off
-until you switch it on, and each one only talks to what it needs.
+crash reporting, and the developer runs no servers that the app talks to. Syncplay, Jellyfin, Plex and the
+other servers stay off until you switch them on. Voice chat is part of the Syncplay server and is on unless
+you switch it off (or use vanilla Syncplay mode). Each feature only talks to what it needs.
 
 ## What the app sends, and to whom
 
@@ -42,6 +43,14 @@ until you switch it on, and each one only talks to what it needs.
   was last seen and the username it last used, on your computer only, until you remove it. With **Approve
   devices that join with the password** on (the default), a device that joins with the server password is
   saved the same way.
+- **Voice chat** (on by default once Syncplay is on, off if you switch it off, and off in vanilla Syncplay
+  mode): when people in a Syncplay room talk, their audio is relayed through this computer to the other
+  people in that room. The app decrypts each packet in memory only long enough to encrypt it again for the
+  others. It does not record the audio, store it, or send it anywhere else, and it does not use a microphone.
+  Speaking indicators are whatever each person's own app reports. Join and leave sounds play on their
+  devices, not here. Voice uses UDP port 9000 and, if UDP is blocked, TCP port 9000, plus a WebSocket on the
+  Syncplay port for a browser. When Syncplay's UPnP switch is on, the app also asks the router to forward
+  those two voice ports.
 - **File relay** (on by default, off in vanilla Syncplay mode): YarmiplayTV users in a room can play a video
   file that someone else in the room has. The file's bytes travel from that person's device through your
   computer to the people watching, and are cached on your computer's disk so each part is sent only once. The

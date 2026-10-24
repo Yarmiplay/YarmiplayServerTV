@@ -8,6 +8,11 @@
 //! installs when nobody is using Syncplay and the install needs no
 //! administrator prompt; .msi and .deb installs wait for a click instead,
 //! since an unanswered prompt would leave the servers down.
+//!
+//! From 2.0.0 a Windows update is the NSIS setup (`windows-x86_64` in
+//! latest.json), even when this copy was installed from the transitional
+//! MSI. 1.9.x still downloads `windows-x86_64-msi` with its own updater.
+//! The setup removes that MSI (one UAC prompt) and keeps AppData.
 
 use crate::orchestrator::App;
 use crate::tls::Notify;
@@ -189,8 +194,12 @@ pub async fn check(handle: &AppHandle) -> Result<(), String> {
 
     let shutdown_app = app.clone();
     let found = async {
-        handle
-            .updater_builder()
+        let builder = handle.updater_builder();
+        // The NSIS setup is the Windows package from here on. An MSI-bundle
+        // copy of 2.0.0 still updates, and the setup uninstalls that MSI.
+        #[cfg(windows)]
+        let builder = builder.target("windows-x86_64");
+        builder
             // Windows: the plugin starts the installer, then exits the process.
             .on_before_exit(move || {
                 tauri::async_runtime::block_on(shutdown_app.shutdown());
@@ -319,6 +328,17 @@ pub async fn install(handle: &AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::updater_name;
+
+    #[test]
+    fn windows_installer_hook_upgrades_the_msi_and_keeps_settings() {
+        let text = include_str!("../windows/hooks.nsh");
+        assert!(text.contains("6F3E2B1C-8D4A-4F7E-9B2C-5A1D3E7F9C42"));
+        assert!(text.contains("msiexec.exe /x"));
+        assert!(text.contains("IfSilent"));
+        assert!(text.to_ascii_lowercase().contains("appdata"));
+        let lower = text.to_ascii_lowercase();
+        assert!(!lower.contains("rmdir") && !lower.contains("delete \"$appdata"));
+    }
 
     #[test]
     fn names_who_updates_the_copy() {

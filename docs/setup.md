@@ -45,7 +45,7 @@ YarmiplayServerTV lets you host your own **Syncplay server** and **Jellyfin serv
 You have two easy ways to install on Windows 10 or 11 (64-bit):
 
 1. **Microsoft Store (Recommended):** Install from the [Microsoft Store](https://apps.microsoft.com/detail/9P6B9C1KXFFQ). The Store edition has Jellyfin pre-bundled (no extra downloads needed) and updates automatically in the background.
-2. **Standalone Installer (.msi / .exe):** Download the installer from the [download page](../#download). If Windows SmartScreen displays a warning, click **More info** and select **Run anyway**. Standalone copies check for updates and update themselves with your permission.
+2. **Standalone installer (.exe):** Download it from the [download page](../#download). It upgrades an older .msi install (Windows asks once) and keeps your settings. If Windows SmartScreen displays a warning, click **More info** and select **Run anyway**. Standalone copies check for updates and update themselves with your permission. A .msi is still published so older installs can update.
 
 ### macOS
 
@@ -172,7 +172,9 @@ If you run a Plex Media Server, you can invite room members directly:
 
 ### Vanilla Syncplay mode
 
-If you only want standard Syncplay functionality without any YarmiplayTV extensions, turn on **Vanilla Syncplay mode**. This disables file relaying, Jellyfin sharing, Plex sharing, and device key negotiations, giving you a 100% standard Syncplay server.
+If you only want standard Syncplay functionality without any YarmiplayTV extensions, turn on **Vanilla Syncplay mode**. This disables file relaying, voice chat, Jellyfin sharing, Plex sharing, and device key negotiations, giving you a 100% standard Syncplay server.
+
+**Voice chat** (on by default) lets people in a room talk through this PC. Audio is not recorded. It listens on UDP 9000, with TCP 9000 as a fallback, and browsers use a WebSocket on the Syncplay port. With Syncplay's UPnP switch on, those voice ports are forwarded too. Either this switch or the switch in YarmiplayTV being off means no voice connection.
 
 ---
 

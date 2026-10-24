@@ -6,8 +6,11 @@ Writes latest.json, the manifest the app's updater (tauri-plugin-updater) reads 
 
 Every installer in --dir needs its .sig next to it (made with `tauri signer sign`). Platform keys are
 `{os}-{arch}-{installer}` plus a plain `{os}-{arch}` fallback; the app looks for its own installer type first,
-so an .msi install updates from the .msi and a per-user setup.exe install from the setup.exe. The Release
-workflow runs this. Standard library only.
+so an .msi install updates from the .msi and a per-user setup.exe install from the setup.exe.
+
+2.0.0 still publishes the .msi under windows-x86_64-msi so 1.9.x installs can upgrade. From 2.0.0 the app
+asks for the plain windows-x86_64 key, which is this setup.exe, and that installer removes an older MSI.
+The Release workflow runs this. Standard library only.
 """
 from __future__ import annotations
 

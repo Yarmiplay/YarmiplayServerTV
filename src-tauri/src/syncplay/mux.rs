@@ -4,7 +4,8 @@
 //! an HTTP request. HTTP connections are handed to an axum router through a
 //! channel-backed [`Listener`]: the relay endpoints, a probe, the browser
 //! client's WebSocket (`/yarmiplay/ws`, a normal Syncplay session with one
-//! JSON line per text message) and MyAnimeList passthrough, and the shared
+//! JSON line per text message), voice media (`/yarmiplay/voice`, binary
+//! packets) and MyAnimeList passthrough, and the shared
 //! Jellyfin or Plex for every other path (see [`route`]). Browsers are only
 //! let in from the allowed origins ([`cors`]). Vanilla mode never sniffs.
 
@@ -67,7 +68,16 @@ impl MuxListener {
     /// unwrapped from TLS) elsewhere, served by axum.
     pub fn new(local: SocketAddr) -> (HttpSender, Self) {
         let (tx, rx) = mpsc::channel(64);
-        (tx, Self { rx, local: ConnMeta { peer: local, tls: true } })
+        (
+            tx,
+            Self {
+                rx,
+                local: ConnMeta {
+                    peer: local,
+                    tls: true,
+                },
+            },
+        )
     }
 }
 
@@ -190,6 +200,10 @@ impl Ctx {
         let token = bearer.or(custom).or(q.t.as_deref())?;
         self.state.upgrade()?.lock().session_for_token(token)
     }
+
+    fn voice_hub(&self) -> Option<Arc<super::voice::VoiceHub>> {
+        self.ext.voice.lock().clone()
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -233,6 +247,7 @@ pub fn start_http(
     let app = Router::new()
         .route("/yarmiplay/info", get(info))
         .route("/yarmiplay/ws", get(ws))
+        .route("/yarmiplay/voice", get(voice_ws))
         .route("/yarmiplay/files/{id}", get(file))
         .route("/yarmiplay/upload/{id}", put(upload))
         .route("/yarmiplay/mal/token", post(mal_token))
@@ -365,6 +380,28 @@ async fn cors(State(ctx): State<Ctx>, req: Request, next: Next) -> Response<Body
         HeaderValue::from_static("cross-origin"),
     );
     r
+}
+
+/// `GET /yarmiplay/voice?t=<seat token>`: browser media. Binary frames are
+/// voice packets. Signaling stays on `/yarmiplay/ws`.
+async fn voice_ws(
+    State(ctx): State<Ctx>,
+    Query(q): Query<Q>,
+    upgrade: WebSocketUpgrade,
+) -> Response<Body> {
+    let Some(hub) = ctx.voice_hub().filter(|h| h.listening()) else {
+        return reply(StatusCode::NOT_FOUND, "Voice chat is off");
+    };
+    let Some(token) = q.t.as_deref().and_then(super::voice::parse_token) else {
+        return reply(StatusCode::UNAUTHORIZED, "Voice token required");
+    };
+    if !hub.has_token(token) {
+        return reply(StatusCode::UNAUTHORIZED, "Voice token rejected");
+    }
+    let hub = hub.clone();
+    upgrade
+        .max_message_size(super::voice::MAX_PACKET)
+        .on_upgrade(move |socket| super::voice::serve_ws(socket, hub, token))
 }
 
 /// `GET /yarmiplay/ws`: a Syncplay session over a WebSocket, for the browser
@@ -1116,6 +1153,7 @@ mod tests {
         // A connection kept alive from before gets 404 for every route.
         for (method, path) in [
             (reqwest::Method::GET, "/yarmiplay/ws"),
+            (reqwest::Method::GET, "/yarmiplay/voice"),
             (reqwest::Method::POST, "/yarmiplay/mal/token"),
             (reqwest::Method::GET, "/yarmiplay/mal/api/anime/1"),
             (reqwest::Method::OPTIONS, "/yarmiplay/files/x"),

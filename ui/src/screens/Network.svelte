@@ -281,9 +281,9 @@
       {/if}
       {#if snap.upnp.mappings.length}
         <ul class="maps">
-          {#each snap.upnp.mappings as m (m.port)}
+          {#each snap.upnp.mappings as m (`${m.protocol}-${m.port}`)}
             <li class="spread">
-              <span>{m.label} <span class="muted">TCP {m.port}</span></span>
+              <span>{m.label} <span class="muted">{m.protocol} {m.port}</span></span>
               <span class="pill {mappingKind[m.state]}" title={m.error ?? ""}>{mappingLabel[m.state]}</span>
             </li>
             {#if m.error}<li class="muted err-line">{m.error}</li>{/if}

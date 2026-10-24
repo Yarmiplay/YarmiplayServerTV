@@ -7,7 +7,7 @@ use crate::jellyfin::sort::{self, SortLog, SortPlan, SortResult};
 use crate::jellyfin::{JellyfinDesired, JellyfinManager, JellyfinStatus};
 use crate::net::acme::{DuckDns, Validation};
 use crate::net::proxy::LocalProxy;
-use crate::net::upnp::{UpnpManager, UpnpStatus};
+use crate::net::upnp::{DesiredMaps, MapProto, UpnpManager, UpnpStatus};
 use crate::paths::AppPaths;
 use crate::plex::api::PlexApi;
 use crate::plex::tv::PlexTv;
@@ -164,7 +164,7 @@ pub struct App {
     pub jellyfin: Arc<JellyfinManager>,
     pub upnp: Arc<UpnpManager>,
     pub updates: Arc<Updates>,
-    upnp_desired: Mutex<BTreeMap<u16, String>>,
+    upnp_desired: Mutex<DesiredMaps>,
     /// Jellyfin's HTTPS port, served by the app with the full certificate chain.
     jellyfin_https: crate::jellyfin::https::HttpsFront,
     /// One folder sort at a time (the button and the keep-sorted pass).
@@ -205,7 +205,9 @@ impl App {
         let duckdns_token = secrets.get(secrets::DUCKDNS_TOKEN);
         let mut jellyfin_token = secrets.get(secrets::JELLYFIN_TOKEN);
         if jellyfin_token.is_none() {
-            if let Ok(Some(session)) = crate::jellyfin::db::ensure_admin_session(&paths.jellyfin_root()) {
+            if let Ok(Some(session)) =
+                crate::jellyfin::db::ensure_admin_session(&paths.jellyfin_root())
+            {
                 info!(user = %session.user_name, "restored Jellyfin admin session from database");
                 let _ = secrets.set(secrets::JELLYFIN_TOKEN, &session.token);
                 if settings.jellyfin.admin_user.is_none() {
@@ -309,7 +311,9 @@ impl App {
         if !next.tls.own_domain.is_empty() {
             let d = crate::net::acme::normalize_own_domain(&next.tls.own_domain)?;
             if d.ends_with(".duckdns.org") {
-                return Err("That's a DuckDNS name: choose DuckDNS instead, so no port is needed".into());
+                return Err(
+                    "That's a DuckDNS name: choose DuckDNS instead, so no port is needed".into(),
+                );
             }
             next.tls.own_domain = d;
         }
@@ -414,6 +418,7 @@ impl App {
             plex_proxy: Some(self.plex_proxy.clone()),
             plex_invite: Some(plex_invite),
             mal_upstream: None,
+            voice: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
@@ -506,6 +511,14 @@ impl App {
             }
             None => *self.syncplay_error.write() = None,
         }
+        let voice = self.syncplay.lock().as_ref().map(|srv| srv.voice_control());
+        if let Some(voice) = voice {
+            if s.syncplay.voice_effective() {
+                voice.ensure_voice().await;
+            } else {
+                voice.stop_voice();
+            }
+        }
 
         // Jellyfin.
         let cert = if s.tls.enabled {
@@ -548,21 +561,41 @@ impl App {
         // UPnP runs in the background; the router can be slow.
         let mut desired = BTreeMap::new();
         if s.syncplay.enabled && s.syncplay.upnp {
-            desired.insert(s.syncplay.port, "Syncplay".to_string());
+            desired.insert((MapProto::Tcp, s.syncplay.port), "Syncplay".to_string());
         }
         if s.jellyfin.enabled && s.jellyfin.upnp {
-            desired.insert(s.jellyfin.http_port, "Jellyfin HTTP".to_string());
+            desired.insert(
+                (MapProto::Tcp, s.jellyfin.http_port),
+                "Jellyfin HTTP".to_string(),
+            );
             if https_on {
-                desired.insert(s.jellyfin.https_port, "Jellyfin HTTPS".to_string());
+                desired.insert(
+                    (MapProto::Tcp, s.jellyfin.https_port),
+                    "Jellyfin HTTPS".to_string(),
+                );
             }
         }
         if s.plex.enabled && s.plex.upnp {
-            desired.insert(s.plex.port, "Plex".to_string());
+            desired.insert((MapProto::Tcp, s.plex.port), "Plex".to_string());
         }
         // An own domain's certificate is validated on port 80; forward it
         // whenever the app forwards anything.
         if s.tls.enabled && s.tls.provider == TlsProvider::Domain && !desired.is_empty() {
-            desired.insert(crate::net::acme::HTTP01_PORT, "Certificate (HTTP)".to_string());
+            desired.insert(
+                (MapProto::Tcp, crate::net::acme::HTTP01_PORT),
+                "Certificate (HTTP)".to_string(),
+            );
+        }
+        // Voice rides on the Syncplay UPnP switch. A failure here does not turn voice off.
+        if s.syncplay.enabled && s.syncplay.upnp && s.syncplay.voice_effective() {
+            let port = crate::syncplay::voice::PORT;
+            desired.insert((MapProto::Udp, port), "Voice chat".to_string());
+            let tcp = (MapProto::Tcp, port);
+            if let Some(label) = desired.get(&tcp).cloned() {
+                desired.insert(tcp, format!("{label} and voice"));
+            } else {
+                desired.insert(tcp, "Voice chat".to_string());
+            }
         }
         let changed = *self.upnp_desired.lock() != desired;
         *self.upnp_desired.lock() = desired.clone();
@@ -598,7 +631,8 @@ impl App {
     async fn sync_share(self: &Arc<Self>) {
         let _guard = self.share_lock.lock().await;
         let s = self.settings();
-        if s.jellyfin.enabled && self.jellyfin.is_running() && self.jellyfin_token.read().is_none() {
+        if s.jellyfin.enabled && self.jellyfin.is_running() && self.jellyfin_token.read().is_none()
+        {
             self.ensure_jellyfin_auth();
         }
         let s = self.settings();
@@ -741,9 +775,7 @@ impl App {
                 .run_with_auth(move |api| {
                     let code_str = code_str.clone();
                     let guest_clone = guest_clone.clone();
-                    async move {
-                        api.quick_connect_authorize(&code_str, &guest_clone).await
-                    }
+                    async move { api.quick_connect_authorize(&code_str, &guest_clone).await }
                 })
                 .await;
 
@@ -764,9 +796,7 @@ impl App {
         self.run_with_auth(move |api| {
             let code_str = code_str.clone();
             let guest_id = guest_id.clone();
-            async move {
-                api.quick_connect_authorize(&code_str, &guest_id).await
-            }
+            async move { api.quick_connect_authorize(&code_str, &guest_id).await }
         })
         .await?;
 
@@ -975,10 +1005,15 @@ impl App {
 
     /// Force re-provision of an admin session in the database (e.g. after a 401).
     pub fn reprovision_jellyfin_auth(&self) -> bool {
-        self.apply_admin_session(crate::jellyfin::db::reprovision_admin_session(&self.paths.jellyfin_root()))
+        self.apply_admin_session(crate::jellyfin::db::reprovision_admin_session(
+            &self.paths.jellyfin_root(),
+        ))
     }
 
-    fn apply_admin_session(&self, res: Result<Option<crate::jellyfin::db::AdminSession>, String>) -> bool {
+    fn apply_admin_session(
+        &self,
+        res: Result<Option<crate::jellyfin::db::AdminSession>, String>,
+    ) -> bool {
         match res {
             Ok(Some(session)) => {
                 info!(user = %session.user_name, "applied Jellyfin admin session from database");
@@ -1139,7 +1174,9 @@ impl App {
             if e.contains("(401)") {
                 warn!("Jellyfin token rejected (401), attempting to reprovision admin session from database");
                 if self.reprovision_jellyfin_auth() {
-                    return Err("Jellyfin session was refreshed from database. Please retry.".into());
+                    return Err(
+                        "Jellyfin session was refreshed from database. Please retry.".into(),
+                    );
                 } else {
                     warn!("could not reprovision Jellyfin admin session from database");
                     return Err(e.clone());
@@ -1150,7 +1187,8 @@ impl App {
     }
 
     pub async fn jellyfin_libraries(&self) -> Result<Vec<crate::jellyfin::api::Library>, String> {
-        self.run_with_auth(|api| async move { api.libraries().await }).await
+        self.run_with_auth(|api| async move { api.libraries().await })
+            .await
     }
 
     pub async fn jellyfin_add_library(
@@ -1166,9 +1204,7 @@ impl App {
             let name = name.trim().to_string();
             let collection_type = collection_type.clone();
             let path = path.trim().to_string();
-            async move {
-                api.add_library(&name, &collection_type, &path).await
-            }
+            async move { api.add_library(&name, &collection_type, &path).await }
         })
         .await
     }
@@ -1201,7 +1237,8 @@ impl App {
 
     /// Scan for new and removed files. Does not remove library entries.
     async fn rescan_jellyfin(&self) -> Result<(), String> {
-        self.run_with_auth(|api| async move { api.rescan().await }).await
+        self.run_with_auth(|api| async move { api.rescan().await })
+            .await
     }
 
     /// Refresh libraries: drop virtual folders that no longer have any media,
@@ -1255,7 +1292,10 @@ impl App {
 
     /// Whether a folder has a sort to undo.
     pub fn jellyfin_sorted_folders(&self) -> Vec<String> {
-        SortLog::load(&self.paths.sort_log_file()).folders.into_keys().collect()
+        SortLog::load(&self.paths.sort_log_file())
+            .folders
+            .into_keys()
+            .collect()
     }
 
     async fn sort_folder(&self, path: String) -> Result<SortResult, String> {
@@ -1814,12 +1854,18 @@ mod tests {
         // Create DB with token
         init_test_db(&app.paths.jellyfin_root(), "initial_tok_12345");
         assert!(app.ensure_jellyfin_auth());
-        assert_eq!(app.jellyfin_token.read().as_deref(), Some("initial_tok_12345"));
+        assert_eq!(
+            app.jellyfin_token.read().as_deref(),
+            Some("initial_tok_12345")
+        );
 
         // If memory has a stale mismatched token, ensure_jellyfin_auth resyncs from DB
         *app.jellyfin_token.write() = Some("stale_mismatched_token".into());
         assert!(app.ensure_jellyfin_auth());
-        assert_eq!(app.jellyfin_token.read().as_deref(), Some("initial_tok_12345"));
+        assert_eq!(
+            app.jellyfin_token.read().as_deref(),
+            Some("initial_tok_12345")
+        );
 
         // Reprovision generates a new token in DB and updates memory
         assert!(app.reprovision_jellyfin_auth());
@@ -1838,7 +1884,10 @@ mod tests {
         let app = test_app(dir.path());
         init_test_db(&app.paths.jellyfin_root(), "tok_initial_abc");
         assert!(app.ensure_jellyfin_auth());
-        assert_eq!(app.jellyfin_token.read().as_deref(), Some("tok_initial_abc"));
+        assert_eq!(
+            app.jellyfin_token.read().as_deref(),
+            Some("tok_initial_abc")
+        );
 
         // Simulate Jellyfin running so jellyfin_api() does not fail on port
         app.jellyfin.set_phase_for_test("running");

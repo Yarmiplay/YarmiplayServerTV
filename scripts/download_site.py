@@ -58,8 +58,8 @@ LINUX_STORES = [
 # Lower-case extension -> platform and button label. Without a store listing the first file is the platform's
 # main button.
 EXTENSIONS = {
-    ".msi": ("windows", "Installer (.msi)"),
-    ".exe": ("windows", "Setup (.exe)"),
+    ".exe": ("windows", "Installer (.exe)"),
+    ".msi": ("windows", "Older installer (.msi)"),
     ".dmg": ("macos", "Disk image (.dmg)"),
     ".deb": ("linux", "Debian / Ubuntu (.deb)"),
     ".appimage": ("linux", "AppImage"),

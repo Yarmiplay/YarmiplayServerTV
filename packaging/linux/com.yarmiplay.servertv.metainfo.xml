@@ -77,6 +77,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="2.0.0" date="2026-10-24">
+      <description>
+        <p>Voice chat in Syncplay rooms, relayed through this PC and not recorded. The Windows setup upgrades an older MSI install and keeps settings.</p>
+      </description>
+    </release>
     <release version="1.9.6" date="2026-10-24">
       <description>
         <p>Refresh libraries removes a Jellyfin library when its folders are missing or empty, without deleting any files.</p>

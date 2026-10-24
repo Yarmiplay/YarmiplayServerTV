@@ -389,7 +389,8 @@ store's box ticked.
 
 This program will not transfer any information to other networked systems unless specifically requested by
 the user or the person installing or operating it. There is no telemetry or account. Every
-server and network feature is off until you switch it on, and each one only talks to what it needs:
+server stays off until you switch it on. Voice chat is part of Syncplay and is on unless you switch it off.
+Each feature only talks to what it needs:
 
 - **Updates:** only when you click **Check for updates** or switch on **Automatic updates**, the app downloads
   `latest.json` and then the new installer from this project's GitHub releases. GitHub sees your IP address,
@@ -403,6 +404,8 @@ server and network feature is off until you switch it on, and each one only talk
   and [Cloudflare DNS](https://developers.cloudflare.com/1.1.1.1/privacy/public-dns-resolver/).
 - **Syncplay server:** people you give the address to connect to it. File names, playback and chat are
   passed between them and not stored; the app's log on your computer notes who joined and left which room.
+- **Voice chat:** audio from people in a room is relayed through this computer and not recorded. The app
+  does not use a microphone. See the privacy policy for the detail.
 - **Approved devices:** for each YarmiplayTV device you approve, the app keeps its public key, the name it
   sent, when it was approved and last seen, and the username it last used, on your computer only. Requests
   you haven't answered are kept in memory, with the device's IP address, and forgotten after a day or when

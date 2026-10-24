@@ -1,4 +1,5 @@
-//! IGD / UPnP TCP port mapping, ported from GoogleSnakeOnline's `upnp.rs`.
+//! IGD / UPnP port mapping, ported from GoogleSnakeOnline's `upnp.rs`.
+//! TCP for Syncplay, Jellyfin, Plex and certificates; UDP as well for voice.
 //!
 //! Direct SSDP + SOAP: M-SEARCH is sent from every LAN IPv4 adapter, the first
 //! gateway exposing WANIPConnection (or WANPPPConnection) wins, and the adapter
@@ -85,9 +86,29 @@ fn http_client() -> Result<reqwest::Client, String> {
 
 // ---------------------------------------------------------------- manager
 
+/// Which IGD protocol a mapping uses. Serialized as `TCP` or `UDP`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum MapProto {
+    Tcp,
+    Udp,
+}
+
+impl MapProto {
+    fn soap(self) -> &'static str {
+        match self {
+            MapProto::Tcp => "TCP",
+            MapProto::Udp => "UDP",
+        }
+    }
+}
+
+pub type DesiredMaps = BTreeMap<(MapProto, u16), String>;
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MappingStatus {
+    pub protocol: MapProto,
     pub port: u16,
     pub label: String,
     /// `ok`, `manual` (already forwarded by someone else to this PC) or `error`.
@@ -110,8 +131,8 @@ pub struct UpnpStatus {
 #[derive(Default)]
 struct Inner {
     gateway: Option<Gateway>,
-    /// Ports we created and must delete again.
-    owned: BTreeMap<u16, String>,
+    /// Mappings we created and must delete again.
+    owned: BTreeMap<(MapProto, u16), String>,
 }
 
 /// Keeps the router's port mappings equal to the desired set.
@@ -134,15 +155,15 @@ impl UpnpManager {
             .and_then(|s| s.parse().ok())
     }
 
-    /// Make the router's mappings match `desired` (port -> label). With an
+    /// Make the router's mappings match `desired` ((protocol, port) -> label). With an
     /// empty desired set and nothing owned this does no network I/O at all.
-    pub async fn reconcile(&self, desired: BTreeMap<u16, String>) {
+    pub async fn reconcile(&self, desired: DesiredMaps) {
         let mut inner = self.inner.lock().await;
         self.apply(&mut inner, &desired, false).await;
     }
 
     /// Periodic check: rediscover the gateway (it may have rebooted) and re-add missing mappings.
-    pub async fn recheck(&self, desired: BTreeMap<u16, String>) {
+    pub async fn recheck(&self, desired: DesiredMaps) {
         let mut inner = self.inner.lock().await;
         if desired.is_empty() && inner.owned.is_empty() {
             return;
@@ -157,7 +178,7 @@ impl UpnpManager {
         self.apply(&mut inner, &BTreeMap::new(), false).await;
     }
 
-    async fn apply(&self, inner: &mut Inner, desired: &BTreeMap<u16, String>, verify: bool) {
+    async fn apply(&self, inner: &mut Inner, desired: &DesiredMaps, verify: bool) {
         if desired.is_empty() && inner.owned.is_empty() {
             *self.status.write() = UpnpStatus::default();
             return;
@@ -190,25 +211,27 @@ impl UpnpManager {
             warn!(?external_ip, "router WAN address is private/CGNAT (double NAT); internet peers may not reach these forwards");
         }
 
-        let stale: Vec<u16> = inner
+        let stale: Vec<(MapProto, u16)> = inner
             .owned
             .keys()
-            .filter(|p| !desired.contains_key(p))
+            .filter(|p| !desired.contains_key(*p))
             .copied()
             .collect();
-        for port in stale {
-            match delete_mapping_with(&client, &gateway, port).await {
-                Ok(()) => info!(port, "UPnP mapping removed"),
-                Err(e) => warn!(port, error = %e, "UPnP mapping removal failed"),
+        for (proto, port) in stale {
+            match delete_mapping_with(&client, &gateway, proto, port).await {
+                Ok(()) => info!(?proto, port, "UPnP mapping removed"),
+                Err(e) => warn!(?proto, port, error = %e, "UPnP mapping removal failed"),
             }
-            inner.owned.remove(&port);
+            inner.owned.remove(&(proto, port));
         }
 
         let mut mappings = Vec::new();
-        for (&port, label) in desired {
-            let already = inner.owned.contains_key(&port);
+        for (&(proto, port), label) in desired {
+            let key = (proto, port);
+            let already = inner.owned.contains_key(&key);
             if already && !verify {
                 mappings.push(MappingStatus {
+                    protocol: proto,
                     port,
                     label: label.clone(),
                     state: "ok",
@@ -217,11 +240,12 @@ impl UpnpManager {
                 continue;
             }
             if already && verify {
-                if let Ok(Some(entry)) = get_mapping_with(&client, &gateway, port).await {
+                if let Ok(Some(entry)) = get_mapping_with(&client, &gateway, proto, port).await {
                     let ours = entry.get("NewInternalClient").map(String::as_str)
                         == Some(&gateway.local_ip.to_string());
                     if ours {
                         mappings.push(MappingStatus {
+                            protocol: proto,
                             port,
                             label: label.clone(),
                             state: "ok",
@@ -230,13 +254,17 @@ impl UpnpManager {
                         continue;
                     }
                 }
-                info!(port, "UPnP mapping missing after re-check, adding it again");
+                info!(
+                    ?proto,
+                    port, "UPnP mapping missing after re-check, adding it again"
+                );
             }
-            match ensure_mapping_with(&client, &gateway, port, port).await {
+            match ensure_mapping_with(&client, &gateway, proto, port, port).await {
                 Ok(MappingOutcome::Added) => {
-                    info!(port, %label, local_ip = %gateway.local_ip, "UPnP mapping added");
-                    inner.owned.insert(port, label.clone());
+                    info!(?proto, port, %label, local_ip = %gateway.local_ip, "UPnP mapping added");
+                    inner.owned.insert(key, label.clone());
                     mappings.push(MappingStatus {
+                        protocol: proto,
                         port,
                         label: label.clone(),
                         state: "ok",
@@ -244,8 +272,9 @@ impl UpnpManager {
                     });
                 }
                 Ok(MappingOutcome::AlreadyForwarded) => {
-                    info!(port, "port already forwarded to this PC by another router entry; leaving it as is");
+                    info!(?proto, port, "port already forwarded to this PC by another router entry; leaving it as is");
                     mappings.push(MappingStatus {
+                        protocol: proto,
                         port,
                         label: label.clone(),
                         state: "manual",
@@ -253,8 +282,9 @@ impl UpnpManager {
                     });
                 }
                 Err(e) => {
-                    warn!(port, error = %e, "UPnP mapping failed");
+                    warn!(?proto, port, error = %e, "UPnP mapping failed");
                     mappings.push(MappingStatus {
+                        protocol: proto,
                         port,
                         label: label.clone(),
                         state: "error",
@@ -279,13 +309,14 @@ impl UpnpManager {
         }
     }
 
-    fn fail(&self, desired: &BTreeMap<u16, String>, error: String) {
+    fn fail(&self, desired: &DesiredMaps, error: String) {
         warn!(%error, "UPnP unavailable");
         *self.status.write() = UpnpStatus {
             active: !desired.is_empty(),
             mappings: desired
                 .iter()
-                .map(|(&port, label)| MappingStatus {
+                .map(|(&(proto, port), label)| MappingStatus {
+                    protocol: proto,
                     port,
                     label: label.clone(),
                     state: "error",
@@ -650,12 +681,13 @@ async fn external_ip_with(
 async fn get_mapping_with(
     client: &reqwest::Client,
     gateway: &Gateway,
+    proto: MapProto,
     external_port: u16,
 ) -> Result<Option<HashMap<String, String>>, UpnpError> {
     let args = [
         ("NewRemoteHost", String::new()),
         ("NewExternalPort", external_port.to_string()),
-        ("NewProtocol", "TCP".to_string()),
+        ("NewProtocol", proto.soap().to_string()),
     ];
     match soap_call(client, gateway, "GetSpecificPortMappingEntry", &args).await {
         Ok(fields) => Ok(Some(fields)),
@@ -667,12 +699,13 @@ async fn get_mapping_with(
 async fn delete_mapping_with(
     client: &reqwest::Client,
     gateway: &Gateway,
+    proto: MapProto,
     external_port: u16,
 ) -> Result<(), UpnpError> {
     let args = [
         ("NewRemoteHost", String::new()),
         ("NewExternalPort", external_port.to_string()),
-        ("NewProtocol", "TCP".to_string()),
+        ("NewProtocol", proto.soap().to_string()),
     ];
     match soap_call(client, gateway, "DeletePortMapping", &args).await {
         Ok(_) => Ok(()),
@@ -684,13 +717,14 @@ async fn delete_mapping_with(
 async fn add_mapping_with(
     client: &reqwest::Client,
     gateway: &Gateway,
+    proto: MapProto,
     external_port: u16,
     internal_port: u16,
 ) -> Result<(), UpnpError> {
     let args = [
         ("NewRemoteHost", String::new()),
         ("NewExternalPort", external_port.to_string()),
-        ("NewProtocol", "TCP".to_string()),
+        ("NewProtocol", proto.soap().to_string()),
         ("NewInternalPort", internal_port.to_string()),
         ("NewInternalClient", gateway.local_ip.to_string()),
         ("NewEnabled", "1".to_string()),
@@ -708,10 +742,11 @@ async fn add_mapping_with(
 async fn ensure_mapping_with(
     client: &reqwest::Client,
     gateway: &Gateway,
+    proto: MapProto,
     external_port: u16,
     internal_port: u16,
 ) -> Result<MappingOutcome, UpnpError> {
-    match get_mapping_with(client, gateway, external_port).await {
+    match get_mapping_with(client, gateway, proto, external_port).await {
         Ok(Some(existing)) => {
             let internal_client = existing
                 .get("NewInternalClient")
@@ -732,19 +767,20 @@ async fn ensure_mapping_with(
                     return Ok(MappingOutcome::AlreadyForwarded);
                 }
                 return Err(UpnpError::Other(format!(
-                    "external TCP {external_port} is already forwarded to {internal_client}:{existing_port} ({description:?}); remove that router mapping or pick another port"
+                    "external {} {external_port} is already forwarded to {internal_client}:{existing_port} ({description:?}); remove that router mapping or pick another port",
+                    proto.soap()
                 )));
             }
-            delete_mapping_with(client, gateway, external_port).await?;
+            delete_mapping_with(client, gateway, proto, external_port).await?;
         }
         Ok(None) => {}
         Err(e) => warn!(external_port, error = %e, "GetSpecificPortMappingEntry failed"),
     }
 
-    match add_mapping_with(client, gateway, external_port, internal_port).await {
+    match add_mapping_with(client, gateway, proto, external_port, internal_port).await {
         Err(e) if e.code() == Some(ERR_CONFLICT_IN_MAPPING) => {
-            delete_mapping_with(client, gateway, external_port).await?;
-            add_mapping_with(client, gateway, external_port, internal_port).await
+            delete_mapping_with(client, gateway, proto, external_port).await?;
+            add_mapping_with(client, gateway, proto, external_port, internal_port).await
         }
         other => other,
     }
@@ -917,12 +953,15 @@ mod tests {
 
         // Absent: plain add with our description and lease 0.
         assert_eq!(
-            ensure_mapping_with(&client, &gw, 8999, 8999).await.unwrap(),
+            ensure_mapping_with(&client, &gw, MapProto::Tcp, 8999, 8999)
+                .await
+                .unwrap(),
             MappingOutcome::Added
         );
         {
             let r = router.lock();
             assert_eq!(r.actions, ["GetSpecificPortMappingEntry", "AddPortMapping"]);
+            assert!(r.last_add_body.contains("<NewProtocol>TCP</NewProtocol>"));
             assert!(r.last_add_body.contains(
                 "<NewPortMappingDescription>YarmiplayServerTV</NewPortMappingDescription>"
             ));
@@ -934,7 +973,9 @@ mod tests {
         // Our own stale entry is replaced.
         router.lock().actions.clear();
         assert_eq!(
-            ensure_mapping_with(&client, &gw, 8999, 8999).await.unwrap(),
+            ensure_mapping_with(&client, &gw, MapProto::Tcp, 8999, 8999)
+                .await
+                .unwrap(),
             MappingOutcome::Added
         );
         assert_eq!(
@@ -950,18 +991,33 @@ mod tests {
         router.lock().entry = Some(("192.168.1.77".into(), "my forward".into()));
         router.lock().actions.clear();
         assert_eq!(
-            ensure_mapping_with(&client, &gw, 8999, 8999).await.unwrap(),
+            ensure_mapping_with(&client, &gw, MapProto::Tcp, 8999, 8999)
+                .await
+                .unwrap(),
             MappingOutcome::AlreadyForwarded
         );
         assert_eq!(router.lock().actions, ["GetSpecificPortMappingEntry"]);
 
         // A foreign entry to another PC is an error and is not touched.
         router.lock().entry = Some(("192.168.1.50".into(), "nas".into()));
-        let err = ensure_mapping_with(&client, &gw, 8999, 8999)
+        let err = ensure_mapping_with(&client, &gw, MapProto::Udp, 9000, 9000)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("192.168.1.50"));
+        assert!(err.to_string().contains("UDP"));
         assert!(router.lock().entry.is_some());
+
+        router.lock().entry = None;
+        assert_eq!(
+            ensure_mapping_with(&client, &gw, MapProto::Udp, 9000, 9000)
+                .await
+                .unwrap(),
+            MappingOutcome::Added
+        );
+        assert!(router
+            .lock()
+            .last_add_body
+            .contains("<NewProtocol>UDP</NewProtocol>"));
     }
 
     #[tokio::test]
