@@ -13,6 +13,7 @@ pub struct TrayItems {
     status: MenuItem<Wry>,
     open_browser: MenuItem<Wry>,
     syncplay: CheckMenuItem<Wry>,
+    voice: CheckMenuItem<Wry>,
     jellyfin: CheckMenuItem<Wry>,
     plex: CheckMenuItem<Wry>,
     copy_syncplay: MenuItem<Wry>,
@@ -47,6 +48,14 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         "Syncplay server",
         true,
         false,
+        None::<&str>,
+    )?;
+    let voice = CheckMenuItem::with_id(
+        app,
+        "voice",
+        "Voice chat (Syncplay port)",
+        true,
+        true,
         None::<&str>,
     )?;
     let jellyfin = CheckMenuItem::with_id(
@@ -93,6 +102,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         &open_browser,
         &sep2,
         &syncplay,
+        &voice,
         &jellyfin,
         &plex,
         &sep3,
@@ -132,6 +142,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         status,
         open_browser,
         syncplay,
+        voice,
         jellyfin,
         plex,
         copy_syncplay,
@@ -162,12 +173,15 @@ fn on_menu(app: &AppHandle, id: &str) {
                 warn!(error = %e, "could not open the control panel in a browser");
             }
         }
-        "syncplay" | "jellyfin" | "plex" => {
+        "syncplay" | "voice" | "jellyfin" | "plex" => {
             let which = id.to_string();
             tauri::async_runtime::spawn(async move {
                 let mut s = state.settings();
                 match which.as_str() {
                     "syncplay" => s.syncplay.enabled = !s.syncplay.enabled,
+                    // Voice uses the Syncplay port. The switch applies on the next reconcile, with no restart.
+                    "voice" if !s.syncplay.vanilla_mode => s.syncplay.voice = !s.syncplay.voice,
+                    "voice" => {}
                     "jellyfin" => s.jellyfin.enabled = !s.jellyfin.enabled,
                     _ => s.plex.enabled = !s.plex.enabled,
                 }
@@ -265,6 +279,13 @@ pub fn update(app: &AppHandle, snap: &Snapshot) {
         .open_browser
         .set_enabled(snap.settings.browser.enabled);
     let _ = items.syncplay.set_checked(snap.settings.syncplay.enabled);
+    let voice_on = snap.settings.syncplay.voice && !snap.settings.syncplay.vanilla_mode;
+    let _ = items.voice.set_checked(voice_on);
+    let _ = items.voice.set_enabled(!snap.settings.syncplay.vanilla_mode);
+    let _ = items.voice.set_text(format!(
+        "Voice chat (Syncplay port {})",
+        snap.settings.syncplay.port
+    ));
     let _ = items.jellyfin.set_checked(snap.settings.jellyfin.enabled);
     let _ = items.plex.set_checked(snap.settings.plex.enabled);
     let _ = items.copy_syncplay.set_enabled(snap.syncplay.running);

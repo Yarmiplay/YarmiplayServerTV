@@ -334,10 +334,11 @@ clients, and a seeder and a viewer (`--yarmiplay`) that pass a file through the 
 testing. The Jellyfin version and checksums are pinned in `src-tauri/jellyfin-manifest.json`; regenerate
 it with `python scripts/update_jellyfin_manifest.py`.
 
-`--voice` and `--no-voice` turn room voice on or off and save that setting (`syncplay.voice`).
+The **Voice chat** switch is on the **Syncplay** page of the control panel, under **YarmiplayTV extras**, and in the tray menu as **Voice chat (Syncplay port N)**. It takes effect immediately. No restart. Voice uses that Syncplay port. There is no extra port to open. When the switch is off, clients are told `voice disabled on this server`.
+
+`--voice` and `--no-voice` set the same switch and save it (`syncplay.voice`).
 `YARMIPLAYSERVERTV_VOICE=on` or `off` (also `1`/`0`, `true`/`false`) does the same; the flag wins.
-Voice uses the Syncplay port. There is no extra port to open. `--help` prints this. When voice is off,
-clients are told `voice disabled on this server`. The headless server
+`--help` prints this. The headless server
 (`cargo run --example syncplay_server -- <port> [password] [--voice|--no-voice]`) follows the same flags.
 
 ### Project layout

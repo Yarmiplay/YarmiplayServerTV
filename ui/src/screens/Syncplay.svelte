@@ -311,10 +311,16 @@
       label="Voice chat"
       hint={vanilla
         ? OFF_IN_VANILLA
-        : "People in a room can talk. Audio is relayed through this PC on the Syncplay port (no extra port to open) and is not recorded. On by default."}
+        : `People in a room can talk through this PC. Voice uses Syncplay port ${snap.settings.syncplay.port}. No extra port to open. This switch takes effect immediately; no restart. When it is off, clients are told "voice disabled on this server".`}
       disabled={vanilla}
       checked={snap.settings.syncplay.voice && !vanilla}
-      onchange={(v) => store.save((s) => (s.syncplay.voice = v))}
+      onchange={(v) =>
+        store.save(
+          (s) => (s.syncplay.voice = v),
+          v
+            ? `Voice chat is on. It uses Syncplay port ${snap.settings.syncplay.port} and takes effect immediately.`
+            : `Voice chat is off. Clients are told "voice disabled on this server". Takes effect immediately.`,
+        )}
     />
     <div class="cache" class:off={vanilla || !snap.settings.syncplay.fileRelay}>
       <label class="field">

@@ -174,7 +174,7 @@ If you run a Plex Media Server, you can invite room members directly:
 
 If you only want standard Syncplay functionality without any YarmiplayTV extensions, turn on **Vanilla Syncplay mode**. This disables file relaying, voice chat, Jellyfin sharing, Plex sharing, and device key negotiations, giving you a 100% standard Syncplay server.
 
-**Voice chat** (on by default) lets people in a room talk through this PC. Audio is not recorded. Voice uses the Syncplay port itself (default `8999`). There is no extra port to open or forward. With Syncplay's UPnP switch on, that one TCP port is forwarded and voice rides on it. Either this switch or the switch in YarmiplayTV being off means no voice connection. When voice is off, clients are told `voice disabled on this server`.
+**Voice chat** (on by default) lets people in a room talk through this PC. Audio is not recorded. The switch is on the **Syncplay** page, under **YarmiplayTV extras**, and the same switch is in the tray menu. It takes effect immediately. No restart. Voice uses the Syncplay port itself (the port shown on that switch, `8999` unless you changed it). There is no extra port to open or forward. With Syncplay's UPnP switch on, that one TCP port is forwarded and voice rides on it. Either this switch or the switch in YarmiplayTV being off means no voice connection. When voice is off, clients are told `voice disabled on this server`.
 
 The same switch is `syncplay.voice` in the settings file, `--voice` / `--no-voice` on the command line, and `YARMIPLAYSERVERTV_VOICE=on` or `off`. The flag wins over the variable. See `--help`.
 
