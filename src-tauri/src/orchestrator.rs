@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 const UPNP_RECHECK: Duration = Duration::from_secs(10 * 60);
 /// How often folders kept sorted are checked for new loose episodes.
@@ -290,6 +290,22 @@ impl App {
         self.settings.read().clone()
     }
 
+    /// `--voice` / `--no-voice` or `YARMIPLAYSERVERTV_VOICE`. Saved so the
+    /// control panel shows the same switch. Voice still uses the Syncplay port.
+    pub fn apply_voice_override(&self, on: bool) -> Result<(), String> {
+        self.modify_settings(|s| s.syncplay.voice = on)?;
+        if on {
+            info!(
+                "voice chat enabled from --voice or YARMIPLAYSERVERTV_VOICE; voice uses the Syncplay port, no extra port to open"
+            );
+        } else {
+            info!(
+                "voice chat disabled from --no-voice or YARMIPLAYSERVERTV_VOICE; clients are told \"voice disabled on this server\". Voice would have used the Syncplay port, no extra port to open"
+            );
+        }
+        Ok(())
+    }
+
     /// Save new settings from the UI (server-managed Jellyfin fields are kept)
     /// and apply them.
     pub async fn update_settings(self: &Arc<Self>, mut next: Settings) -> Result<Snapshot, String> {
@@ -501,12 +517,8 @@ impl App {
                         *self.syncplay_error.write() = None;
                     }
                     Err(e) => {
-                        let msg = if e.kind() == std::io::ErrorKind::AddrInUse {
-                            format!("Port {port} is already in use by another program")
-                        } else {
-                            format!("Could not listen on port {port}: {e}")
-                        };
-                        warn!(port, error = %e, "Syncplay server failed to start");
+                        let msg = crate::syncplay::server::describe_bind_failure(port, &e);
+                        error!(port, error = %e, "{msg}");
                         *self.syncplay_error.write() = Some(msg);
                     }
                 }
@@ -588,17 +600,7 @@ impl App {
                 "Certificate (HTTP)".to_string(),
             );
         }
-        // Voice rides on the Syncplay UPnP switch. A failure here does not turn voice off.
-        if s.syncplay.enabled && s.syncplay.upnp && s.syncplay.voice_effective() {
-            let port = crate::syncplay::voice::PORT;
-            desired.insert((MapProto::Udp, port), "Voice chat".to_string());
-            let tcp = (MapProto::Tcp, port);
-            if let Some(label) = desired.get(&tcp).cloned() {
-                desired.insert(tcp, format!("{label} and voice"));
-            } else {
-                desired.insert(tcp, "Voice chat".to_string());
-            }
-        }
+        // Voice is multiplexed on the Syncplay TCP port. There is no voice port to map.
         let changed = *self.upnp_desired.lock() != desired;
         *self.upnp_desired.lock() = desired.clone();
         if changed {

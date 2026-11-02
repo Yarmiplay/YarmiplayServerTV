@@ -8,7 +8,7 @@ use super::devices::{self, Decision, DeviceStore};
 use super::discovery;
 use super::ext::{self, Effect, JellyfinShare, PlexShare, TlsInfo};
 use super::mux::{self, ConnMeta, HttpSender, Sniff};
-use super::protocol::{line, now_secs, MAX_LINE_LENGTH};
+use super::protocol::{line, now_secs};
 use super::room::{Access, ConnId, Out, RoomInfo, ServerState, SyncplayOptions};
 use super::voice::{self, VoiceHub, VoiceRuntime};
 use crate::config::SyncplayAccess;
@@ -22,11 +22,11 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::task::JoinHandle;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// A YarmiplayTV client must answer a device challenge within this.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -69,6 +69,7 @@ pub struct SyncplayServer {
 }
 
 pub(crate) struct Shared {
+    port: u16,
     state: Arc<Mutex<ServerState>>,
     tls: CertStore,
     next_id: AtomicU64,
@@ -76,6 +77,22 @@ pub(crate) struct Shared {
     ext: Extensions,
     http: HttpSender,
     voice_rt: Mutex<Option<VoiceRuntime>>,
+    /// Last voice enabled/disabled line, so reconcile does not repeat it.
+    voice_announced: Mutex<Option<bool>>,
+}
+
+/// Words for a failed `bind` of the Syncplay port. Voice uses that same port.
+pub fn describe_bind_failure(port: u16, e: &std::io::Error) -> String {
+    if e.kind() == std::io::ErrorKind::AddrInUse {
+        format!(
+            "EADDRINUSE: Syncplay port {port} is already in use. Voice uses this same port, so there is no extra voice port to open. Stop the other program or pick another port. ({e})"
+        )
+    } else {
+        format!(
+            "failed to bind Syncplay port {port}: {e} (kind {:?}). Voice uses this same port; no extra voice port is opened.",
+            e.kind()
+        )
+    }
 }
 
 impl Shared {
@@ -194,7 +211,14 @@ impl SyncplayServer {
         notify: ChangeNotify,
         ext: Extensions,
     ) -> std::io::Result<Self> {
-        let listener = bind_dual_stack(port)?;
+        let listener = match bind_dual_stack(port) {
+            Ok(listener) => listener,
+            Err(e) => {
+                let msg = describe_bind_failure(port, &e);
+                error!("{msg}");
+                return Err(e);
+            }
+        };
         let local = listener.local_addr()?;
         let port = local.port();
         let mut lan = crate::net::ip::lan_addresses(port);
@@ -212,6 +236,7 @@ impl SyncplayServer {
         let (http_tx, http) =
             mux::start_http(Arc::downgrade(&state), ext.clone(), local, sessions.clone());
         let shared = Arc::new(Shared {
+            port,
             state: state.clone(),
             tls,
             next_id: AtomicU64::new(1),
@@ -219,6 +244,7 @@ impl SyncplayServer {
             ext,
             http: http_tx,
             voice_rt: Mutex::new(None),
+            voice_announced: Mutex::new(None),
         });
         shared.relay_on(&opts);
         {
@@ -280,7 +306,10 @@ impl SyncplayServer {
             })
         };
 
-        info!(port, "Syncplay server listening");
+        info!(
+            port,
+            "Syncplay server listening (voice, when enabled, uses this same port; no extra port to open)"
+        );
         Ok(Self {
             port,
             shared,
@@ -301,8 +330,7 @@ impl SyncplayServer {
         self.shared.clone()
     }
 
-    /// Listen on UDP and TCP 9000. A bind failure is logged and leaves voice off;
-    /// Syncplay itself keeps running.
+    /// Turn the voice relay on. It does not bind a port of its own.
     pub async fn ensure_voice(&self) {
         self.shared.ensure_voice().await;
     }
@@ -318,25 +346,35 @@ impl SyncplayServer {
 }
 
 impl Shared {
-    /// Listen on UDP and TCP 9000. A bind failure is logged and leaves voice off.
-    pub(crate) async fn ensure_voice(self: &Arc<Self>) {
-        if self.voice_rt.lock().is_some() {
-            self.state.lock().set_voice_enabled(true);
+    fn announce_voice(&self, enabled: bool) {
+        let mut prev = self.voice_announced.lock();
+        if *prev == Some(enabled) {
             return;
         }
-        match VoiceRuntime::bind(voice::PORT, voice::PORT).await {
-            Ok(rt) => {
-                self.install_voice(rt);
-                info!(
-                    udp = voice::PORT,
-                    tcp = voice::PORT,
-                    "voice relay listening"
-                );
-            }
-            Err(e) => {
-                warn!(error = %e, port = voice::PORT, "voice relay failed to listen; voice stays off");
-            }
+        *prev = Some(enabled);
+        if enabled {
+            info!(
+                port = self.port,
+                "voice relay enabled on Syncplay port {} (no extra port to open)", self.port
+            );
+        } else {
+            info!(
+                port = self.port,
+                "voice relay disabled on Syncplay port {}; clients are told \"{}\"",
+                self.port,
+                voice::DISABLED_MESSAGE
+            );
         }
+    }
+
+    /// Voice frames are multiplexed on the Syncplay connection. Nothing is bound.
+    pub(crate) async fn ensure_voice(self: &Arc<Self>) {
+        if self.voice_rt.lock().is_none() {
+            self.install_voice(VoiceRuntime::start(self.port));
+        } else {
+            self.state.lock().set_voice_enabled(true);
+        }
+        self.announce_voice(true);
     }
 
     pub(crate) fn install_voice(self: &Arc<Self>, rt: VoiceRuntime) {
@@ -360,6 +398,8 @@ impl Shared {
         let mut st = self.state.lock();
         st.set_voice_enabled(false);
         st.attach_voice(None);
+        drop(st);
+        self.announce_voice(false);
     }
 }
 
@@ -419,36 +459,42 @@ impl Drop for SyncplayServer {
     }
 }
 
-/// Read one `\n`-terminated line (cancel-safe accumulation into `buf`).
+/// Read one JSON line. A voice frame here is an error: the caller wanted Syncplay JSON
+/// (the handshake, or a client that has not opted into multiplexed voice).
 async fn read_line<R: AsyncRead + Unpin>(
     reader: &mut BufReader<R>,
     buf: &mut Vec<u8>,
 ) -> std::io::Result<Option<Value>> {
-    loop {
-        buf.clear();
-        let n = reader.read_until(b'\n', buf).await?;
-        if n == 0 {
-            return Ok(None);
-        }
-        if buf.len() > MAX_LINE_LENGTH {
-            return Err(std::io::Error::new(
+    let _ = buf;
+    match voice::read_record(reader).await? {
+        None => Ok(None),
+        Some(voice::Record::Voice(_)) => {
+            error!("voice relay received a frame where a Syncplay JSON message was required");
+            Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "line too long",
-            ));
+                "voice frame is not a Syncplay JSON message",
+            ))
         }
-        let text = String::from_utf8_lossy(buf);
-        let text = text.trim();
-        if text.is_empty() {
-            continue;
-        }
-        return match serde_json::from_str::<Value>(text) {
+        Some(voice::Record::Line(text)) => match serde_json::from_str::<Value>(&text) {
             Ok(v) if v.is_object() => Ok(Some(v)),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "not a JSON object",
             )),
-        };
+        },
     }
+}
+
+fn relay_voice(shared: &Shared, id: ConnId, tx: &UnboundedSender<Out>, packet: &[u8]) {
+    let Some(hub) = shared.ext.voice.lock().clone() else {
+        error!(
+            "voice relay received a frame but voice is disabled ({})",
+            voice::DISABLED_MESSAGE
+        );
+        return;
+    };
+    hub.attach_mux(id, super::room::voice_mux_send(tx.clone()), true);
+    hub.ingest_connection(id, packet);
 }
 
 /// What the first byte says, unless vanilla mode keeps the port Syncplay-only.
@@ -571,6 +617,15 @@ async fn run_session<S>(
                         break;
                     }
                 }
+                Out::Voice(pkt) => {
+                    let Some(frame) = voice::encode_frame(&pkt) else {
+                        continue;
+                    };
+                    if wr.write_all(&frame).await.is_err() || wr.flush().await.is_err() {
+                        error!("voice relay failed to write a frame on the Syncplay connection");
+                        break;
+                    }
+                }
                 Out::Close => break,
             }
         }
@@ -585,16 +640,38 @@ async fn run_session<S>(
     let mut buf = Vec::new();
     let mut logged = false;
     loop {
-        let message = match pending.take() {
-            Some(m) => m,
-            None => match read_line(&mut reader, &mut buf).await {
-                Ok(Some(m)) => m,
+        let message = if let Some(m) = pending.take() {
+            m
+        } else {
+            match voice::read_record(&mut reader).await {
                 Ok(None) => break,
+                Ok(Some(voice::Record::Voice(pkt))) => {
+                    if !logged {
+                        error!(
+                            %peer,
+                            "voice relay received a frame before login on the Syncplay connection"
+                        );
+                        continue;
+                    }
+                    relay_voice(&shared, id, &tx, &pkt);
+                    continue;
+                }
+                Ok(Some(voice::Record::Line(text))) => match serde_json::from_str::<Value>(&text) {
+                    Ok(v) if v.is_object() => v,
+                    _ => {
+                        error!(%peer, "Syncplay connection sent a line that is not a JSON object");
+                        break;
+                    }
+                },
                 Err(e) => {
-                    debug!(%peer, error = %e, "Syncplay connection error");
+                    if e.kind() == std::io::ErrorKind::InvalidData {
+                        error!(%peer, error = %e, "voice relay error on the Syncplay connection");
+                    } else {
+                        debug!(%peer, error = %e, "Syncplay connection error");
+                    }
                     break;
                 }
-            },
+            }
         };
         let Some(obj) = message.as_object() else {
             continue;
@@ -888,6 +965,19 @@ impl Handshake<'_> {
 mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
+
+    #[test]
+    fn bind_failure_names_eaddrinuse_and_the_syncplay_port() {
+        let e = std::io::Error::new(std::io::ErrorKind::AddrInUse, "address already in use");
+        let msg = describe_bind_failure(8999, &e);
+        assert!(msg.contains("EADDRINUSE"));
+        assert!(msg.contains("8999"));
+        assert!(msg.contains("no extra voice port"));
+        let other = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let msg = describe_bind_failure(8999, &other);
+        assert!(msg.contains("PermissionDenied"));
+        assert!(msg.contains("no extra voice port"));
+    }
 
     async fn read_msg<R: AsyncRead + Unpin>(r: &mut BufReader<R>) -> Value {
         let mut buf = Vec::new();

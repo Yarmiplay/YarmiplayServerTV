@@ -130,7 +130,9 @@ pub struct SyncplaySettings {
     pub vanilla_mode: bool,
     /// Let YarmiplayTV clients stream each other's files through this server.
     pub file_relay: bool,
-    /// Relay voice between people in a Syncplay room. On by default; off in vanilla mode.
+    /// Relay voice between people in a Syncplay room, on the Syncplay port
+    /// itself (no extra port). On by default; off in vanilla mode.
+    /// `--voice` / `--no-voice` and `YARMIPLAYSERVERTV_VOICE` override this at startup.
     pub voice: bool,
     /// Disk space the relay cache may use, in GB.
     pub relay_cache_gb: u32,
@@ -425,6 +427,76 @@ impl Settings {
     }
 }
 
+/// Printed by `--help`. Voice uses the Syncplay port; there is no second port.
+pub const HELP: &str = "\
+YarmiplayServerTV
+
+Voice chat is relayed on the Syncplay port (default 8999). There is no extra
+voice port to open.
+
+  --voice       Turn voice chat on and save that setting
+  --no-voice    Turn voice chat off and save that setting. Clients are told
+                \"voice disabled on this server\"
+  --minimized   Start in the tray
+  --help        Show this help
+
+  YARMIPLAYSERVERTV_VOICE=on|off|true|false|1|0
+      Same switch as --voice / --no-voice. The flag wins when both are set.
+      Voice still uses the Syncplay port, no extra port to open.
+
+  YARMIPLAYSERVERTV_HOME=<folder>
+      Keep settings and data in that folder.
+";
+
+/// `--voice` / `--no-voice` and `YARMIPLAYSERVERTV_VOICE`.
+/// `Ok(None)` when the operator did not set either. The flag wins over the variable.
+pub fn voice_override<I, S>(args: I, env: Option<&str>) -> Result<Option<bool>, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut from_flag: Option<bool> = None;
+    let mut help = false;
+    for arg in args {
+        match arg.as_ref() {
+            "--help" | "-h" => help = true,
+            "--voice" => {
+                if from_flag == Some(false) {
+                    return Err("pass only one of --voice and --no-voice".into());
+                }
+                from_flag = Some(true);
+            }
+            "--no-voice" => {
+                if from_flag == Some(true) {
+                    return Err("pass only one of --voice and --no-voice".into());
+                }
+                from_flag = Some(false);
+            }
+            _ => {}
+        }
+    }
+    if help {
+        return Err("help".into());
+    }
+    if from_flag.is_some() {
+        return Ok(from_flag);
+    }
+    match env.map(str::trim).filter(|v| !v.is_empty()) {
+        None => Ok(None),
+        Some(v) => parse_voice_env(v).map(Some),
+    }
+}
+
+fn parse_voice_env(value: &str) -> Result<bool, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" | "yes" | "enable" | "enabled" => Ok(true),
+        "0" | "false" | "off" | "no" | "disable" | "disabled" => Ok(false),
+        other => Err(format!(
+            "YARMIPLAYSERVERTV_VOICE must be on or off (voice uses the Syncplay port, no extra port to open); got {other:?}"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -568,5 +640,24 @@ mod tests {
         s.syncplay.motd = "hi".into();
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
+    }
+
+    #[test]
+    fn voice_override_flag_beats_the_environment() {
+        assert_eq!(voice_override(["--minimized"], None).unwrap(), None);
+        assert_eq!(
+            voice_override(["--voice"], Some("off")).unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            voice_override(std::iter::empty::<&str>(), Some("0")).unwrap(),
+            Some(false)
+        );
+        assert!(voice_override(["--voice", "--no-voice"], None).is_err());
+        assert!(voice_override(std::iter::empty::<&str>(), Some("maybe")).is_err());
+        let err = voice_override(["--help"], Some("on")).unwrap_err();
+        assert_eq!(err, "help");
+        assert!(HELP.contains("no extra"));
+        assert!(HELP.contains("voice disabled on this server"));
     }
 }

@@ -95,7 +95,7 @@ export interface SyncplaySettings {
   /** Exactly like the official server: no YarmiplayTV extensions, relay or Jellyfin sharing. */
   vanillaMode: boolean;
   fileRelay: boolean;
-  /** Relay voice in Syncplay rooms. On by default, off in vanilla mode. */
+  /** Relay voice in Syncplay rooms on the Syncplay port (no extra port). On by default, off in vanilla mode. */
   voice: boolean;
   relayCacheGb: number;
   /** Web pages allowed to join from a browser and read the relay cross-origin. */

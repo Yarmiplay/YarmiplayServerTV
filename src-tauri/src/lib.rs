@@ -58,6 +58,20 @@ pub fn request_quit(app: &tauri::AppHandle) {
 }
 
 pub fn run() {
+    match config::voice_override(
+        std::env::args().skip(1),
+        std::env::var("YARMIPLAYSERVERTV_VOICE").ok().as_deref(),
+    ) {
+        Err(e) if e == "help" => {
+            println!("{}", config::HELP);
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }
+        Ok(_) => {}
+    }
     logs::init();
     net::install_crypto_provider();
 
@@ -91,6 +105,18 @@ pub fn run() {
                 Arc::new(move || wake.notify_one())
             };
             let state = App::new(paths::AppPaths::resolve(), notify);
+            match config::voice_override(
+                std::env::args().skip(1),
+                std::env::var("YARMIPLAYSERVERTV_VOICE").ok().as_deref(),
+            ) {
+                Ok(Some(on)) => {
+                    if let Err(e) = state.apply_voice_override(on) {
+                        return Err(e.into());
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => return Err(e.into()),
+            }
             app.manage(state.clone());
 
             let log_handle = handle.clone();

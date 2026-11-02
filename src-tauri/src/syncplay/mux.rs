@@ -4,10 +4,12 @@
 //! an HTTP request. HTTP connections are handed to an axum router through a
 //! channel-backed [`Listener`]: the relay endpoints, a probe, the browser
 //! client's WebSocket (`/yarmiplay/ws`, a normal Syncplay session with one
-//! JSON line per text message), voice media (`/yarmiplay/voice`, binary
-//! packets) and MyAnimeList passthrough, and the shared
+//! JSON object per text message and, when the client opts in, one yv1 voice
+//! packet per binary message), legacy voice media (`/yarmiplay/voice`, binary
+//! packets on this same port) and MyAnimeList passthrough, and the shared
 //! Jellyfin or Plex for every other path (see [`route`]). Browsers are only
 //! let in from the allowed origins ([`cors`]). Vanilla mode never sniffs.
+//! Voice does not use a second port.
 
 use super::room::{ConnId, ServerState};
 use super::server::Extensions;
@@ -29,7 +31,7 @@ use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -390,7 +392,7 @@ async fn voice_ws(
     upgrade: WebSocketUpgrade,
 ) -> Response<Body> {
     let Some(hub) = ctx.voice_hub().filter(|h| h.listening()) else {
-        return reply(StatusCode::NOT_FOUND, "Voice chat is off");
+        return reply(StatusCode::NOT_FOUND, super::voice::DISABLED_MESSAGE);
     };
     let Some(token) = q.t.as_deref().and_then(super::voice::parse_token) else {
         return reply(StatusCode::UNAUTHORIZED, "Voice token required");
@@ -420,9 +422,11 @@ async fn ws(
 }
 
 /// Carry a WebSocket to a Syncplay session over an in-memory pipe: text
-/// messages become lines (`\n` added), lines become text messages (line
-/// ending dropped). Binary frames are ignored, pings answered, and the socket
-/// closes when the session ends.
+/// messages become JSON lines, lines become text messages. A binary message
+/// is one yv1 packet and is written as a `0x1E` frame; a voice frame coming
+/// back is sent as a binary message. Pings are answered. The socket closes
+/// when the session ends. Older clients that never send or receive binary
+/// still see only JSON text.
 async fn bridge(socket: WebSocket, start: SessionFn, meta: ConnMeta) {
     let (ours, theirs) = tokio::io::duplex(256 * 1024);
     let session = tokio::spawn(start(Box::new(theirs), meta.peer, meta.tls));
@@ -453,21 +457,49 @@ async fn bridge(socket: WebSocket, start: SessionFn, meta: ConnMeta) {
                         break;
                     }
                 }
+                Message::Binary(b) => {
+                    let Some(frame) = super::voice::encode_frame(&b) else {
+                        break;
+                    };
+                    if wr.write_all(&frame).await.is_err() || wr.flush().await.is_err() {
+                        tracing::error!(
+                            "voice relay failed to write a WebSocket voice frame onto the Syncplay connection"
+                        );
+                        break;
+                    }
+                }
                 Message::Ping(p) => {
                     let _ = pongs.send(Message::Pong(p));
                 }
                 Message::Close(_) => break,
-                Message::Binary(_) | Message::Pong(_) => {}
+                Message::Pong(_) => {}
             }
         }
         let _ = wr.shutdown().await;
     });
 
-    let mut lines = BufReader::new(rd).lines();
-    while let Ok(Some(l)) = lines.next_line().await {
-        let l = l.trim_end_matches('\r');
-        if !l.is_empty() && out_tx.send(Message::Text(l.to_string().into())).is_err() {
-            break;
+    let mut records = BufReader::new(rd);
+    loop {
+        match super::voice::read_record(&mut records).await {
+            Ok(Some(super::voice::Record::Line(l))) => {
+                if out_tx.send(Message::Text(l.into())).is_err() {
+                    break;
+                }
+            }
+            Ok(Some(super::voice::Record::Voice(pkt))) => {
+                if out_tx.send(Message::Binary(pkt.into())).is_err() {
+                    tracing::error!("voice relay failed to send a frame on the Syncplay WebSocket");
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "voice relay failed while reading the Syncplay WebSocket bridge"
+                );
+                break;
+            }
         }
     }
     let _ = out_tx.send(Message::Close(None));

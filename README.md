@@ -334,6 +334,13 @@ clients, and a seeder and a viewer (`--yarmiplay`) that pass a file through the 
 testing. The Jellyfin version and checksums are pinned in `src-tauri/jellyfin-manifest.json`; regenerate
 it with `python scripts/update_jellyfin_manifest.py`.
 
+The **Voice chat** switch is on the **Syncplay** page of the control panel, under **YarmiplayTV extras**, and in the tray menu as **Voice chat (Syncplay port N)**. It takes effect immediately. No restart. Voice uses that Syncplay port. There is no extra port to open. When the switch is off, clients are told `voice disabled on this server`.
+
+`--voice` and `--no-voice` set the same switch and save it (`syncplay.voice`).
+`YARMIPLAYSERVERTV_VOICE=on` or `off` (also `1`/`0`, `true`/`false`) does the same; the flag wins.
+`--help` prints this. The headless server
+(`cargo run --example syncplay_server -- <port> [password] [--voice|--no-voice]`) follows the same flags.
+
 ### Project layout
 
 - `src-tauri/src/syncplay/`: the Syncplay server (protocol, rooms, TCP/STARTTLS listener), the YarmiplayTV
@@ -407,8 +414,8 @@ Each feature only talks to what it needs:
   and [Cloudflare DNS](https://developers.cloudflare.com/1.1.1.1/privacy/public-dns-resolver/).
 - **Syncplay server:** people you give the address to connect to it. File names, playback and chat are
   passed between them and not stored; the app's log on your computer notes who joined and left which room.
-- **Voice chat:** audio from people in a room is relayed through this computer and not recorded. The app
-  does not use a microphone. See the privacy policy for the detail.
+- **Voice chat:** audio from people in a room is relayed through this computer on the Syncplay port
+  (no extra port) and not recorded. The app does not use a microphone. See the privacy policy for the detail.
 - **Approved devices:** for each YarmiplayTV device you approve, the app keeps its public key, the name it
   sent, when it was approved and last seen, and the username it last used, on your computer only. Requests
   you haven't answered are kept in memory, with the device's IP address, and forgotten after a day or when
