@@ -1,8 +1,11 @@
-//! Room voice relay. Opus frames on a private channel (see `docs/VOICE_PROTOCOL.md`).
+//! Room voice relay. Opus frames multiplexed on the Syncplay connection
+//! (see `docs/VOICE_PROTOCOL.md`). There is no separate voice port.
 //!
-//! The hub is a table plus the sockets. It does not read or write the disk, and it
+//! The hub is an in-memory table. It does not read or write the disk, and it
 //! does not log packet contents, tokens, or keys. Plaintext exists only inside
 //! [`VoiceHub::ingest`], long enough to seal a copy for each other seat.
+//! Failures (a frame that will not open, a connection that will not take a
+//! copy) are logged without those secrets.
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -11,24 +14,25 @@ use base64::Engine;
 use parking_lot::Mutex;
 use rand::Rng;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
-use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
-use tokio::task::JoinHandle;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
+use tokio::sync::mpsc::UnboundedSender;
+use tracing::{error, warn};
 
 use super::room::ConnId;
 
 pub const VERSION: u64 = 1;
-pub const PORT: u16 = 9000;
 pub const MAX_SEATS: usize = 8;
 pub const MAX_PACKET: usize = 1200;
 pub const HEADER_LEN: usize = 40;
 pub const TAG_LEN: usize = 16;
 pub const MIN_PACKET: usize = HEADER_LEN + TAG_LEN;
 pub const WS_PATH: &str = "/yarmiplay/voice";
+/// Shown to clients when the host has voice switched off, including in `voiceClosed`.
+pub const DISABLED_MESSAGE: &str = "voice disabled on this server";
+/// ASCII Record Separator. A Syncplay JSON line never starts with this byte.
+pub const FRAME_MARKER: u8 = 0x1E;
 /// `voiceActivity` messages accepted per seat per second.
 pub const ACTIVITY_PER_SEC: usize = 5;
 const SEQ_WINDOW: u32 = 64;
@@ -42,10 +46,14 @@ struct Down {
     gen: u64,
 }
 
+/// Hands one yv1 packet to the seat's Syncplay connection. The connection
+/// writer adds the `0x1E` framing. The closure must not log the packet.
+pub type MuxSend = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
+
 enum Route {
     None,
-    Udp(SocketAddr),
     Stream(Down),
+    Mux(MuxSend),
 }
 
 struct Seat {
@@ -70,10 +78,8 @@ struct Inner {
 }
 
 pub struct VoiceHub {
-    udp_port: u16,
-    tcp_port: u16,
-    fingerprint: String,
-    cert_der: Vec<u8>,
+    /// The Syncplay listener voice is multiplexed on. Not a second socket.
+    syncplay_port: u16,
     inner: Mutex<Inner>,
 }
 
@@ -85,9 +91,7 @@ pub struct SeatSecrets {
     pub token_hex: String,
     pub key_b64: String,
     pub replaced: bool,
-    pub udp_port: u16,
-    pub tcp_port: u16,
-    pub fingerprint: String,
+    pub port: u16,
 }
 
 #[derive(Debug)]
@@ -112,25 +116,14 @@ pub enum Activity {
 
 pub struct VoiceRuntime {
     pub hub: Arc<VoiceHub>,
-    udp: JoinHandle<()>,
-    tcp: JoinHandle<()>,
 }
 
 impl VoiceHub {
-    fn new(
-        udp_port: u16,
-        tcp_port: u16,
-        fingerprint: String,
-        cert_der: Vec<u8>,
-        listening: bool,
-    ) -> Arc<Self> {
+    fn new(syncplay_port: u16) -> Arc<Self> {
         Arc::new(Self {
-            udp_port,
-            tcp_port,
-            fingerprint,
-            cert_der,
+            syncplay_port,
             inner: Mutex::new(Inner {
-                listening,
+                listening: true,
                 seats: HashMap::new(),
                 by_token: HashMap::new(),
                 next_gen: 1,
@@ -138,34 +131,23 @@ impl VoiceHub {
         })
     }
 
-    /// In-memory table for tests. Reports the real default ports and claims to be listening.
+    /// In-memory table for tests. Voice is multiplexed on port 8999.
     pub fn open_for_test() -> Arc<Self> {
-        Self::new(PORT, PORT, "ab".repeat(32), Vec::new(), true)
+        Self::new(8999)
     }
 
     pub fn listening(&self) -> bool {
         self.inner.lock().listening
     }
 
-    pub fn udp_port(&self) -> u16 {
-        self.udp_port
-    }
-
-    pub fn tcp_port(&self) -> u16 {
-        self.tcp_port
-    }
-
-    pub fn fingerprint(&self) -> &str {
-        &self.fingerprint
-    }
-
-    pub fn cert_der(&self) -> &[u8] {
-        &self.cert_der
+    pub fn syncplay_port(&self) -> u16 {
+        self.syncplay_port
     }
 
     pub fn descriptor(&self) -> Value {
         json!({
             "version": VERSION,
+            "enabled": true,
             "codec": "opus",
             "clockRate": 48000,
             "channels": 1,
@@ -174,11 +156,10 @@ impl VoiceHub {
             "fec": true,
             "dtx": true,
             "transport": "yv1",
-            "udpPort": self.udp_port,
-            "tcpPort": self.tcp_port,
+            "mux": "syncplay",
+            "port": self.syncplay_port,
             "wsPath": WS_PATH,
             "maxParticipants": MAX_SEATS,
-            "fingerprint": self.fingerprint,
         })
     }
 
@@ -227,10 +208,25 @@ impl VoiceHub {
             token_hex: format!("{token:016x}"),
             key_b64: B64.encode(key),
             replaced,
-            udp_port: self.udp_port,
-            tcp_port: self.tcp_port,
-            fingerprint: self.fingerprint.clone(),
+            port: self.syncplay_port,
         })
+    }
+
+    /// Send later audio on this seat's Syncplay connection.
+    /// `force` replaces a legacy WebSocket path. A mux path that is already
+    /// installed is left in place so every audio frame does not rebuild it.
+    pub fn attach_mux(&self, conn: ConnId, send: MuxSend, force: bool) {
+        let mut g = self.inner.lock();
+        let Some(seat) = g.seats.get_mut(&conn) else {
+            return;
+        };
+        if matches!(seat.route, Route::Mux(_)) {
+            return;
+        }
+        if !force && !matches!(seat.route, Route::None) {
+            return;
+        }
+        seat.route = Route::Mux(send);
     }
 
     /// Drop the seat. False if it was not in voice.
@@ -357,56 +353,79 @@ impl VoiceHub {
         }
     }
 
-    /// Decrypt one packet and fan the audio out. UDP destinations are returned.
-    /// TCP and WebSocket copies are pushed onto the seat's sender.
-    /// Nothing in here is logged.
+    /// A frame that arrived on the Syncplay connection `conn`. The packet token
+    /// must belong to that connection. The path is not moved here; [`attach_mux`]
+    /// does that.
+    pub fn ingest_connection(&self, conn: ConnId, packet: &[u8]) {
+        let Some(token) = packet_token(packet) else {
+            warn!("voice relay dropped a frame on the Syncplay connection: not a yv1 packet");
+            return;
+        };
+        let owner = self.inner.lock().by_token.get(&token).copied();
+        if owner != Some(conn) {
+            warn!(
+                "voice relay dropped a frame: its token does not belong to this Syncplay connection"
+            );
+            return;
+        }
+        self.ingest(packet, None);
+    }
+
+    /// Decrypt one packet and fan the audio out to the other seats' paths.
     ///
-    /// `from` is installed as the UDP return path only after the tag checks out.
-    /// `stream` is a TCP or WebSocket sender and the generation already registered
+    /// `stream` is a legacy WebSocket sender and the generation already registered
     /// for that socket (`None` until the first accepted packet). A failed tag does
     /// not move the path: the token sits in the clear, and a copied header must
     /// not be enough to steal where audio is sent. The returned generation is the
     /// one `detach_sender` needs for this socket.
+    ///
+    /// Rejected frames and delivery failures are logged. The packet, token, key,
+    /// and plaintext are not.
     pub fn ingest(
         &self,
         packet: &[u8],
-        from: Option<SocketAddr>,
         stream: Option<(&UnboundedSender<Vec<u8>>, Option<u64>)>,
-    ) -> (Vec<(SocketAddr, Vec<u8>)>, Option<u64>) {
+    ) -> Option<u64> {
         let parsed = match packet_token(packet) {
             Some(t) => t,
-            None => return (Vec::new(), None),
+            None => {
+                warn!("voice relay dropped a frame: not a yv1 packet");
+                return None;
+            }
         };
         let mut g = self.inner.lock();
         let Some(conn) = g.by_token.get(&parsed).copied() else {
-            return (Vec::new(), None);
+            warn!("voice relay dropped a frame: unknown seat");
+            return None;
         };
         let key = match g.seats.get(&conn) {
             Some(s) if s.token == parsed => s.key,
-            _ => return (Vec::new(), None),
+            _ => {
+                warn!("voice relay dropped a frame: seat and token disagree");
+                return None;
+            }
         };
         let Ok(opened) = open(&key, packet) else {
-            return (Vec::new(), None);
+            warn!("voice relay dropped a frame: authentication failed");
+            return None;
         };
         if opened.sender != 0 || !plain_ok(opened.ty, &opened.plain) {
-            return (Vec::new(), None);
+            warn!("voice relay dropped a frame: rejected plaintext or sender");
+            return None;
         }
         let (keep_gen, room, seq, ts, plain, ty) = {
             let Some(seat) = g.seats.get_mut(&conn) else {
-                return (Vec::new(), None);
+                warn!("voice relay dropped a frame: seat disappeared");
+                return None;
             };
             if !accept_seq(seat, opened.seq) {
-                return (Vec::new(), None);
+                warn!("voice relay dropped a frame: replayed or old sequence");
+                return None;
             }
             let keep_gen = stream.as_ref().and_then(|(_, existing)| {
                 (*existing)
                     .filter(|gen| matches!(&seat.route, Route::Stream(down) if down.gen == *gen))
             });
-            if stream.is_none() {
-                if let Some(addr) = from {
-                    seat.route = Route::Udp(addr);
-                }
-            }
             (
                 keep_gen,
                 seat.room.clone(),
@@ -434,7 +453,7 @@ impl VoiceHub {
             None
         };
         if ty != AUDIO {
-            return (Vec::new(), stream_gen);
+            return stream_gen;
         }
         let targets: Vec<(u64, [u8; 32], RouteCopy)> = g
             .seats
@@ -442,35 +461,39 @@ impl VoiceHub {
             .filter(|s| s.conn != conn && s.room == room)
             .map(|s| {
                 let route = match &s.route {
-                    Route::Udp(addr) => RouteCopy::Udp(*addr),
                     Route::Stream(d) => RouteCopy::Stream(d.tx.clone()),
+                    Route::Mux(send) => RouteCopy::Mux(send.clone()),
                     Route::None => RouteCopy::None,
                 };
                 (s.token, s.key, route)
             })
             .collect();
         drop(g);
-        let mut udp = Vec::new();
         for (token, key, route) in targets {
             let Some(pkt) = seal(&key, AUDIO, token, conn, seq, ts, &plain) else {
+                error!("voice relay failed to seal a frame for another seat");
                 continue;
             };
             match route {
-                RouteCopy::Udp(addr) => udp.push((addr, pkt)),
                 RouteCopy::Stream(tx) => {
-                    let _ = tx.send(pkt);
+                    if tx.send(pkt).is_err() {
+                        error!(
+                            "voice relay failed to deliver a frame on the legacy voice WebSocket"
+                        );
+                    }
                 }
+                RouteCopy::Mux(send) => send(pkt),
                 RouteCopy::None => {}
             }
         }
-        (udp, stream_gen)
+        stream_gen
     }
 }
 
 enum RouteCopy {
     None,
-    Udp(SocketAddr),
     Stream(UnboundedSender<Vec<u8>>),
+    Mux(MuxSend),
 }
 
 struct Opened {
@@ -631,10 +654,10 @@ impl SeatSecrets {
             "room": self.room,
             "token": self.token_hex,
             "key": self.key_b64,
-            "udpPort": self.udp_port,
-            "tcpPort": self.tcp_port,
+            "transport": "yv1",
+            "mux": "syncplay",
+            "port": self.port,
             "wsPath": WS_PATH,
-            "fingerprint": self.fingerprint,
             "codec": "opus",
             "clockRate": 48000,
             "channels": 1,
@@ -643,162 +666,104 @@ impl SeatSecrets {
     }
 }
 
-fn mint_cert() -> Result<(String, String, String, Vec<u8>), String> {
-    let params =
-        rcgen::CertificateParams::new(vec!["voice.local".into()]).map_err(|e| e.to_string())?;
-    let key = rcgen::KeyPair::generate().map_err(|e| e.to_string())?;
-    let cert = params.self_signed(&key).map_err(|e| e.to_string())?;
-    let der = cert.der().to_vec();
-    let fingerprint = hex::encode(Sha256::digest(&der));
-    Ok((cert.pem(), key.serialize_pem(), fingerprint, der))
+/// One voice record on the Syncplay byte stream: `0x1E`, big-endian length, yv1 packet.
+/// `None` when `packet` is not a legal yv1 size. That refusal is logged.
+pub fn encode_frame(packet: &[u8]) -> Option<Vec<u8>> {
+    if !(MIN_PACKET..=MAX_PACKET).contains(&packet.len()) {
+        error!(
+            bytes = packet.len(),
+            "voice relay refused to write a frame whose size is outside {MIN_PACKET}..={MAX_PACKET}"
+        );
+        return None;
+    }
+    let mut out = Vec::with_capacity(3 + packet.len());
+    out.push(FRAME_MARKER);
+    out.extend_from_slice(&(packet.len() as u16).to_be_bytes());
+    out.extend_from_slice(packet);
+    Some(out)
 }
 
-fn bind_udp(port: u16) -> std::io::Result<tokio::net::UdpSocket> {
-    use socket2::{Domain, Protocol, Socket, Type};
-    let v6 = || -> std::io::Result<std::net::UdpSocket> {
-        let s = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
-        s.set_only_v6(false)?;
-        s.bind(&SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)).into())?;
-        s.set_nonblocking(true)?;
-        Ok(s.into())
-    };
-    let std = match v6() {
-        Ok(s) => s,
-        Err(_) => {
-            let s = std::net::UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], port)))?;
-            s.set_nonblocking(true)?;
-            s
+/// What the next record on a Syncplay connection is.
+pub enum Record {
+    /// One JSON object, without the trailing newline.
+    Line(String),
+    /// One yv1 packet, with the `0x1E` marker and the length already removed.
+    Voice(Vec<u8>),
+}
+
+/// Read one JSON line or one voice frame. Blank lines are skipped.
+/// A voice length outside 56..=1200 is an error so the caller can log and close.
+pub async fn read_record<R: AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+) -> std::io::Result<Option<Record>> {
+    loop {
+        let first = {
+            let buf = reader.fill_buf().await?;
+            if buf.is_empty() {
+                return Ok(None);
+            }
+            buf[0]
+        };
+        if first == FRAME_MARKER {
+            reader.consume(1);
+            let mut len_buf = [0u8; 2];
+            reader.read_exact(&mut len_buf).await?;
+            let len = u16::from_be_bytes(len_buf) as usize;
+            if !(MIN_PACKET..=MAX_PACKET).contains(&len) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "voice frame length {len} is outside {MIN_PACKET}..={MAX_PACKET} on the Syncplay connection"
+                    ),
+                ));
+            }
+            let mut pkt = vec![0u8; len];
+            reader.read_exact(&mut pkt).await?;
+            return Ok(Some(Record::Voice(pkt)));
         }
-    };
-    tokio::net::UdpSocket::from_std(std)
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        if line.len() > super::protocol::MAX_LINE_LENGTH {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "line too long",
+            ));
+        }
+        let text = line.trim();
+        if text.is_empty() {
+            continue;
+        }
+        return Ok(Some(Record::Line(text.to_string())));
+    }
 }
 
 impl VoiceRuntime {
-    /// Bind UDP and TCP. A bind error leaves nothing listening; the caller keeps Syncplay up.
-    pub async fn bind(udp_port: u16, tcp_port: u16) -> std::io::Result<Self> {
-        crate::net::install_crypto_provider();
-        let udp = bind_udp(udp_port)?;
-        let tcp = super::server::bind_dual_stack(tcp_port)?;
-        let udp_port = udp.local_addr()?.port();
-        let tcp_port = tcp.local_addr()?.port();
-        let (pem, key_pem, fingerprint, der) = mint_cert().map_err(std::io::Error::other)?;
-        let config = crate::tls::server_config(&pem, &key_pem).map_err(std::io::Error::other)?;
-        let hub = VoiceHub::new(udp_port, tcp_port, fingerprint, der, true);
-        let udp_hub = hub.clone();
-        let tcp_hub = hub.clone();
-        let udp = tokio::spawn(async move { udp_loop(udp, udp_hub).await });
-        let tcp = tokio::spawn(async move { tcp_loop(tcp, config, tcp_hub).await });
-        Ok(Self { hub, udp, tcp })
-    }
-
-    pub fn shutdown(self) {
-        self.udp.abort();
-        self.tcp.abort();
-    }
-}
-
-async fn udp_loop(sock: tokio::net::UdpSocket, hub: Arc<VoiceHub>) {
-    let mut buf = vec![0u8; 2048];
-    loop {
-        let Ok((n, addr)) = sock.recv_from(&mut buf).await else {
-            break;
-        };
-        if n > MAX_PACKET {
-            continue;
-        }
-        for (dest, pkt) in hub.ingest(&buf[..n], Some(addr), None).0 {
-            let _ = sock.send_to(&pkt, dest).await;
+    /// Voice rides on the Syncplay listener. Nothing else is bound.
+    pub fn start(syncplay_port: u16) -> Self {
+        Self {
+            hub: VoiceHub::new(syncplay_port),
         }
     }
+
+    pub fn shutdown(self) {}
 }
 
-async fn tcp_loop(
-    listener: tokio::net::TcpListener,
-    config: Arc<rustls::ServerConfig>,
-    hub: Arc<VoiceHub>,
-) {
-    let acceptor = tokio_rustls::TlsAcceptor::from(config);
-    loop {
-        let Ok((stream, _)) = listener.accept().await else {
-            break;
-        };
-        let _ = stream.set_nodelay(true);
-        let acceptor = acceptor.clone();
-        let hub = hub.clone();
-        tokio::spawn(async move {
-            if let Ok(stream) = acceptor.accept(stream).await {
-                serve_tls(stream, hub).await;
-            }
-        });
-    }
-}
-
-async fn serve_tls<S>(stream: S, hub: Arc<VoiceHub>)
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    let (mut rd, mut wr) = tokio::io::split(stream);
-    let (tx, mut rx) = unbounded_channel::<Vec<u8>>();
-    let writer = tokio::spawn(async move {
-        while let Some(pkt) = rx.recv().await {
-            let len = pkt.len() as u16;
-            if wr.write_all(&len.to_be_bytes()).await.is_err()
-                || wr.write_all(&pkt).await.is_err()
-                || wr.flush().await.is_err()
-            {
-                break;
-            }
-        }
-    });
-    let mut registered: Option<(u64, u64)> = None;
-    loop {
-        let frame = match read_frame(&mut rd).await {
-            Ok(f) => f,
-            Err(_) => break,
-        };
-        let Some(token) = packet_token(&frame) else {
-            continue;
-        };
-        if registered.is_some_and(|(have, _)| have != token) {
-            continue;
-        }
-        let existing = registered.map(|(_, gen)| gen);
-        let (_, gen) = hub.ingest(&frame, None, Some((&tx, existing)));
-        if let Some(gen) = gen {
-            registered = Some((token, gen));
-        }
-    }
-    if let Some((token, gen)) = registered {
-        hub.detach_sender(token, gen);
-    }
-    drop(tx);
-    let _ = writer.await;
-}
-
-async fn read_frame<R: AsyncRead + Unpin>(rd: &mut R) -> std::io::Result<Vec<u8>> {
-    let mut len_buf = [0u8; 2];
-    rd.read_exact(&mut len_buf).await?;
-    let len = u16::from_be_bytes(len_buf) as usize;
-    if !(MIN_PACKET..=MAX_PACKET).contains(&len) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "voice frame",
-        ));
-    }
-    let mut buf = vec![0u8; len];
-    rd.read_exact(&mut buf).await?;
-    Ok(buf)
-}
-
-/// Browser media socket. Each binary message is one packet.
+/// Legacy browser media socket on the Syncplay port (`GET /yarmiplay/voice`).
+/// Each binary message is one yv1 packet. New clients multiplex on `/yarmiplay/ws`
+/// or the Syncplay TCP connection instead.
 pub async fn serve_ws(socket: axum::extract::ws::WebSocket, hub: Arc<VoiceHub>, token: u64) {
     use axum::extract::ws::Message;
     use futures_util::{SinkExt, StreamExt};
+    use tokio::sync::mpsc::unbounded_channel;
     let (tx, mut rx) = unbounded_channel::<Vec<u8>>();
     let (mut sink, mut stream) = socket.split();
     let writer = tokio::spawn(async move {
         while let Some(pkt) = rx.recv().await {
             if sink.send(Message::Binary(pkt.into())).await.is_err() {
+                error!("voice relay failed to write a frame on the legacy voice WebSocket");
                 break;
             }
         }
@@ -808,14 +773,18 @@ pub async fn serve_ws(socket: axum::extract::ws::WebSocket, hub: Arc<VoiceHub>, 
         match item {
             Ok(Message::Binary(b)) => {
                 if packet_token(&b) != Some(token) {
+                    warn!("voice relay dropped a legacy WebSocket frame: token mismatch");
                     continue;
                 }
-                let (_, gen) = hub.ingest(&b, None, Some((&tx, generation)));
-                if gen.is_some() {
-                    generation = gen;
+                if let Some(gen) = hub.ingest(&b, Some((&tx, generation))) {
+                    generation = Some(gen);
                 }
             }
-            Ok(Message::Close(_)) | Err(_) => break,
+            Ok(Message::Close(_)) => break,
+            Err(e) => {
+                error!(error = %e, "voice relay legacy WebSocket failed");
+                break;
+            }
             _ => {}
         }
     }
@@ -828,7 +797,25 @@ pub async fn serve_ws(socket: axum::extract::ws::WebSocket, hub: Arc<VoiceHub>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
+    use tokio::io::BufReader;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    fn mux_receiver(hub: &VoiceHub, conn: ConnId) -> tokio::sync::mpsc::UnboundedReceiver<Vec<u8>> {
+        let (tx, rx) = unbounded_channel();
+        let failed = AtomicBool::new(false);
+        hub.attach_mux(
+            conn,
+            Arc::new(move |pkt| {
+                if tx.send(pkt).is_err() && !failed.swap(true, Ordering::Relaxed) {
+                    error!("voice relay failed to deliver a frame on the Syncplay connection");
+                }
+            }),
+            true,
+        );
+        rx
+    }
 
     fn joined(hub: &VoiceHub, conn: ConnId, room: &str, name: &str) -> SeatSecrets {
         match hub.join(conn, room, name, VERSION) {
@@ -865,45 +852,22 @@ mod tests {
         let a = joined(&hub, 1, "movie", "alice");
         let b = joined(&hub, 2, "movie", "bob");
         let c = joined(&hub, 3, "other", "carol");
-        let addr_a: SocketAddr = "127.0.0.1:11".parse().unwrap();
-        let addr_b: SocketAddr = "127.0.0.1:12".parse().unwrap();
-        let addr_c: SocketAddr = "127.0.0.1:13".parse().unwrap();
-        assert!(hub
-            .ingest(&packet(&a, KEEPALIVE, 1, &[0x00]), Some(addr_a), None)
-            .0
-            .is_empty());
-        assert!(hub
-            .ingest(&packet(&b, KEEPALIVE, 1, &[0x00]), Some(addr_b), None)
-            .0
-            .is_empty());
-        assert!(hub
-            .ingest(&packet(&c, KEEPALIVE, 1, &[0x00]), Some(addr_c), None)
-            .0
-            .is_empty());
-
-        let outs = hub
-            .ingest(&packet(&a, AUDIO, 2, b"opus-frame"), Some(addr_a), None)
-            .0;
-        assert_eq!(outs.len(), 1, "only bob is in alice's room and has a path");
-        assert_eq!(outs[0].0, addr_b);
-        let heard = open(&key_of(&b), &outs[0].1).unwrap();
+        let mut bob = mux_receiver(&hub, 2);
+        let mut carol = mux_receiver(&hub, 3);
+        hub.ingest(&packet(&a, KEEPALIVE, 1, &[0x00]), None);
+        assert!(bob.try_recv().is_err(), "keepalives are not forwarded");
+        hub.ingest(&packet(&a, AUDIO, 2, b"opus-frame"), None);
+        let heard = open(&key_of(&b), &bob.try_recv().unwrap()).unwrap();
         assert_eq!(heard.plain, b"opus-frame");
         assert_eq!(heard.sender, 1);
         assert_eq!(heard.ty, AUDIO);
-
-        assert!(
-            hub.ingest(&packet(&a, AUDIO, 2, b"opus-frame"), Some(addr_a), None)
-                .0
-                .is_empty(),
-            "replay"
-        );
-        assert!(
-            hub.ingest(&packet(&a, AUDIO, 3, b""), Some(addr_a), None)
-                .0
-                .is_empty(),
-            "empty audio"
-        );
+        assert!(carol.try_recv().is_err(), "another room hears nothing");
+        hub.ingest(&packet(&a, AUDIO, 2, b"opus-frame"), None);
+        assert!(bob.try_recv().is_err(), "replay");
+        hub.ingest(&packet(&a, AUDIO, 3, b""), None);
+        assert!(bob.try_recv().is_err(), "empty audio");
         assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+        let _ = (a, c);
     }
 
     #[test]
@@ -920,9 +884,8 @@ mod tests {
         let b = joined(&hub, 2, "movie", "bob");
         let (tx, mut rx) = unbounded_channel();
         assert!(hub.attach_sender(token_of(&b), tx).is_some());
-        let addr_a: SocketAddr = "127.0.0.1:21".parse().unwrap();
-        hub.ingest(&packet(&a, KEEPALIVE, 1, &[0x00]), Some(addr_a), None);
-        hub.ingest(&packet(&a, AUDIO, 2, b"frame"), Some(addr_a), None);
+        hub.ingest(&packet(&a, KEEPALIVE, 1, &[0x00]), None);
+        hub.ingest(&packet(&a, AUDIO, 2, b"frame"), None);
         let got = rx.try_recv().unwrap();
         assert_eq!(open(&key_of(&b), &got).unwrap().plain, b"frame");
         assert!(rx.try_recv().is_err());
@@ -955,17 +918,15 @@ mod tests {
         let hub = VoiceHub::open_for_test();
         let a = joined(&hub, 1, "movie", "alice");
         let b = joined(&hub, 2, "movie", "bob");
-        let addr_a: SocketAddr = "127.0.0.1:31".parse().unwrap();
-        let addr_b: SocketAddr = "127.0.0.1:32".parse().unwrap();
-        hub.ingest(&packet(&a, KEEPALIVE, 1, &[0x00]), Some(addr_a), None);
-        hub.ingest(&packet(&b, KEEPALIVE, 1, &[0x00]), Some(addr_b), None);
+        let mut bob = mux_receiver(&hub, 2);
+        hub.ingest(&packet(&a, KEEPALIVE, 1, &[0x00]), None);
+        hub.ingest(&packet(&b, KEEPALIVE, 1, &[0x00]), None);
         assert!(hub.leave(2));
-        assert!(hub
-            .ingest(&packet(&a, AUDIO, 2, b"x"), Some(addr_a), None)
-            .0
-            .is_empty());
+        hub.ingest(&packet(&a, AUDIO, 2, b"x"), None);
+        assert!(bob.try_recv().is_err());
         assert!(hub.room_of(2).is_none());
         assert_eq!(hub.conns_in("movie"), vec![1]);
+        let _ = (a, b);
     }
 
     #[test]
@@ -978,88 +939,167 @@ mod tests {
         let mut forged = packet(&a, KEEPALIVE, 1, &[0x00]);
         forged[4..12].copy_from_slice(&token_of(&b).to_be_bytes());
         let (thief, mut stolen) = unbounded_channel();
-        let (outs, took) = hub.ingest(&forged, None, Some((&thief, None)));
-        assert!(outs.is_empty());
+        let took = hub.ingest(&forged, Some((&thief, None)));
         assert!(took.is_none());
-        let addr_a: SocketAddr = "127.0.0.1:41".parse().unwrap();
-        hub.ingest(&packet(&a, KEEPALIVE, 1, &[0x00]), Some(addr_a), None);
-        hub.ingest(&packet(&a, AUDIO, 2, b"still-bob"), Some(addr_a), None);
+        hub.ingest(&packet(&a, KEEPALIVE, 1, &[0x00]), None);
+        hub.ingest(&packet(&a, AUDIO, 2, b"still-bob"), None);
         assert_eq!(
             open(&key_of(&b), &rx.try_recv().unwrap()).unwrap().plain,
             b"still-bob"
         );
         assert!(stolen.try_recv().is_err());
         hub.detach_sender(token_of(&b), gen);
-        hub.ingest(&packet(&a, AUDIO, 3, b"gone"), Some(addr_a), None);
+        hub.ingest(&packet(&a, AUDIO, 3, b"gone"), None);
         assert!(rx.try_recv().is_err());
         assert!(parse_token(&b.token_hex.to_ascii_uppercase()).is_none());
     }
 
     #[tokio::test]
-    async fn udp_and_tcp_loopback_deliver_a_frame() {
+    async fn a_voice_frame_with_a_newline_inside_stays_one_record() {
+        let hub = VoiceHub::open_for_test();
+        let a = joined(&hub, 1, "movie", "alice");
+        let mut pkt = packet(&a, AUDIO, 1, b"opus");
+        pkt[10] = b'\n';
+        pkt[40] = b'\n';
+        assert!(pkt.contains(&b'\n'));
+        let frame = encode_frame(&pkt).unwrap();
+        let mut stream = Vec::new();
+        stream.extend_from_slice(b"{\"Hello\":{}}\r\n");
+        stream.extend_from_slice(&frame);
+        stream.extend_from_slice(b"\r\n{\"List\":null}\r\n");
+        let mut reader = BufReader::new(&stream[..]);
+        let Record::Line(hello) = read_record(&mut reader).await.unwrap().unwrap() else {
+            panic!("json");
+        };
+        assert!(hello.starts_with('{'));
+        let Record::Voice(got) = read_record(&mut reader).await.unwrap().unwrap() else {
+            panic!("voice");
+        };
+        assert_eq!(got, pkt);
+        let Record::Line(list) = read_record(&mut reader).await.unwrap().unwrap() else {
+            panic!("json after voice");
+        };
+        assert!(list.contains("List"));
+        assert!(read_record(&mut reader).await.unwrap().is_none());
+        assert!(encode_frame(&[0, 1, 2]).is_none());
+    }
+
+    #[tokio::test]
+    async fn mux_on_the_syncplay_connection_delivers_a_frame() {
+        use tokio::io::{AsyncWriteExt, BufReader};
         crate::net::install_crypto_provider();
-        let rt = VoiceRuntime::bind(0, 0).await.unwrap();
-        let a = joined(&rt.hub, 1, "movie", "alice");
-        let b = joined(&rt.hub, 2, "movie", "bob");
+        let server = crate::syncplay::server::SyncplayServer::start(
+            0,
+            super::super::room::SyncplayOptions::default(),
+            Arc::new(parking_lot::RwLock::new(None)),
+            Arc::new(|| {}),
+            crate::syncplay::server::Extensions::default(),
+        )
+        .await
+        .unwrap();
+        server.install_voice(VoiceRuntime::start(server.port));
 
-        let bob = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let alice = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let server = SocketAddr::from(([127, 0, 0, 1], rt.hub.udp_port()));
-        bob.send_to(&packet(&b, KEEPALIVE, 1, &[0x00]), server)
-            .await
-            .unwrap();
-        alice
-            .send_to(&packet(&a, KEEPALIVE, 1, &[0x00]), server)
-            .await
-            .unwrap();
-        alice
-            .send_to(&packet(&a, AUDIO, 2, b"udp-opus"), server)
-            .await
-            .unwrap();
-        let mut buf = [0u8; 1500];
-        let n = tokio::time::timeout(Duration::from_secs(2), bob.recv(&mut buf))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(open(&key_of(&b), &buf[..n]).unwrap().plain, b"udp-opus");
+        async fn connect(
+            port: u16,
+            name: &str,
+        ) -> (
+            tokio::net::tcp::OwnedWriteHalf,
+            BufReader<tokio::net::tcp::OwnedReadHalf>,
+        ) {
+            let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            let (rd, mut wr) = stream.into_split();
+            let hello = serde_json::json!({
+                "Hello": {
+                    "username": name,
+                    "room": { "name": "lobby" },
+                    "version": "1.2.255",
+                    "realversion": "1.7.4",
+                    "features": { "yarmiplay": { "protocol": 1 } }
+                }
+            });
+            wr.write_all(super::super::protocol::line(&hello).as_bytes())
+                .await
+                .unwrap();
+            (wr, BufReader::new(rd))
+        }
+        async fn until_yarm(
+            reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
+            key: &str,
+        ) -> Value {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                let rec = tokio::time::timeout(left, read_record(reader))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                let Record::Line(text) = rec else { continue };
+                let v: Value = serde_json::from_str(&text).unwrap();
+                if v.get("Yarmiplay").and_then(|y| y.get(key)).is_some() {
+                    return v;
+                }
+            }
+        }
 
-        let tcp_server = SocketAddr::from(([127, 0, 0, 1], rt.hub.tcp_port()));
-        let mut roots = rustls::RootCertStore::empty();
-        roots.add(rt.hub.cert_der().to_vec().into()).unwrap();
-        let client_cfg = rustls::ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_cfg));
-        let stream = tokio::net::TcpStream::connect(tcp_server).await.unwrap();
-        let mut tls = connector
-            .connect("voice.local".try_into().unwrap(), stream)
-            .await
-            .unwrap();
-        let der = rt.hub.cert_der();
-        let got = hex::encode(Sha256::digest(der));
-        assert_eq!(got, rt.hub.fingerprint());
-        let frame = packet(&b, KEEPALIVE, 7, &[0x00]);
-        tls.write_all(&(frame.len() as u16).to_be_bytes())
-            .await
-            .unwrap();
-        tls.write_all(&frame).await.unwrap();
-        tls.flush().await.unwrap();
-        // Alice's next UDP audio is forwarded on TCP now that bob attached there.
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        alice
-            .send_to(&packet(&a, AUDIO, 3, b"tcp-opus"), server)
-            .await
-            .unwrap();
-        let mut len_buf = [0u8; 2];
-        tokio::time::timeout(Duration::from_secs(2), tls.read_exact(&mut len_buf))
-            .await
-            .unwrap()
-            .unwrap();
-        let len = u16::from_be_bytes(len_buf) as usize;
-        let mut body = vec![0u8; len];
-        tls.read_exact(&mut body).await.unwrap();
-        assert_eq!(open(&key_of(&b), &body).unwrap().plain, b"tcp-opus");
-        rt.shutdown();
+        let (mut alice_w, mut alice_r) = connect(server.port, "alice").await;
+        let (mut bob_w, mut bob_r) = connect(server.port, "bob").await;
+        let caps = until_yarm(&mut alice_r, "session").await;
+        assert_eq!(caps["Yarmiplay"]["capabilities"]["voice"], true);
+        assert_eq!(caps["Yarmiplay"]["voice"]["mux"], "syncplay");
+        assert_eq!(caps["Yarmiplay"]["voice"]["port"], server.port);
+        assert!(caps["Yarmiplay"]["voice"].get("udpPort").is_none());
+        assert!(caps["Yarmiplay"]["voice"].get("tcpPort").is_none());
+        until_yarm(&mut bob_r, "session").await;
+        let join = super::super::protocol::line(
+            &serde_json::json!({"Yarmiplay":{"voiceJoin":{"version":1,"mux":true}}}),
+        );
+        alice_w.write_all(join.as_bytes()).await.unwrap();
+        bob_w.write_all(join.as_bytes()).await.unwrap();
+        let a_joined =
+            until_yarm(&mut alice_r, "voiceJoined").await["Yarmiplay"]["voiceJoined"].clone();
+        let b_joined =
+            until_yarm(&mut bob_r, "voiceJoined").await["Yarmiplay"]["voiceJoined"].clone();
+        assert_eq!(a_joined["mux"], "syncplay");
+        assert_eq!(a_joined["port"], server.port);
+        let a = SeatSecrets {
+            participant_id: a_joined["participantId"].as_str().unwrap().into(),
+            username: "alice".into(),
+            room: "lobby".into(),
+            token_hex: a_joined["token"].as_str().unwrap().into(),
+            key_b64: a_joined["key"].as_str().unwrap().into(),
+            replaced: false,
+            port: server.port,
+        };
+        let b = SeatSecrets {
+            participant_id: b_joined["participantId"].as_str().unwrap().into(),
+            username: "bob".into(),
+            room: "lobby".into(),
+            token_hex: b_joined["token"].as_str().unwrap().into(),
+            key_b64: b_joined["key"].as_str().unwrap().into(),
+            replaced: false,
+            port: server.port,
+        };
+        let b_key = key_of(&b);
+        let frame = encode_frame(&packet(&a, AUDIO, 2, b"mux-\nopus")).unwrap();
+        alice_w.write_all(&frame).await.unwrap();
+        alice_w.flush().await.unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let rec = tokio::time::timeout(left, read_record(&mut bob_r))
+                .await
+                .expect("bob timed out waiting for audio")
+                .unwrap()
+                .unwrap();
+            if let Record::Voice(buf) = rec {
+                assert_eq!(open(&b_key, &buf).unwrap().plain, b"mux-\nopus");
+                break;
+            }
+        }
+        server.stop();
     }
 
     #[tokio::test]
@@ -1077,8 +1117,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let rt = VoiceRuntime::bind(0, 0).await.unwrap();
-        server.install_voice(rt);
+        server.install_voice(VoiceRuntime::start(server.port));
 
         async fn session(
             port: u16,
@@ -1162,10 +1201,10 @@ mod tests {
             token_hex: a_joined["token"].as_str().unwrap().into(),
             key_b64: a_joined["key"].as_str().unwrap().into(),
             replaced: false,
-            udp_port: a_joined["udpPort"].as_u64().unwrap() as u16,
-            tcp_port: a_joined["tcpPort"].as_u64().unwrap() as u16,
-            fingerprint: a_joined["fingerprint"].as_str().unwrap().into(),
+            port: a_joined["port"].as_u64().unwrap() as u16,
         };
+        assert_eq!(a.port, server.port);
+        assert!(a_joined.get("udpPort").is_none());
         let b = SeatSecrets {
             participant_id: b_joined["participantId"].as_str().unwrap().into(),
             username: "bob".into(),
@@ -1173,9 +1212,7 @@ mod tests {
             token_hex: b_joined["token"].as_str().unwrap().into(),
             key_b64: b_joined["key"].as_str().unwrap().into(),
             replaced: false,
-            udp_port: b_joined["udpPort"].as_u64().unwrap() as u16,
-            tcp_port: b_joined["tcpPort"].as_u64().unwrap() as u16,
-            fingerprint: b_joined["fingerprint"].as_str().unwrap().into(),
+            port: b_joined["port"].as_u64().unwrap() as u16,
         };
         let b_key = key_of(&b);
 

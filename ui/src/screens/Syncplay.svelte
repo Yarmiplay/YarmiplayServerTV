@@ -311,7 +311,7 @@
       label="Voice chat"
       hint={vanilla
         ? OFF_IN_VANILLA
-        : "People in a room can talk. Audio is relayed through this PC and not recorded. On by default."}
+        : "People in a room can talk. Audio is relayed through this PC on the Syncplay port (no extra port to open) and is not recorded. On by default."}
       disabled={vanilla}
       checked={snap.settings.syncplay.voice && !vanilla}
       onchange={(v) => store.save((s) => (s.syncplay.voice = v))}
@@ -356,9 +356,7 @@
   <section class="card">
     <Toggle
       label="Forward the port with UPnP"
-      hint={snap.settings.syncplay.voice && !vanilla
-        ? `Asks your router to forward TCP ${snap.settings.syncplay.port}, plus voice chat on UDP 9000 and TCP 9000`
-        : `Asks your router to forward TCP ${snap.settings.syncplay.port} to this PC`}
+      hint={`Asks your router to forward TCP ${snap.settings.syncplay.port} to this PC. Voice chat uses that same Syncplay port, so there is no extra port to open.`}
       checked={snap.settings.syncplay.upnp}
       onchange={(v) => store.save((s) => (s.syncplay.upnp = v))}
     />

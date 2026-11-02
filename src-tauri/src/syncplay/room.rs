@@ -15,11 +15,12 @@ use super::managed;
 use super::protocol::{
     self, line, truncate, PingService, MAX_FILENAME_LENGTH, MAX_ROOM_NAME_LENGTH,
 };
-use super::voice::{Activity, Join, VoiceHub};
+use super::voice::{self, Activity, Join, VoiceHub};
 use crate::config::SyncplayAccess;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -28,6 +29,8 @@ pub type ConnId = u64;
 #[derive(Debug)]
 pub enum Out {
     Line(String),
+    /// One yv1 packet. The connection writer frames it with `0x1E`.
+    Voice(Vec<u8>),
     Close,
 }
 
@@ -542,6 +545,17 @@ impl ServerState {
         self.voice.as_ref().map(|h| h.descriptor())
     }
 
+    /// What an extension session is told about voice. When it is off, the
+    /// message is the exact string a client shows.
+    fn voice_advertisement(&self) -> Value {
+        self.voice_descriptor().unwrap_or_else(|| {
+            json!({
+                "enabled": false,
+                "message": voice::DISABLED_MESSAGE,
+            })
+        })
+    }
+
     fn close_voice_all(&mut self, reason: &str) {
         let Some(hub) = self.voice.clone() else {
             return;
@@ -603,6 +617,12 @@ impl ServerState {
                 self.send_ext(id, "voiceClosed", voice_closed("full"));
             }
             Join::Joined(info) => {
+                let mux = value.get("mux").and_then(Value::as_bool).unwrap_or(false);
+                if mux {
+                    if let Some(tx) = self.watchers.get(&id).map(|w| w.tx.clone()) {
+                        hub.attach_mux(id, voice_mux_send(tx), true);
+                    }
+                }
                 if info.replaced {
                     self.send_ext(id, "voiceClosed", voice_closed("replaced"));
                 }
@@ -731,9 +751,7 @@ impl ServerState {
             "plex": self.plex_message(),
             "tls": self.tls_message(),
         });
-        if let Some(v) = self.voice_descriptor() {
-            body["voice"] = v;
-        }
+        body["voice"] = self.voice_advertisement();
         for w in self.watchers.values().filter(|w| w.ext.is_some()) {
             w.send(json!({ "Yarmiplay": body }));
         }
@@ -849,9 +867,7 @@ impl ServerState {
                 "access": self.opts.access.as_str(),
                 "device": if device { "approved" } else { "none" },
             });
-            if let Some(v) = self.voice_descriptor() {
-                y["voice"] = v;
-            }
+            y["voice"] = self.voice_advertisement();
             f["yarmiplay"] = y;
         }
         f
@@ -1011,9 +1027,7 @@ impl ServerState {
                 "tls": self.tls_message(),
                 "roomSettings": self.room_settings_message(&w.room),
             });
-            if let Some(v) = self.voice_descriptor() {
-                body["voice"] = v;
-            }
+            body["voice"] = self.voice_advertisement();
             w.send(json!({ "Yarmiplay": body }));
         }
         tracing::info!(user = %name, room = %w.room, client = %version, ext = w.ext.is_some(), "Syncplay user joined");
@@ -2768,6 +2782,7 @@ mod tests {
         while let Ok(o) = p.try_recv() {
             match o {
                 Out::Line(l) => out.push(serde_json::from_str::<Value>(l.trim_end()).unwrap()),
+                Out::Voice(_) => {}
                 Out::Close => closed = true,
             }
         }
@@ -2811,6 +2826,7 @@ mod tests {
         while let Ok(o) = d.try_recv() {
             match o {
                 Out::Line(l) => out.push(serde_json::from_str::<Value>(l.trim_end()).unwrap()),
+                Out::Voice(_) => {}
                 Out::Close => closed = true,
             }
         }
@@ -2865,19 +2881,31 @@ mod tests {
             hello["Hello"]["features"]["yarmiplay"]["capabilities"]["voice"],
             false
         );
+        assert_eq!(
+            hello["Hello"]["features"]["yarmiplay"]["voice"]["message"],
+            voice::DISABLED_MESSAGE
+        );
         assert!(s.ext_info()["capabilities"].get("voice").is_none());
+        assert!(s.ext_info().get("voice").is_none());
 
         with_voice(&mut s);
         let out = drain(&mut a);
         assert_eq!(out[0]["Yarmiplay"]["capabilities"]["voice"], true);
         assert_eq!(out[0]["Yarmiplay"]["voice"]["transport"], "yv1");
+        assert_eq!(out[0]["Yarmiplay"]["voice"]["mux"], "syncplay");
+        assert_eq!(out[0]["Yarmiplay"]["voice"]["enabled"], true);
+        assert!(out[0]["Yarmiplay"]["voice"].get("udpPort").is_none());
         assert_eq!(out[0]["Yarmiplay"]["voice"]["maxParticipants"], 8);
         assert!(s.ext_info()["capabilities"].get("voice").is_none());
 
         s.set_voice_enabled(false);
         let out = drain(&mut a);
         assert_eq!(out[0]["Yarmiplay"]["capabilities"]["voice"], false);
-        assert!(out[0]["Yarmiplay"].get("voice").is_none());
+        assert_eq!(
+            out[0]["Yarmiplay"]["voice"]["message"],
+            voice::DISABLED_MESSAGE
+        );
+        assert_eq!(out[0]["Yarmiplay"]["voice"]["enabled"], false);
 
         s.set_voice_enabled(true);
         drain(&mut a);
@@ -3081,10 +3109,22 @@ mod tests {
     }
 }
 
+/// One log line if the Syncplay connection is already gone, not one per frame.
+pub(crate) fn voice_mux_send(tx: UnboundedSender<Out>) -> voice::MuxSend {
+    let failed = AtomicBool::new(false);
+    Arc::new(move |frame| {
+        if tx.send(Out::Voice(frame)).is_err() && !failed.swap(true, Ordering::Relaxed) {
+            tracing::error!(
+                "voice relay failed to deliver a frame: the Syncplay connection is closed"
+            );
+        }
+    })
+}
+
 fn voice_closed(reason: &str) -> Value {
     let message = match reason {
         "left" => "You left voice chat",
-        "disabled" => "Voice chat is off on this server",
+        "disabled" => voice::DISABLED_MESSAGE,
         "vanilla" => "Voice chat is off in vanilla Syncplay mode",
         "full" => "This room's voice chat is full",
         "room" => "You changed rooms",

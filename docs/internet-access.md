@@ -50,14 +50,13 @@ YarmiplayServerTV utilizes the following ports:
 
 | Service | Port | Protocol | Purpose |
 | :--- | :--- | :--- | :--- |
-| **Syncplay** | `8999` | TCP | Syncplay rooms, chat, file relay, and Jellyfin proxy |
-| **Voice chat** | `9000` | UDP and TCP | Room voice, relayed through this PC. Browsers use the Syncplay port instead |
+| **Syncplay** | `8999` | TCP | Syncplay rooms, chat, file relay, Jellyfin proxy, and voice chat. Voice uses this same port. There is no extra voice port to open. |
 | **Jellyfin HTTP** | `8096` | TCP | Jellyfin local web interface and media streaming |
 | **Jellyfin HTTPS** | `8920` | TCP | Secure Jellyfin streaming with full certificate chain |
 | **Plex** | `32400` | TCP | Plex Media Server remote access |
 | **ACME HTTP-01** | `80` | TCP | Let's Encrypt validation (custom domains only) |
 
-> **Tip:** You only need to forward ports for the servers you actively use. Official Syncplay clients, YarmiplayTV, and the file relay all operate through the single Syncplay port (`8999`). Voice chat also uses UDP and TCP `9000` when it is on.
+> **Tip:** You only need to forward ports for the servers you actively use. Official Syncplay clients, YarmiplayTV, the file relay, and voice chat all operate through the single Syncplay port (`8999`). Voice does not use a second port.
 
 ### Automatic forwarding with UPnP
 

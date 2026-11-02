@@ -48,9 +48,8 @@ you switch it off (or use vanilla Syncplay mode). Each feature only talks to wha
   people in that room. The app decrypts each packet in memory only long enough to encrypt it again for the
   others. It does not record the audio, store it, or send it anywhere else, and it does not use a microphone.
   Speaking indicators are whatever each person's own app reports. Join and leave sounds play on their
-  devices, not here. Voice uses UDP port 9000 and, if UDP is blocked, TCP port 9000, plus a WebSocket on the
-  Syncplay port for a browser. When Syncplay's UPnP switch is on, the app also asks the router to forward
-  those two voice ports.
+  devices, not here. Voice uses the Syncplay port (default 8999). There is no extra voice port. When
+  Syncplay's UPnP switch is on, the app asks the router to forward that Syncplay port only.
 - **File relay** (on by default, off in vanilla Syncplay mode): YarmiplayTV users in a room can play a video
   file that someone else in the room has. The file's bytes travel from that person's device through your
   computer to the people watching, and are cached on your computer's disk so each part is sent only once. The

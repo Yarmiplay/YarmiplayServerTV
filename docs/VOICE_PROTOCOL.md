@@ -1,12 +1,12 @@
 # Yarmiplay voice protocol (version 1)
 
-Voice chat beside a Yarmiplay Syncplay server. YarmiplayTV 2.7.0 implements against this document. YarmiplayServerTV 2.0.0 is the first server.
+Voice chat beside a Yarmiplay Syncplay server. YarmiplayServerTV 2.1.0 relays it on the Syncplay connection. YarmiplayTV implements against this document.
 
-Voice is not part of Syncplay. A stock Syncplay client or server never sees it. A Yarmiplay client that does not get `capabilities.voice: true` skips voice and shows nothing.
+Voice is not part of Syncplay. A stock Syncplay client never sees it. A Yarmiplay client that does not get `capabilities.voice: true` skips voice.
 
-Extension protocol stays **1** (`features.yarmiplay.protocol`). Voice is a capability inside that session. `voice.version` is **1**, this document.
+Extension protocol stays **1** (`features.yarmiplay.protocol`). Voice is a capability inside that session. `voice.version` is **1**. The yv1 packet in section 6.1 is unchanged from server 2.0. What changed in 2.1.0 is where those packets travel: on the Syncplay connection, not on a separate port.
 
-Native clients do **not** use WebRTC. Media is Opus frames on a small framed channel. Browsers use the same frames on a WebSocket, because a page cannot open a raw UDP socket.
+Native clients do **not** use WebRTC. Media is Opus frames. Browsers use the same frames as binary WebSocket messages on the Syncplay socket they already have.
 
 ## 1. What the server does
 
@@ -26,14 +26,22 @@ The machine running the server can hear the room, because forwarding requires it
 Voice is offered only when all of these are true:
 
 - The client completed a Yarmiplay extension login (`features.yarmiplay` in Hello, vanilla mode off).
-- The server's **Voice chat** setting is on (the default).
-- The voice listeners are bound (UDP and TCP).
+- The server's **Voice chat** setting is on (the default). The setting is `syncplay.voice` in the settings file, the **Voice chat** switch in the control panel, `--voice` / `--no-voice`, or `YARMIPLAYSERVERTV_VOICE`.
+- The Syncplay listener is bound. Voice uses that listener. It does not bind a port of its own.
 
-The client also has its own **Voice chat** setting. When that is off, the client does not send `voiceJoin` and does not open a media socket. The server cannot see that setting.
+The client also has its own **Voice chat** setting. When that is off, the client does not send `voiceJoin`. The server cannot see that setting.
 
-Either side off means no voice UI and no voice connection.
+Either side off means no voice UI and no voice frames.
 
-`GET /yarmiplay/info` does **not** advertise voice. That probe is allowed before login. Voice exists only on a logged-in extension session. The `voice` key is absent from `capabilities` there.
+`GET /yarmiplay/info` does **not** advertise voice. That probe is allowed before login. The `voice` key is absent there, and `capabilities.voice` is removed from that probe.
+
+When voice is not offered, every extension session (the Hello reply and later `Yarmiplay` messages) still carries:
+
+```json
+"voice": { "enabled": false, "message": "voice disabled on this server" }
+```
+
+`capabilities.voice` is false. The client shows `message` as-is. That string is exactly `voice disabled on this server`.
 
 ## 3. Capability handshake
 
@@ -44,6 +52,7 @@ When `capabilities.voice` is true, the same `features.yarmiplay` object (and the
 ```json
 "voice": {
   "version": 1,
+  "enabled": true,
   "codec": "opus",
   "clockRate": 48000,
   "channels": 1,
@@ -52,42 +61,44 @@ When `capabilities.voice` is true, the same `features.yarmiplay` object (and the
   "fec": true,
   "dtx": true,
   "transport": "yv1",
-  "udpPort": 9000,
-  "tcpPort": 9000,
+  "mux": "syncplay",
+  "port": 8999,
   "wsPath": "/yarmiplay/voice",
-  "maxParticipants": 8,
-  "fingerprint": "hex sha-256 of the voice certificate"
+  "maxParticipants": 8
 }
 ```
 
 | Field | Meaning |
 |---|---|
 | `version` | This document. The client sends it in `voiceJoin`. |
+| `enabled` | `true` when the table above is a live relay. `false` only in the short object in section 2. |
 | `codec`, `clockRate`, `channels`, `ptime` | The only send format. One Opus frame is 20 ms, 48 kHz, mono. |
 | `maxBitrate` | Encoder target, bits per second. |
 | `fec`, `dtx` | The client turns Opus in-band FEC and DTX on. The server does not check the frames. |
-| `transport` | `yv1`, the channel in section 6. Not WebRTC. |
-| `udpPort`, `tcpPort` | Ports the server is listening on. Both are 9000 unless a test server bound an ephemeral port. |
-| `wsPath` | Browser media socket. Section 6.4. |
+| `transport` | `yv1`, the packet in section 6.1. Not WebRTC. |
+| `mux` | `syncplay`. Frames travel on the Syncplay connection (section 6.0). There is no second port. |
+| `port` | The Syncplay port the client is already connected to. Default 8999. Not a voice port. |
+| `wsPath` | Legacy browser socket, still on `port` (section 6.4). New clients use section 6.0.2 instead. |
 | `maxParticipants` | Voice seats in one room. Syncplay itself can have more people. |
-| `fingerprint` | Lower-case hex SHA-256 of the voice listener's certificate (DER). Section 6.3. |
+
+`udpPort`, `tcpPort`, and `fingerprint` are **not** sent. Server 2.0 used them for a separate UDP/TCP listener on port 9000 and a separate certificate. Server 2.1.0 does not listen there. A client that still opens port 9000 will not reach voice. A client that only speaks JSON lines is unaffected, because the server never writes a voice frame to a connection that did not opt in (section 6.0).
 
 These appear in:
 
 1. The Hello reply, under `Hello.features.yarmiplay`, for a client that opted in.
 2. The post-login `{"Yarmiplay":{...}}` session message, and every later capabilities broadcast (the same message that already carries `capabilities`, `jellyfin`, `plex`, and `tls`).
 
-When voice is off, `capabilities.voice` is false and the `voice` object is omitted. Turning the server toggle off, or switching on vanilla mode, sends `voiceClosed` to anyone already in voice and then broadcasts the new capabilities (section 5.7).
+Turning the server toggle off, or switching on vanilla mode, sends `voiceClosed` to anyone already in voice and then broadcasts the new capabilities (section 5.6).
 
-A voice listener that fails to bind leaves `capabilities.voice` false. A UPnP failure does not.
+A failure to bind the Syncplay port is logged with `EADDRINUSE` when that is the error. Voice cannot start, because it uses that port. The server does not open any other port for voice.
 
 ## 4. Signaling
 
-Signaling is more `{"Yarmiplay":{...}}` lines on the Syncplay connection the client already has (TCP, or TLS when the server has a certificate, or the text WebSocket `GET /yarmiplay/ws`). One JSON object per line, same limits as the rest of the extension (`MAX_LINE_LENGTH` is 64 KiB).
+Signaling is `{"Yarmiplay":{...}}` lines on the Syncplay connection the client already has (TCP, or TLS when the server has a certificate, or the text side of `GET /yarmiplay/ws`). One JSON object per line, same limits as the rest of the extension (`MAX_LINE_LENGTH` is 64 KiB). Lines end in `\n`. The server writes `\r\n`.
 
 There is no second signaling socket. A voice message on a connection without an extension session is ignored. Vanilla sessions are never sent these lines.
 
-The client addresses UDP and TCP media at the **same IP or DNS name** it used for Syncplay, on `udpPort` / `tcpPort`. The server does not send a separate host field. The browser uses `wsPath` on that same host and port (section 6.4).
+Media uses that **same connection** when the client sets `mux` (section 6.0). The server does not send a separate host. `port` is the port the client already used.
 
 ## 5. Messages
 
@@ -96,8 +107,13 @@ Unknown `Yarmiplay` keys are ignored, including any `voiceSignal` from an older 
 ### 5.1 `voiceJoin` (client to server)
 
 ```json
-{"Yarmiplay":{"voiceJoin":{"version":1}}}
+{"Yarmiplay":{"voiceJoin":{"version":1,"mux":true}}}
 ```
+
+| Field | Meaning |
+|---|---|
+| `version` | Must be `1`. |
+| `mux` | `true`: this connection carries media. The server will write voice frames on it (section 6.0) as soon as the join is accepted. Omit it, or send `false`, to stay JSON-only on this connection. Older clients omit it. They can still use the legacy WebSocket in section 6.4. The server does not write voice frames to them. |
 
 The room is the Syncplay room this connection is in. The client does not send a room name.
 
@@ -113,10 +129,10 @@ The server answers with `voiceJoined`, or with `voiceClosed` (`full`, `version`,
   "room": "movie night",
   "token": "0123456789abcdef",
   "key": "base64 of 32 bytes",
-  "udpPort": 9000,
-  "tcpPort": 9000,
+  "transport": "yv1",
+  "mux": "syncplay",
+  "port": 8999,
   "wsPath": "/yarmiplay/voice",
-  "fingerprint": "hex sha-256",
   "codec": "opus",
   "clockRate": 48000,
   "channels": 1,
@@ -127,6 +143,8 @@ The server answers with `voiceJoined`, or with `voiceClosed` (`full`, `version`,
 `participantId` is `c` plus the decimal Syncplay connection id. It is stable until that Syncplay connection ends.
 
 `token` is 16 lower-case hex characters (a big-endian u64). It identifies this seat on the media channel. `key` is standard base64 (no newlines) of the 32-byte AES-256-GCM key for this seat. Both are secrets of this connection. The server never sends one seat's key to another seat. A later `voiceJoin` on the same connection replaces both; the previous token stops working.
+
+`port` is the Syncplay port. Do not open a new socket to it.
 
 ### 5.3 `voicePeers` (server to client)
 
@@ -174,13 +192,13 @@ The client is leaving voice and staying in the Syncplay room. The server drops t
 ### 5.6 `voiceClosed` (server to client)
 
 ```json
-{"Yarmiplay":{"voiceClosed":{"reason":"disabled","message":"Voice chat is off on this server"}}}
+{"Yarmiplay":{"voiceClosed":{"reason":"disabled","message":"voice disabled on this server"}}}
 ```
 
 | `reason` | When |
 |---|---|
 | `left` | This client sent `voiceLeave`. |
-| `disabled` | The server toggle went off, or voice was not offered. |
+| `disabled` | The server toggle is off, or voice was not offered. `message` is `voice disabled on this server`. |
 | `vanilla` | Vanilla Syncplay mode went on. The extension session ends as it does today; this line is sent first. |
 | `full` | The room already has `maxParticipants` seats. |
 | `room` | The Syncplay connection moved to another room. The old seat is gone. The client sends a new `voiceJoin` if it still wants voice. |
@@ -188,15 +206,65 @@ The client is leaving voice and staying in the Syncplay room. The server drops t
 | `version` | `voiceJoin.version` is not 1. |
 | `error` | The server gave up. `message` is a short English sentence. |
 
-After `voiceClosed` the client drops its media socket, except for `replaced`, where it waits for the new `voiceJoined` and opens a new socket with the new token. It does not retry `error` or `full` on its own more than once every 10 seconds. `room` is retried immediately with `voiceJoin` if the client still wants voice. `disabled` and `vanilla` are not retried until a capabilities broadcast says voice is back.
+After `voiceClosed` the client drops its media path, except for `replaced`, where it waits for the new `voiceJoined` and uses the new token. It does not retry `error` or `full` on its own more than once every 10 seconds. `room` is retried immediately with `voiceJoin` if the client still wants voice. `disabled` and `vanilla` are not retried until a capabilities broadcast says voice is back.
 
 ## 6. Media channel (`yv1`)
 
+### 6.0 Multiplexing on the Syncplay connection
+
+Voice media uses the **same connection** as Syncplay. There is no voice port. Do not open UDP 9000 or TCP 9000. Forward the Syncplay TCP port only.
+
+A client opts in by sending `voiceJoin` with `"mux": true`. From that moment the server writes voice frames on that connection, interleaved with JSON lines. It does not wait for a separate socket.
+
+A client that omits `mux` is left on JSON only. The server does not write a voice frame to that connection, so an older client that only parses JSON lines keeps working. Sending a voice frame on the connection also opts that seat in: the connection becomes the media path.
+
+The most recently used path wins. A mux frame replaces a legacy WebSocket path, and a legacy WebSocket packet replaces mux, until the next one.
+
+Two framings carry the same yv1 packet (section 6.1).
+
+#### 6.0.1 TCP and STARTTLS byte stream
+
+After the Syncplay connection is established (and after STARTTLS, if the client asked for it), the byte stream is a sequence of records. Peek the next byte.
+
+**JSON record.** If the next byte is `{` (`0x7B`) or ASCII whitespace (`0x09` tab, `0x0A` LF, `0x0D` CR, `0x20` space), read bytes through the next `0x0A`. The line without the trailing newline, trimmed, is one JSON object. A whitespace-only line is skipped. A line longer than 65536 bytes closes the connection. This is the existing Syncplay and Yarmiplay JSON protocol, including `\r\n` lines.
+
+**Voice record.** If the next byte is `0x1E` (ASCII Record Separator):
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 1 | Marker `0x1E` |
+| 1 | 2 | Length `N`, big-endian unsigned 16-bit. `N` is the size of the yv1 packet only. It does not include the marker or the length field. |
+| 3 | `N` | One yv1 packet from section 6.1. `N` is from 56 through 1200 inclusive. |
+
+Any other first byte closes the connection. A length outside 56..=1200 closes the connection. Both are logged.
+
+The marker and the length are not part of the yv1 packet and are not GCM additional data. Additional data is the 40-byte yv1 header only, as in section 6.1.
+
+The server flushes each voice record. It writes a voice record only to a seat that opted in.
+
+Worked example, offsets in the record. A 56-byte packet (header plus a 16-byte tag, no extra ciphertext) is the bytes:
+
+```
+1E 00 38   then 56 bytes starting with 59 56 01 ...
+```
+
+`0x0038` is 56. A packet that contains `0x0A` in the ciphertext is still one record, because the reader uses `N`, not the next newline.
+
+#### 6.0.2 WebSocket `GET /yarmiplay/ws`
+
+This is the browser's existing Syncplay socket, on the Syncplay port. When `mux` is true it is also the voice connection.
+
+- A **text** message is one JSON object. A trailing newline is optional. The server sends text messages with no `0x1E` and no length prefix.
+- A **binary** message is one yv1 packet from section 6.1. There is no `0x1E` and no length prefix. The WebSocket frame is the framing. The packet is 56 to 1200 bytes.
+- The server sends voice to a mux seat as binary messages on this same socket.
+- Ping and pong are WebSocket control frames, not voice.
+- An `Origin` header is checked the same way as any `/yarmiplay/ws` upgrade. Pages that are not on the server's allowed list get 403. Native clients send no `Origin`.
+
+A browser that ignores binary messages and never sends `mux: true` is unchanged.
+
 ### 6.1 Packet
 
-One UDP datagram is one packet. TCP and the browser WebSocket carry the same packet bytes (TCP adds a length prefix; the WebSocket frame is the packet).
-
-Offsets are from the start of the packet. Integers are big-endian.
+One voice record carries one packet. Offsets below are from the start of the packet, after the record marker and length have been removed. Integers are big-endian.
 
 | Offset | Size | Field |
 |---:|---:|---|
@@ -218,11 +286,11 @@ The GCM additional data is the 40-byte header. The plaintext is:
 | `2` keepalive | A single byte `0x00` |
 | `3` bye | Empty, or up to 32 bytes the server ignores |
 
-The whole packet is at most **1200** bytes and at least **56** (header + tag). The server drops anything else, a bad magic or version, a type it does not know, a non-zero sender on input, a token it does not know, a failed tag, a replayed sequence, or an audio plaintext it cannot treat as one frame under the size cap.
+The whole packet is at most **1200** bytes and at least **56** (header + tag). The server drops anything else, a bad magic or version, a type it does not know, a non-zero sender on input, a token it does not know, a token that does not belong to the Syncplay connection the frame arrived on, a failed tag, a replayed sequence, or an audio plaintext it cannot treat as one frame under the size cap. Each drop is logged without the packet, the token, the key, or the audio.
 
 Sequence replay uses a window of the last 64 sequence numbers per seat. Older or duplicate numbers are dropped.
 
-Keepalives are not forwarded. They refresh the server's idea of the sender's UDP address. The client sends one every 5 seconds while the media socket is up, and one immediately after the socket opens, including on TCP and the WebSocket (so the server knows the path is alive). Bye is not forwarded and does not by itself remove the seat; `voiceLeave` does that.
+Keepalives are not forwarded. On the mux path they are optional: the connection is already known, so a keepalive is not required before audio will flow. A client may still send one. Bye is not forwarded and does not by itself remove the seat; `voiceLeave` does that.
 
 The conceptual RTP payload type, if a client thinks in RTP, is **111**. It is not on the wire.
 
@@ -236,36 +304,27 @@ For an accepted audio packet the server builds one new packet per other seat in 
 - A new nonce
 - The same Opus plaintext
 
-It does not send the packet back to the speaker. Seats in other rooms get nothing. A seat with no media path yet (no UDP packet seen, and no TCP or WebSocket attached) gets nothing until it has one. A seat uses one path. The path that most recently attached or sent replaces the previous one.
+It does not send the packet back to the speaker. Seats in other rooms get nothing. A mux seat can receive audio as soon as its `voiceJoin` with `mux: true` has been accepted, before it has sent a frame. A seat that did not opt in and has not attached the legacy WebSocket gets nothing.
 
-### 6.3 UDP, TCP, and the certificate
+### 6.3 No separate socket
 
-Default listen port is **9000** for UDP and **9000** for TCP, on all interfaces. It is not the Syncplay port. Syncplay stays on its own port (default 8999) so a media burst cannot stall the JSON session.
+There is no voice UDP port, no voice TCP port, and no voice certificate. Opus is already sealed with AES-256-GCM inside the packet. The outer hop is the Syncplay TCP connection, STARTTLS with the Syncplay certificate when the client asked for TLS, or the WebSocket on that same port.
 
-- **UDP** carries the packet in section 6.1 and nothing else. This is the path native clients use when UDP works.
-- **TCP** is the fallback, in 2.0.0, for a network that blocks UDP. The client opens TLS, then writes frames: a big-endian u16 length (the packet size, not including the length) and then the packet. Lengths outside 56..=1200 close the connection.
-- The TLS certificate is generated when the voice listeners start. It is self-signed and separate from the Syncplay certificate. `fingerprint` is the SHA-256 of that certificate's DER encoding. The client checks the certificate it saw against `fingerprint` and aborts if they differ. It does not need a public CA for this hop.
-- The TCP listener expects the client to send the ClientHello. The client uses the Syncplay host as the TLS name only if it matches a name on the certificate; otherwise it connects by address and relies on the fingerprint. The certificate's name is `voice.local`. Pin the fingerprint, not the name.
+UPnP, when the Syncplay UPnP switch is on, forwards the Syncplay TCP port only. It does not map a voice port. A client behind NAT does not need its own port forward. It already has the Syncplay connection.
 
-There is no STUN, TURN, ICE, DTLS-SRTP, or SDP. Friends reach voice the same way they reach Syncplay: the host's port is forwarded, by hand or by UPnP.
+### 6.4 Legacy browser socket
 
-UPnP, when the Syncplay UPnP switch is already on and voice is on, also maps UDP 9000 and TCP 9000. UPnP failure does not clear `capabilities.voice`.
-
-A client behind NAT does not need its own port forward. It sends to the server's forwarded port.
-
-### 6.4 Browsers
-
-A browser cannot send the UDP packet and should not be given a raw TCP socket. Media uses a second WebSocket on the Syncplay port:
+Older clients may still open a second WebSocket on the **same Syncplay port**:
 
 `GET /yarmiplay/voice?t=<token>`
 
 - `token` is the 16-hex `token` from `voiceJoined`, not the Syncplay session token.
-- The upgrade is rejected without a known token, in vanilla mode, or when voice is off.
-- An `Origin` header is checked the same way as `/yarmiplay/ws`. Pages that are not on the server's allowed list get 403. Native clients send no `Origin`.
-- Each binary WebSocket message is one packet from section 6.1, with no length prefix. Text messages are ignored. The server sends binary messages the same way.
-- Signaling (`voiceJoin`, `voicePeers`, and the rest) stays on the text Syncplay connection, including `/yarmiplay/ws`. That socket does not carry media. Its binary frames stay ignored.
+- The upgrade is rejected without a known token, in vanilla mode, or when voice is off. The body when voice is off is `voice disabled on this server`.
+- An `Origin` header is checked the same way as `/yarmiplay/ws`.
+- Each binary WebSocket message is one packet from section 6.1, with no `0x1E` and no length prefix. Text messages are ignored.
+- Signaling stays on the Syncplay connection. This socket is media only.
 
-This is the only browser media path. It is the same hop-by-hop AES-256-GCM, so the page can seal and open packets with WebCrypto (`AES-GCM`, 256-bit key, 12-byte nonce, the 40-byte header as additional data).
+New clients should use section 6.0 instead of opening this socket. It exists so a client from server 2.0 that already speaks this WebSocket can still send audio without a separate port. Clients that only knew UDP/TCP 9000 need the framing in section 6.0.
 
 ### 6.5 Room binding and lifetime
 
@@ -280,6 +339,7 @@ A voice seat is tied to one Syncplay connection and one room.
 ### 6.6 What is deliberately absent
 
 - No WebRTC, SDP, ICE, or `voiceSignal`.
+- No separate voice port.
 - No server-side mute of another user, and no message that would mute someone for the room.
 - No per-person volume, mic gain, output gain, or device id on the wire.
 - No recording control, no storage, no replay.
@@ -290,12 +350,12 @@ A voice seat is tied to one Syncplay connection and one room.
 
 - Send 20 ms mono Opus at 48 kHz, about 32 kbit/s, with in-band FEC and DTX.
 - Seal packets exactly as in section 6.1. Use a new nonce every time. Increment the sequence for every packet, including keepalives.
-- Prefer UDP. If UDP does not pass a keepalive within a few seconds, open the TCP fallback. Browsers use section 6.4 only.
-- Check `fingerprint` before trusting the TCP connection.
+- Send `voiceJoin` with `"mux": true` and then write voice records on the Syncplay connection (section 6.0.1), or binary WebSocket messages on `/yarmiplay/ws` (section 6.0.2). Do not open a second port.
+- Read the same way: a JSON line stays a JSON line, and a `0x1E` record or a binary WebSocket message is a voice packet. Do not parse a voice record as JSON.
 - Send `voiceActivity` from the local voice-activity detector (open mic) or from push-to-talk, not from both at once. Push-to-talk sends `speaking: true` only while the key or button is held.
 - Apply local mute and volume per `participantId`.
 - Play join and leave sounds locally when `voicePeers` changes. The sounds are original assets shipped with the client.
-- Hide all voice UI when `capabilities.voice` is not true, or when the client's own voice setting is off.
+- Hide the voice controls when `capabilities.voice` is not true, or when the client's own voice setting is off. When `voice.enabled` is false, show `voice.message` (`voice disabled on this server`).
 
 ## 8. Sequence
 
@@ -305,18 +365,20 @@ sequenceDiagram
   participant S as Server
   participant O as Other voice seat
   C->>S: Hello features.yarmiplay.protocol = 1
-  S->>C: Hello capabilities.voice = true, voice descriptor
+  S->>C: Hello capabilities.voice = true, voice.mux = syncplay, voice.port = Syncplay port
   S->>C: Yarmiplay session + capabilities + voice
-  C->>S: voiceJoin version 1
-  S->>C: voiceJoined token, key, ports, fingerprint
+  C->>S: voiceJoin version 1, mux true
+  S->>C: voiceJoined token, key, mux syncplay, port
   S->>C: voicePeers
   S->>O: voicePeers
-  C->>S: UDP or TCP or WebSocket packet, type keepalive, then audio
-  S->>O: re-encrypted audio packet, sender = C
+  C->>S: voice record on the same connection, type audio
+  S->>O: re-encrypted voice record on O's connection, sender = C
   C->>S: voiceActivity speaking true
   S->>O: voiceActivity participantId, speaking true
 ```
 
 ## 9. Versioning
 
-`voice.version` 1 is this document. A future change that breaks a packet, a reason, or the browser path adds version 2 and keeps answering version 1 until clients have moved. The extension protocol number stays 1 so existing Hello parsing does not change.
+`voice.version` 1 is this document, including the packet in section 6.1. Server 2.1.0 did not change the packet, the reasons, or the legacy WebSocket path, so the version stayed 1. It removed the separate UDP/TCP listener. Clients that read `voice.mux == "syncplay"` use section 6.0. Clients that do not opt in keep a JSON-only Syncplay connection.
+
+A future change that breaks a packet, a reason, or section 6.0 adds version 2 and keeps answering version 1 until clients have moved. The extension protocol number stays 1 so existing Hello parsing does not change.
