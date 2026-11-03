@@ -17,7 +17,7 @@
   import Toggle from "../lib/Toggle.svelte";
   import Address from "../lib/Address.svelte";
 
-  type Screen = "dashboard" | "syncplay" | "jellyfin" | "plex" | "network" | "logs" | "about";
+  type Screen = "dashboard" | "syncplay" | "voice" | "jellyfin" | "plex" | "network" | "logs" | "about";
   let { snap, go }: { snap: Snapshot; go: (s: Screen) => void } = $props();
 
   let autostart = $state(false);
@@ -101,6 +101,7 @@
         <button class:primary={waiting > 0} onclick={() => go("syncplay")}>
           {waiting > 0 ? "Review devices" : "Syncplay settings"}
         </button>
+        <button onclick={() => go("voice")}>Voice</button>
       </div>
     </section>
 

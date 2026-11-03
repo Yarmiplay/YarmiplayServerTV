@@ -10,8 +10,31 @@
   let { snap }: { snap: Snapshot } = $props();
 
   const form = useDraft(() => {
-    const { enabled, upnp, vanillaMode, fileRelay, voice, relayCacheGb, webOrigins, ...rest } =
-      snap.settings.syncplay;
+    const {
+      enabled,
+      upnp,
+      vanillaMode,
+      fileRelay,
+      voice,
+      voiceMaxParticipants,
+      voiceMaxBitrate,
+      voiceMaxPacketBytes,
+      voiceActivityPerSec,
+      voiceDiagnostics,
+      voiceFec,
+      voiceDtx,
+      relayCacheGb,
+      webOrigins,
+      ...rest
+    } = snap.settings.syncplay;
+    void voice;
+    void voiceMaxParticipants;
+    void voiceMaxBitrate;
+    void voiceMaxPacketBytes;
+    void voiceActivityPerSec;
+    void voiceDiagnostics;
+    void voiceFec;
+    void voiceDtx;
     return rest;
   });
   const cache = useDraft(() => ({ relayCacheGb: snap.settings.syncplay.relayCacheGb }));
@@ -307,21 +330,9 @@
       checked={snap.settings.syncplay.fileRelay && !vanilla}
       onchange={(v) => store.save((s) => (s.syncplay.fileRelay = v))}
     />
-    <Toggle
-      label="Voice chat"
-      hint={vanilla
-        ? OFF_IN_VANILLA
-        : `People in a room can talk through this PC. Voice uses Syncplay port ${snap.settings.syncplay.port}. No extra port to open. This switch takes effect immediately; no restart. When it is off, clients are told "voice disabled on this server".`}
-      disabled={vanilla}
-      checked={snap.settings.syncplay.voice && !vanilla}
-      onchange={(v) =>
-        store.save(
-          (s) => (s.syncplay.voice = v),
-          v
-            ? `Voice chat is on. It uses Syncplay port ${snap.settings.syncplay.port} and takes effect immediately.`
-            : `Voice chat is off. Clients are told "voice disabled on this server". Takes effect immediately.`,
-        )}
-    />
+    <p class="muted note">
+      Voice chat is on the Voice page. It is relayed on Syncplay port {snap.settings.syncplay.port}. No extra port to open.
+    </p>
     <div class="cache" class:off={vanilla || !snap.settings.syncplay.fileRelay}>
       <label class="field">
         Cache size (GB)

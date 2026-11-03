@@ -73,13 +73,13 @@ When `capabilities.voice` is true, the same `features.yarmiplay` object (and the
 | `version` | This document. The client sends it in `voiceJoin`. |
 | `enabled` | `true` when the table above is a live relay. `false` only in the short object in section 2. |
 | `codec`, `clockRate`, `channels`, `ptime` | The only send format. One Opus frame is 20 ms, 48 kHz, mono. |
-| `maxBitrate` | Encoder target, bits per second. |
-| `fec`, `dtx` | The client turns Opus in-band FEC and DTX on. The server does not check the frames. |
+| `maxBitrate` | Encoder target, bits per second. The host sets it on the Voice page (`syncplay.voiceMaxBitrate`). A change is advertised immediately. |
+| `fec`, `dtx` | The client turns Opus in-band FEC and DTX on when these are true. The host sets them on the Voice page. The server does not check the frames. |
 | `transport` | `yv1`, the packet in section 6.1. Not WebRTC. |
 | `mux` | `syncplay`. Frames travel on the Syncplay connection (section 6.0). There is no second port. |
 | `port` | The Syncplay port the client is already connected to. Default 8999. Not a voice port. |
 | `wsPath` | Legacy browser socket, still on `port` (section 6.4). New clients use section 6.0.2 instead. |
-| `maxParticipants` | Voice seats in one room. Syncplay itself can have more people. |
+| `maxParticipants` | Voice seats in one room (`syncplay.voiceMaxParticipants`, 1–32, default 8). Syncplay itself can have more people. Lowering the cap does not remove people already in voice; the next join is refused. |
 
 `udpPort`, `tcpPort`, and `fingerprint` are **not** sent. Server 2.0 used them for a separate UDP/TCP listener on port 9000 and a separate certificate. Server 2.1.0 does not listen there. A client that still opens port 9000 will not reach voice. A client that only speaks JSON lines is unaffected, because the server never writes a voice frame to a connection that did not opt in (section 6.0).
 

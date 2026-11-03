@@ -77,6 +77,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="2.1.1" date="2026-11-03">
+      <description>
+        <p>A Voice page for the voice switch, live status, and the voice limits. Voice stays on the Syncplay port.</p>
+      </description>
+    </release>
     <release version="2.1.0" date="2026-11-02">
       <description>
         <p>Voice chat is relayed on the Syncplay port. No extra port to open.</p>

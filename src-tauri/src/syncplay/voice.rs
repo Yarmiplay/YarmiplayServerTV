@@ -13,8 +13,10 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use parking_lot::Mutex;
 use rand::Rng;
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::sync::mpsc::UnboundedSender;
@@ -35,6 +37,69 @@ pub const DISABLED_MESSAGE: &str = "voice disabled on this server";
 pub const FRAME_MARKER: u8 = 0x1E;
 /// `voiceActivity` messages accepted per seat per second.
 pub const ACTIVITY_PER_SEC: usize = 5;
+pub const DEFAULT_BITRATE: u32 = 32_000;
+/// Host-adjustable ranges. The packet ceiling is the yv1 maximum.
+pub const PARTICIPANTS_MIN: u32 = 1;
+pub const PARTICIPANTS_MAX: u32 = 32;
+pub const BITRATE_MIN: u32 = 6_000;
+pub const BITRATE_MAX: u32 = 128_000;
+pub const ACTIVITY_MIN: u32 = 1;
+pub const ACTIVITY_MAX: u32 = 30;
+
+/// Limits the Voice page can change. The relay reads them on every join and frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoicePolicy {
+    pub max_participants: usize,
+    pub max_bitrate: u32,
+    pub max_packet: usize,
+    pub activity_per_sec: usize,
+    pub diagnostics: bool,
+    pub fec: bool,
+    pub dtx: bool,
+}
+
+impl Default for VoicePolicy {
+    fn default() -> Self {
+        Self {
+            max_participants: MAX_SEATS,
+            max_bitrate: DEFAULT_BITRATE,
+            max_packet: MAX_PACKET,
+            activity_per_sec: ACTIVITY_PER_SEC,
+            diagnostics: true,
+            fec: true,
+            dtx: true,
+        }
+    }
+}
+
+impl VoicePolicy {
+    /// Keep a bad value inside the ranges the Voice page allows.
+    pub fn clamped(self) -> Self {
+        Self {
+            max_participants: self
+                .max_participants
+                .clamp(PARTICIPANTS_MIN as usize, PARTICIPANTS_MAX as usize),
+            max_bitrate: self.max_bitrate.clamp(BITRATE_MIN, BITRATE_MAX),
+            max_packet: self.max_packet.clamp(MIN_PACKET, MAX_PACKET),
+            activity_per_sec: self
+                .activity_per_sec
+                .clamp(ACTIVITY_MIN as usize, ACTIVITY_MAX as usize),
+            ..self
+        }
+    }
+
+    fn advertised(self) -> (usize, u32, bool, bool) {
+        (self.max_participants, self.max_bitrate, self.fec, self.dtx)
+    }
+}
+
+/// How many voice seats are in one Syncplay room right now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceRoomCount {
+    pub room: String,
+    pub users: usize,
+}
 const SEQ_WINDOW: u32 = 64;
 const AUDIO: u8 = 1;
 const KEEPALIVE: u8 = 2;
@@ -72,6 +137,7 @@ struct Seat {
 
 struct Inner {
     listening: bool,
+    policy: VoicePolicy,
     seats: HashMap<ConnId, Seat>,
     by_token: HashMap<u64, ConnId>,
     next_gen: u64,
@@ -80,6 +146,9 @@ struct Inner {
 pub struct VoiceHub {
     /// The Syncplay listener voice is multiplexed on. Not a second socket.
     syncplay_port: u16,
+    /// Copied out of the policy so a dropped frame can be logged without the seat lock.
+    diagnostics: AtomicBool,
+    max_packet: AtomicUsize,
     inner: Mutex<Inner>,
 }
 
@@ -120,10 +189,14 @@ pub struct VoiceRuntime {
 
 impl VoiceHub {
     fn new(syncplay_port: u16) -> Arc<Self> {
+        let policy = VoicePolicy::default();
         Arc::new(Self {
             syncplay_port,
+            diagnostics: AtomicBool::new(policy.diagnostics),
+            max_packet: AtomicUsize::new(policy.max_packet),
             inner: Mutex::new(Inner {
                 listening: true,
+                policy,
                 seats: HashMap::new(),
                 by_token: HashMap::new(),
                 next_gen: 1,
@@ -145,6 +218,7 @@ impl VoiceHub {
     }
 
     pub fn descriptor(&self) -> Value {
+        let policy = self.inner.lock().policy;
         json!({
             "version": VERSION,
             "enabled": true,
@@ -152,15 +226,47 @@ impl VoiceHub {
             "clockRate": 48000,
             "channels": 1,
             "ptime": 20,
-            "maxBitrate": 32000,
-            "fec": true,
-            "dtx": true,
+            "maxBitrate": policy.max_bitrate,
+            "fec": policy.fec,
+            "dtx": policy.dtx,
             "transport": "yv1",
             "mux": "syncplay",
             "port": self.syncplay_port,
             "wsPath": WS_PATH,
-            "maxParticipants": MAX_SEATS,
+            "maxParticipants": policy.max_participants,
         })
+    }
+
+    /// Replace the live limits. True when clients must be told (participants, bitrate, FEC, DTX).
+    pub fn set_policy(&self, policy: VoicePolicy) -> bool {
+        let policy = policy.clamped();
+        self.diagnostics
+            .store(policy.diagnostics, Ordering::Relaxed);
+        self.max_packet.store(policy.max_packet, Ordering::Relaxed);
+        let mut g = self.inner.lock();
+        let changed = g.policy.advertised() != policy.advertised();
+        g.policy = policy;
+        changed
+    }
+
+    pub fn occupancy(&self) -> Vec<VoiceRoomCount> {
+        let g = self.inner.lock();
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for seat in g.seats.values() {
+            *counts.entry(seat.room.clone()).or_default() += 1;
+        }
+        let mut rooms: Vec<VoiceRoomCount> = counts
+            .into_iter()
+            .map(|(room, users)| VoiceRoomCount { room, users })
+            .collect();
+        rooms.sort_by(|a, b| a.room.cmp(&b.room));
+        rooms
+    }
+
+    fn note_drop(&self, message: &str) {
+        if self.diagnostics.load(Ordering::Relaxed) {
+            warn!("{message}");
+        }
     }
 
     pub fn join(&self, conn: ConnId, room: &str, name: &str, version: u64) -> Join {
@@ -168,10 +274,11 @@ impl VoiceHub {
             return Join::Version;
         }
         let mut g = self.inner.lock();
+        let cap = g.policy.max_participants;
         let replaced = g.seats.contains_key(&conn);
         if !replaced {
             let n = g.seats.values().filter(|s| s.room == room).count();
-            if n >= MAX_SEATS {
+            if n >= cap {
                 return Join::Full;
             }
         }
@@ -294,6 +401,7 @@ impl VoiceHub {
     /// `now_ms` is a monotonic millisecond clock the caller owns (wall time is fine).
     pub fn activity(&self, conn: ConnId, speaking: bool, now_ms: u64) -> Activity {
         let mut g = self.inner.lock();
+        let cap = g.policy.activity_per_sec;
         let Some(seat) = g.seats.get_mut(&conn) else {
             return Activity::Quiet;
         };
@@ -304,7 +412,7 @@ impl VoiceHub {
         {
             seat.activity_ms.pop_front();
         }
-        if seat.activity_ms.len() >= ACTIVITY_PER_SEC {
+        if seat.activity_ms.len() >= cap {
             return Activity::Dropped;
         }
         seat.activity_ms.push_back(now_ms);
@@ -357,14 +465,20 @@ impl VoiceHub {
     /// must belong to that connection. The path is not moved here; [`attach_mux`]
     /// does that.
     pub fn ingest_connection(&self, conn: ConnId, packet: &[u8]) {
+        if packet.len() > self.max_packet.load(Ordering::Relaxed) {
+            self.note_drop("voice relay dropped a frame: larger than the packet limit");
+            return;
+        }
         let Some(token) = packet_token(packet) else {
-            warn!("voice relay dropped a frame on the Syncplay connection: not a yv1 packet");
+            self.note_drop(
+                "voice relay dropped a frame on the Syncplay connection: not a yv1 packet",
+            );
             return;
         };
         let owner = self.inner.lock().by_token.get(&token).copied();
         if owner != Some(conn) {
-            warn!(
-                "voice relay dropped a frame: its token does not belong to this Syncplay connection"
+            self.note_drop(
+                "voice relay dropped a frame: its token does not belong to this Syncplay connection",
             );
             return;
         }
@@ -386,40 +500,59 @@ impl VoiceHub {
         packet: &[u8],
         stream: Option<(&UnboundedSender<Vec<u8>>, Option<u64>)>,
     ) -> Option<u64> {
+        if packet.len() > self.max_packet.load(Ordering::Relaxed) {
+            self.note_drop("voice relay dropped a frame: larger than the packet limit");
+            return None;
+        }
+        let log = self.diagnostics.load(Ordering::Relaxed);
         let parsed = match packet_token(packet) {
             Some(t) => t,
             None => {
-                warn!("voice relay dropped a frame: not a yv1 packet");
+                if log {
+                    warn!("voice relay dropped a frame: not a yv1 packet");
+                }
                 return None;
             }
         };
         let mut g = self.inner.lock();
         let Some(conn) = g.by_token.get(&parsed).copied() else {
-            warn!("voice relay dropped a frame: unknown seat");
+            if log {
+                warn!("voice relay dropped a frame: unknown seat");
+            }
             return None;
         };
         let key = match g.seats.get(&conn) {
             Some(s) if s.token == parsed => s.key,
             _ => {
-                warn!("voice relay dropped a frame: seat and token disagree");
+                if log {
+                    warn!("voice relay dropped a frame: seat and token disagree");
+                }
                 return None;
             }
         };
         let Ok(opened) = open(&key, packet) else {
-            warn!("voice relay dropped a frame: authentication failed");
+            if log {
+                warn!("voice relay dropped a frame: authentication failed");
+            }
             return None;
         };
         if opened.sender != 0 || !plain_ok(opened.ty, &opened.plain) {
-            warn!("voice relay dropped a frame: rejected plaintext or sender");
+            if log {
+                warn!("voice relay dropped a frame: rejected plaintext or sender");
+            }
             return None;
         }
         let (keep_gen, room, seq, ts, plain, ty) = {
             let Some(seat) = g.seats.get_mut(&conn) else {
-                warn!("voice relay dropped a frame: seat disappeared");
+                if log {
+                    warn!("voice relay dropped a frame: seat disappeared");
+                }
                 return None;
             };
             if !accept_seq(seat, opened.seq) {
-                warn!("voice relay dropped a frame: replayed or old sequence");
+                if log {
+                    warn!("voice relay dropped a frame: replayed or old sequence");
+                }
                 return None;
             }
             let keep_gen = stream.as_ref().and_then(|(_, existing)| {
@@ -773,7 +906,7 @@ pub async fn serve_ws(socket: axum::extract::ws::WebSocket, hub: Arc<VoiceHub>, 
         match item {
             Ok(Message::Binary(b)) => {
                 if packet_token(&b) != Some(token) {
-                    warn!("voice relay dropped a legacy WebSocket frame: token mismatch");
+                    hub.note_drop("voice relay dropped a legacy WebSocket frame: token mismatch");
                     continue;
                 }
                 if let Some(gen) = hub.ingest(&b, Some((&tx, generation))) {
@@ -911,6 +1044,46 @@ mod tests {
             }
         ));
         assert!(matches!(hub.activity(99, true, 1000), Activity::Quiet));
+    }
+
+    #[test]
+    fn the_voice_page_limits_apply_without_a_new_relay() {
+        let hub = VoiceHub::open_for_test();
+        assert!(hub.set_policy(VoicePolicy {
+            max_participants: 1,
+            max_bitrate: 16_000,
+            max_packet: 80,
+            activity_per_sec: 1,
+            diagnostics: false,
+            fec: false,
+            dtx: false,
+        }));
+        let described = hub.descriptor();
+        assert_eq!(described["maxParticipants"], 1);
+        assert_eq!(described["maxBitrate"], 16_000);
+        assert_eq!(described["fec"], false);
+        assert_eq!(described["dtx"], false);
+        let _a = joined(&hub, 1, "movie", "alice");
+        assert!(matches!(hub.join(2, "movie", "bob", VERSION), Join::Full));
+        assert!(matches!(
+            hub.activity(1, true, 0),
+            Activity::Update { speaking: true, .. }
+        ));
+        assert!(matches!(hub.activity(1, false, 10), Activity::Dropped));
+        let rooms = hub.occupancy();
+        assert_eq!(rooms.len(), 1);
+        assert_eq!(rooms[0].room, "movie");
+        assert_eq!(rooms[0].users, 1);
+        assert!(hub.ingest(&vec![0u8; 200], None).is_none());
+        assert!(!hub.set_policy(VoicePolicy {
+            max_participants: 1,
+            max_bitrate: 16_000,
+            max_packet: 90,
+            activity_per_sec: 2,
+            diagnostics: true,
+            fec: false,
+            dtx: false,
+        }));
     }
 
     #[test]

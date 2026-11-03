@@ -133,7 +133,22 @@ pub struct SyncplaySettings {
     /// Relay voice between people in a Syncplay room, on the Syncplay port
     /// itself (no extra port). On by default; off in vanilla mode.
     /// `--voice` / `--no-voice` and `YARMIPLAYSERVERTV_VOICE` override this at startup.
+    /// The Voice page, the tray item, and these flags all write this same field.
     pub voice: bool,
+    /// Voice seats allowed in one room. New joins over this are refused immediately.
+    pub voice_max_participants: u32,
+    /// Opus target, bits per second, advertised to clients.
+    pub voice_max_bitrate: u32,
+    /// Drop a voice frame larger than this. The protocol ceiling is 1200.
+    pub voice_max_packet_bytes: u32,
+    /// Speaking indicators accepted from one seat per second.
+    pub voice_activity_per_sec: u32,
+    /// Log dropped voice frames. Delivery failures are always logged.
+    pub voice_diagnostics: bool,
+    /// Tell clients to send Opus in-band FEC.
+    pub voice_fec: bool,
+    /// Tell clients to send Opus DTX.
+    pub voice_dtx: bool,
     /// Disk space the relay cache may use, in GB.
     pub relay_cache_gb: u32,
     /// Let Syncplay users create managed rooms, where only operators control playback.
@@ -171,6 +186,13 @@ impl Default for SyncplaySettings {
             vanilla_mode: false,
             file_relay: true,
             voice: true,
+            voice_max_participants: crate::syncplay::voice::MAX_SEATS as u32,
+            voice_max_bitrate: crate::syncplay::voice::DEFAULT_BITRATE,
+            voice_max_packet_bytes: crate::syncplay::voice::MAX_PACKET as u32,
+            voice_activity_per_sec: crate::syncplay::voice::ACTIVITY_PER_SEC as u32,
+            voice_diagnostics: true,
+            voice_fec: true,
+            voice_dtx: true,
             relay_cache_gb: 10,
             managed_rooms: true,
             web_origins: default_web_origins(),
@@ -414,6 +436,43 @@ impl Settings {
         if !(1..=2000).contains(&self.syncplay.relay_cache_gb) {
             return Err("the relay cache must be between 1 and 2000 GB".into());
         }
+        let v = &self.syncplay;
+        if !(crate::syncplay::voice::PARTICIPANTS_MIN..=crate::syncplay::voice::PARTICIPANTS_MAX)
+            .contains(&v.voice_max_participants)
+        {
+            return Err(format!(
+                "voice seats per room must be between {} and {}",
+                crate::syncplay::voice::PARTICIPANTS_MIN,
+                crate::syncplay::voice::PARTICIPANTS_MAX
+            ));
+        }
+        if !(crate::syncplay::voice::BITRATE_MIN..=crate::syncplay::voice::BITRATE_MAX)
+            .contains(&v.voice_max_bitrate)
+        {
+            return Err(format!(
+                "voice bitrate must be between {} and {} bits per second",
+                crate::syncplay::voice::BITRATE_MIN,
+                crate::syncplay::voice::BITRATE_MAX
+            ));
+        }
+        if !(crate::syncplay::voice::MIN_PACKET as u32..=crate::syncplay::voice::MAX_PACKET as u32)
+            .contains(&v.voice_max_packet_bytes)
+        {
+            return Err(format!(
+                "voice packet limit must be between {} and {} bytes",
+                crate::syncplay::voice::MIN_PACKET,
+                crate::syncplay::voice::MAX_PACKET
+            ));
+        }
+        if !(crate::syncplay::voice::ACTIVITY_MIN..=crate::syncplay::voice::ACTIVITY_MAX)
+            .contains(&v.voice_activity_per_sec)
+        {
+            return Err(format!(
+                "voice speaking updates must be between {} and {} per second",
+                crate::syncplay::voice::ACTIVITY_MIN,
+                crate::syncplay::voice::ACTIVITY_MAX
+            ));
+        }
         match self.syncplay.access {
             a if a.uses_password() && self.syncplay.password.is_empty() => {
                 return Err("Enter a Syncplay password, or choose who can join another way".into())
@@ -432,7 +491,8 @@ pub const HELP: &str = "\
 YarmiplayServerTV
 
 Voice chat is relayed on the Syncplay port (default 8999). There is no extra
-voice port to open.
+voice port to open. The Voice page in the app sets the same switch, plus the
+seats, bitrate, packet size, speaking-update limit, FEC, DTX, and logging.
 
   --voice       Turn voice chat on and save that setting
   --no-voice    Turn voice chat off and save that setting. Clients are told
@@ -659,5 +719,22 @@ mod tests {
         assert_eq!(err, "help");
         assert!(HELP.contains("no extra"));
         assert!(HELP.contains("voice disabled on this server"));
+    }
+
+    #[test]
+    fn voice_limits_default_and_reject_values_outside_the_page() {
+        let s = Settings::parse(r#"{"syncplay":{"port":8999}}"#).unwrap();
+        assert!(s.syncplay.voice);
+        assert_eq!(s.syncplay.voice_max_participants, 8);
+        assert_eq!(s.syncplay.voice_max_bitrate, 32_000);
+        assert_eq!(s.syncplay.voice_max_packet_bytes, 1200);
+        assert_eq!(s.syncplay.voice_activity_per_sec, 5);
+        assert!(s.syncplay.voice_diagnostics && s.syncplay.voice_fec && s.syncplay.voice_dtx);
+        let mut bad = s;
+        bad.syncplay.voice_max_packet_bytes = 50;
+        assert!(bad.validate().unwrap_err().contains("packet"));
+        bad.syncplay.voice_max_packet_bytes = 1200;
+        bad.syncplay.voice_max_participants = 0;
+        assert!(bad.validate().is_err());
     }
 }

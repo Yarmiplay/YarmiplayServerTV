@@ -744,7 +744,7 @@ impl ServerState {
         }
     }
 
-    fn broadcast_ext_state(&self) {
+    pub(crate) fn broadcast_ext_state(&self) {
         let mut body = json!({
             "capabilities": self.capabilities(),
             "jellyfin": self.jellyfin_message(),

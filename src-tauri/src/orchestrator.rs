@@ -45,6 +45,18 @@ const PLEX_LINK_POLL: Duration = Duration::from_secs(2);
 /// with the `plex_spike` test).
 const PLEX_RELAY: bool = false;
 
+fn voice_policy(s: &crate::config::SyncplaySettings) -> crate::syncplay::voice::VoicePolicy {
+    crate::syncplay::voice::VoicePolicy {
+        max_participants: s.voice_max_participants as usize,
+        max_bitrate: s.voice_max_bitrate,
+        max_packet: s.voice_max_packet_bytes as usize,
+        activity_per_sec: s.voice_activity_per_sec as usize,
+        diagnostics: s.voice_diagnostics,
+        fec: s.voice_fec,
+        dtx: s.voice_dtx,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncplayStatus {
@@ -149,6 +161,21 @@ pub struct Snapshot {
     pub plex: PlexStatus,
     pub plex_account: PlexAccount,
     pub plex_share: ShareStatus,
+    /// Live voice relay state for the Voice page. Settings live on `settings.syncplay`.
+    pub voice: VoiceStatus,
+}
+
+/// What the Voice page shows besides the saved switches.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceStatus {
+    /// The relay is actually accepting seats: the switch is on, vanilla mode is off, and Syncplay is up.
+    pub effective: bool,
+    pub setting_on: bool,
+    pub vanilla_mode: bool,
+    pub relay_up: bool,
+    pub active_users: usize,
+    pub rooms: Vec<crate::syncplay::voice::VoiceRoomCount>,
 }
 
 pub struct App {
@@ -532,6 +559,9 @@ impl App {
             } else {
                 voice.stop_voice();
             }
+        }
+        if let Some(srv) = self.syncplay.lock().as_ref() {
+            srv.apply_voice_policy(voice_policy(&s.syncplay));
         }
 
         // Jellyfin.
@@ -962,6 +992,22 @@ impl App {
             jellyfin.error = self.jellyfin_https.error();
         }
         let addresses = self.addresses(&s, &jellyfin);
+        let voice = {
+            let guard = self.syncplay.lock();
+            let (relay_up, rooms) = match guard.as_ref() {
+                Some(srv) => (srv.voice_relay_up(), srv.voice_occupancy()),
+                None => (false, Vec::new()),
+            };
+            let active_users = rooms.iter().map(|r| r.users).sum();
+            VoiceStatus {
+                effective: s.syncplay.voice_effective() && relay_up,
+                setting_on: s.syncplay.voice,
+                vanilla_mode: s.syncplay.vanilla_mode,
+                relay_up,
+                active_users,
+                rooms,
+            }
+        };
 
         Snapshot {
             jellyfin_share: self.share_status(),
@@ -979,6 +1025,7 @@ impl App {
             upnp,
             addresses,
             update: self.updates.status(),
+            voice,
         }
     }
 
