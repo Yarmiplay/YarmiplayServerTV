@@ -334,7 +334,7 @@ clients, and a seeder and a viewer (`--yarmiplay`) that pass a file through the 
 testing. The Jellyfin version and checksums are pinned in `src-tauri/jellyfin-manifest.json`; regenerate
 it with `python scripts/update_jellyfin_manifest.py`.
 
-The **Voice chat** switch is on the **Syncplay** page of the control panel, under **YarmiplayTV extras**, and in the tray menu as **Voice chat (Syncplay port N)**. It takes effect immediately. No restart. Voice uses that Syncplay port. There is no extra port to open. When the switch is off, clients are told `voice disabled on this server`.
+The **Voice** page in the sidebar is the place for every voice control: the master switch, live status, seats per room, bitrate, packet size, speaking updates per second, FEC, DTX, and dropped-frame logging. The master switch is also in the tray as **Voice chat (Syncplay port N)**. Both take effect immediately. No restart. Voice uses that Syncplay port. There is no extra port to open. When the switch is off, clients are told `voice disabled on this server`. The saved keys are `syncplay.voice`, `syncplay.voiceMaxParticipants`, `syncplay.voiceMaxBitrate`, `syncplay.voiceMaxPacketBytes`, `syncplay.voiceActivityPerSec`, `syncplay.voiceDiagnostics`, `syncplay.voiceFec`, and `syncplay.voiceDtx`.
 
 `--voice` and `--no-voice` set the same switch and save it (`syncplay.voice`).
 `YARMIPLAYSERVERTV_VOICE=on` or `off` (also `1`/`0`, `true`/`false`) does the same; the flag wins.

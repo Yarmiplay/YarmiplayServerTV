@@ -343,6 +343,40 @@ impl SyncplayServer {
     pub fn stop_voice(&self) {
         self.shared.stop_voice();
     }
+
+    /// Push the Voice page limits into the running relay. Clients hear about
+    /// advertised changes immediately. Nothing here restarts the process.
+    pub fn apply_voice_policy(&self, policy: voice::VoicePolicy) {
+        let changed = self
+            .shared
+            .ext
+            .voice
+            .lock()
+            .as_ref()
+            .is_some_and(|hub| hub.set_policy(policy));
+        if changed {
+            self.shared.state.lock().broadcast_ext_state();
+        }
+    }
+
+    pub fn voice_occupancy(&self) -> Vec<voice::VoiceRoomCount> {
+        self.shared
+            .ext
+            .voice
+            .lock()
+            .as_ref()
+            .map(|hub| hub.occupancy())
+            .unwrap_or_default()
+    }
+
+    pub fn voice_relay_up(&self) -> bool {
+        self.shared
+            .ext
+            .voice
+            .lock()
+            .as_ref()
+            .is_some_and(|hub| hub.listening())
+    }
 }
 
 impl Shared {

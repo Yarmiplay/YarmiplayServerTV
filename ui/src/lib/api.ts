@@ -97,6 +97,20 @@ export interface SyncplaySettings {
   fileRelay: boolean;
   /** Relay voice in Syncplay rooms on the Syncplay port (no extra port). On by default, off in vanilla mode. */
   voice: boolean;
+  /** Seats allowed in one room. */
+  voiceMaxParticipants: number;
+  /** Opus target in bits per second, advertised to clients. */
+  voiceMaxBitrate: number;
+  /** Drop a voice frame larger than this. Protocol ceiling is 1200. */
+  voiceMaxPacketBytes: number;
+  /** Speaking indicators accepted from one person per second. */
+  voiceActivityPerSec: number;
+  /** Log dropped voice frames. Delivery failures are always logged. */
+  voiceDiagnostics: boolean;
+  /** Tell clients to send Opus in-band FEC. */
+  voiceFec: boolean;
+  /** Tell clients to send Opus DTX. */
+  voiceDtx: boolean;
   relayCacheGb: number;
   /** Web pages allowed to join from a browser and read the relay cross-origin. */
   webOrigins: string[];
@@ -371,6 +385,22 @@ export interface Snapshot {
   plex: PlexStatus;
   plexAccount: PlexAccount;
   plexShare: ShareStatus;
+  voice: VoiceStatus;
+}
+
+export interface VoiceRoomCount {
+  room: string;
+  users: number;
+}
+
+/** Live relay state. The switches themselves are on settings.syncplay. */
+export interface VoiceStatus {
+  effective: boolean;
+  settingOn: boolean;
+  vanillaMode: boolean;
+  relayUp: boolean;
+  activeUsers: number;
+  rooms: VoiceRoomCount[];
 }
 
 export interface LogLine {

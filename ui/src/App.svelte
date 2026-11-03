@@ -3,16 +3,17 @@
   import logo from "./assets/logo.svg";
   import { store } from "./lib/store.svelte";
   import { api, errorText } from "./lib/api";
-  import { jellyfinPill, plexPill, syncplayPill, tlsPill, upnpPill, type Pill } from "./lib/status";
+  import { jellyfinPill, plexPill, syncplayPill, tlsPill, upnpPill, voicePill, type Pill } from "./lib/status";
   import Dashboard from "./screens/Dashboard.svelte";
   import Syncplay from "./screens/Syncplay.svelte";
+  import Voice from "./screens/Voice.svelte";
   import Jellyfin from "./screens/Jellyfin.svelte";
   import Plex from "./screens/Plex.svelte";
   import Network from "./screens/Network.svelte";
   import Logs from "./screens/Logs.svelte";
   import About from "./screens/About.svelte";
 
-  type Screen = "dashboard" | "syncplay" | "jellyfin" | "plex" | "network" | "logs" | "about";
+  type Screen = "dashboard" | "syncplay" | "voice" | "jellyfin" | "plex" | "network" | "logs" | "about";
   let screen = $state<Screen>("dashboard");
   let loadError = $state<string | null>(null);
 
@@ -26,6 +27,7 @@
     return [
       { id: "dashboard" as Screen, label: "Dashboard", pill: null },
       { id: "syncplay" as Screen, label: "Syncplay", pill: pill(syncplayPill) },
+      { id: "voice" as Screen, label: "Voice", pill: pill(voicePill) },
       { id: "jellyfin" as Screen, label: "Jellyfin", pill: pill(jellyfinPill) },
       { id: "plex" as Screen, label: "Plex", pill: s?.settings.plex.enabled ? pill(plexPill) : null },
       {
@@ -71,6 +73,8 @@
       <Dashboard snap={store.snap} go={(s: Screen) => (screen = s)} />
     {:else if screen === "syncplay"}
       <Syncplay snap={store.snap} />
+    {:else if screen === "voice"}
+      <Voice snap={store.snap} />
     {:else if screen === "jellyfin"}
       <Jellyfin snap={store.snap} />
     {:else if screen === "plex"}

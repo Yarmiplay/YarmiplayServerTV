@@ -3,6 +3,15 @@ import { formatBytes } from "./api";
 
 export type Pill = { kind: "ok" | "warn" | "err" | "busy" | ""; text: string };
 
+export function voicePill(s: Snapshot): Pill {
+  if (s.voice.vanillaMode) return { kind: "warn", text: "Vanilla" };
+  if (!s.settings.syncplay.enabled) return { kind: "", text: "Syncplay off" };
+  if (!s.voice.settingOn) return { kind: "", text: "Off" };
+  if (!s.voice.relayUp) return { kind: "busy", text: "Starting" };
+  const n = s.voice.activeUsers;
+  return { kind: "ok", text: n === 0 ? "On" : n === 1 ? "1 talking" : `${n} talking` };
+}
+
 export function syncplayPill(s: Snapshot): Pill {
   if (s.syncplay.running) {
     const n = s.syncplay.users;
