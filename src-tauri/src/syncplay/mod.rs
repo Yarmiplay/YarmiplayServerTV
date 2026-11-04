@@ -8,6 +8,8 @@ pub mod mux;
 pub mod protocol;
 pub mod room;
 pub mod server;
+#[cfg(test)]
+mod stress;
 pub mod voice;
 
 pub use crate::config::SyncplayAccess;

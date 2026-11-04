@@ -29,8 +29,9 @@ pub type ConnId = u64;
 #[derive(Debug)]
 pub enum Out {
     Line(String),
-    /// One yv1 packet. The connection writer frames it with `0x1E`.
-    Voice(Vec<u8>),
+    /// One yv1 packet and when it was queued. The connection writer frames it
+    /// with `0x1E`, after any waiting lines, and drops it once it is too old.
+    Voice(std::time::Instant, Vec<u8>),
     Close,
 }
 
@@ -1185,6 +1186,10 @@ impl ServerState {
 
     /// Handle one message from a logged-in client. Returns false to drop the connection.
     pub fn handle_message(&mut self, id: ConnId, message: &Map<String, Value>, now: f64) -> bool {
+        // Timed out or kicked while this message was on its way.
+        if !self.watchers.contains_key(&id) {
+            return false;
+        }
         for (command, value) in message {
             match command.as_str() {
                 "Set" => self.handle_set(id, value, now),
@@ -1781,6 +1786,20 @@ mod tests {
 
     fn msg(v: Value) -> Map<String, Value> {
         v.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn a_state_from_a_client_already_gone_ends_quietly() {
+        let mut s = ServerState::new(SyncplayOptions::default());
+        let mut a = join(&mut s, 1, "alice", "movie", 0.0);
+        drain(&mut a);
+        s.remove(1);
+        let keep = s.handle_message(
+            1,
+            &msg(json!({ "State": { "playstate": { "position": 1.0, "paused": false } } })),
+            5.0,
+        );
+        assert!(!keep);
     }
 
     #[test]
@@ -2782,7 +2801,7 @@ mod tests {
         while let Ok(o) = p.try_recv() {
             match o {
                 Out::Line(l) => out.push(serde_json::from_str::<Value>(l.trim_end()).unwrap()),
-                Out::Voice(_) => {}
+                Out::Voice(..) => {}
                 Out::Close => closed = true,
             }
         }
@@ -2826,7 +2845,7 @@ mod tests {
         while let Ok(o) = d.try_recv() {
             match o {
                 Out::Line(l) => out.push(serde_json::from_str::<Value>(l.trim_end()).unwrap()),
-                Out::Voice(_) => {}
+                Out::Voice(..) => {}
                 Out::Close => closed = true,
             }
         }
@@ -3113,7 +3132,11 @@ mod tests {
 pub(crate) fn voice_mux_send(tx: UnboundedSender<Out>) -> voice::MuxSend {
     let failed = AtomicBool::new(false);
     Arc::new(move |frame| {
-        if tx.send(Out::Voice(frame)).is_err() && !failed.swap(true, Ordering::Relaxed) {
+        if tx
+            .send(Out::Voice(std::time::Instant::now(), frame))
+            .is_err()
+            && !failed.swap(true, Ordering::Relaxed)
+        {
             tracing::error!(
                 "voice relay failed to deliver a frame: the Syncplay connection is closed"
             );

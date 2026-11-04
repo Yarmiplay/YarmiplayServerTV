@@ -421,6 +421,21 @@ async fn ws(
         .on_upgrade(move |socket| bridge(socket, start, meta))
 }
 
+/// What the bridge sends down a WebSocket. Voice keeps when it arrived.
+enum WsOut {
+    Message(Message),
+    Voice(Instant, Vec<u8>),
+}
+
+impl WsOut {
+    fn queue(self, messages: &mut VecDeque<Message>, voice: &mut super::voice::VoiceQueue) {
+        match self {
+            WsOut::Message(m) => messages.push_back(m),
+            WsOut::Voice(at, packet) => voice.push(at, packet),
+        }
+    }
+}
+
 /// Carry a WebSocket to a Syncplay session over an in-memory pipe: text
 /// messages become JSON lines, lines become text messages. A binary message
 /// is one yv1 packet and is written as a `0x1E` frame; a voice frame coming
@@ -428,19 +443,55 @@ async fn ws(
 /// when the session ends. Older clients that never send or receive binary
 /// still see only JSON text.
 async fn bridge(socket: WebSocket, start: SessionFn, meta: ConnMeta) {
-    let (ours, theirs) = tokio::io::duplex(256 * 1024);
+    // Small on purpose: voice bytes already in this pipe sit ahead of the next
+    // pause, the same way a large TCP send buffer would.
+    let (ours, theirs) = tokio::io::duplex(16 * 1024);
     let session = tokio::spawn(start(Box::new(theirs), meta.peer, meta.tls));
     let (sink, mut stream) = socket.split();
     let (rd, mut wr) = tokio::io::split(ours);
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<WsOut>();
 
+    // Text, pongs and the close go first; voice fills the gaps and is dropped once stale.
     let writer = tokio::spawn(async move {
         let mut sink = sink;
-        while let Some(m) = out_rx.recv().await {
+        let mut messages: VecDeque<Message> = VecDeque::new();
+        let mut voice = super::voice::VoiceQueue::default();
+        let mut open = true;
+        loop {
+            if open && messages.is_empty() && voice.is_empty() {
+                match out_rx.recv().await {
+                    Some(out) => out.queue(&mut messages, &mut voice),
+                    None => open = false,
+                }
+            }
+            while open {
+                match out_rx.try_recv() {
+                    Ok(out) => out.queue(&mut messages, &mut voice),
+                    Err(mpsc::error::TryRecvError::Empty) => break,
+                    Err(mpsc::error::TryRecvError::Disconnected) => open = false,
+                }
+            }
+            let m = if let Some(m) = messages.pop_front() {
+                m
+            } else if let Some(packet) = voice.pop(Instant::now()) {
+                Message::Binary(packet.into())
+            } else if open {
+                continue;
+            } else {
+                break;
+            };
             let close = matches!(m, Message::Close(_));
-            if sink.send(m).await.is_err() || close {
+            let sent = tokio::time::timeout(super::server::WRITE_STALL, sink.send(m)).await;
+            if !matches!(sent, Ok(Ok(()))) || close {
                 break;
             }
+        }
+        let dropped = voice.take_dropped();
+        if dropped > 0 {
+            tracing::info!(
+                dropped,
+                "voice frames dropped for a WebSocket client that couldn't keep up"
+            );
         }
         let _ = sink.close().await;
     });
@@ -469,7 +520,7 @@ async fn bridge(socket: WebSocket, start: SessionFn, meta: ConnMeta) {
                     }
                 }
                 Message::Ping(p) => {
-                    let _ = pongs.send(Message::Pong(p));
+                    let _ = pongs.send(WsOut::Message(Message::Pong(p)));
                 }
                 Message::Close(_) => break,
                 Message::Pong(_) => {}
@@ -482,12 +533,15 @@ async fn bridge(socket: WebSocket, start: SessionFn, meta: ConnMeta) {
     loop {
         match super::voice::read_record(&mut records).await {
             Ok(Some(super::voice::Record::Line(l))) => {
-                if out_tx.send(Message::Text(l.into())).is_err() {
+                if out_tx
+                    .send(WsOut::Message(Message::Text(l.into())))
+                    .is_err()
+                {
                     break;
                 }
             }
             Ok(Some(super::voice::Record::Voice(pkt))) => {
-                if out_tx.send(Message::Binary(pkt.into())).is_err() {
+                if out_tx.send(WsOut::Voice(Instant::now(), pkt)).is_err() {
                     tracing::error!("voice relay failed to send a frame on the Syncplay WebSocket");
                     break;
                 }
@@ -502,7 +556,7 @@ async fn bridge(socket: WebSocket, start: SessionFn, meta: ConnMeta) {
             }
         }
     }
-    let _ = out_tx.send(Message::Close(None));
+    let _ = out_tx.send(WsOut::Message(Message::Close(None)));
     drop(out_tx);
     inbound.abort();
     let _ = writer.await;
