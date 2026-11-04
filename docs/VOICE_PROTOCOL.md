@@ -306,6 +306,8 @@ For an accepted audio packet the server builds one new packet per other seat in 
 
 It does not send the packet back to the speaker. Seats in other rooms get nothing. A mux seat can receive audio as soon as its `voiceJoin` with `mux: true` has been accepted, before it has sent a frame. A seat that did not opt in and has not attached the legacy WebSocket gets nothing.
 
+Syncplay lines and voice share the connection, and the lines win. Pause, play, seek, ready and chat are written before any voice that is still waiting, and flushed. Voice older than 300 ms, or beyond 128 frames waiting for that one client, is dropped and counted in the log. The connection's TCP send buffer is capped (about 16 KB) so audio already handed to the kernel cannot pile up in front of the next pause. A client that leaves voice is removed from the fan-out immediately; later audio is not sent to it. A write that makes no progress for 15 seconds closes the connection.
+
 ### 6.3 No separate socket
 
 There is no voice UDP port, no voice TCP port, and no voice certificate. Opus is already sealed with AES-256-GCM inside the packet. The outer hop is the Syncplay TCP connection, STARTTLS with the Syncplay certificate when the client asked for TLS, or the WebSocket on that same port.

@@ -24,10 +24,19 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
+/// One write that makes no progress for this long means the client stopped
+/// reading; its connection is closed.
+pub(super) const WRITE_STALL: Duration = Duration::from_secs(15);
+/// Kernel send buffer of a Syncplay connection. Linux doubles the value passed
+/// to `SO_SNDBUF` and reports that, so this is about 16 KB of bytes in flight.
+/// Left to autotuning the buffer grows to megabytes, and a pause then waits
+/// behind all of that audio. 16 KB still covers eight voices at a 300 ms
+/// round trip; anything the link cannot carry is dropped instead.
+const SYNCPLAY_SEND_BUFFER: usize = 8 * 1024;
 /// A YarmiplayTV client must answer a device challenge within this.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a device may wait for the host to approve it.
@@ -544,6 +553,20 @@ async fn sniff_http(stream: TcpStream, peer: SocketAddr, shared: &Shared) -> Opt
     match mux::sniff(first[0]) {
         Sniff::Syncplay => Some(stream),
         Sniff::Http => {
+            // The browser's Syncplay session is a WebSocket on this same socket, so it
+            // gets the same small send buffer. Other HTTP (the file relay, Jellyfin,
+            // Plex) keeps the large buffer a video stream needs.
+            let mut head = [0u8; 160];
+            const WS: &[u8] = b"/yarmiplay/ws";
+            if let Ok(n) = stream.peek(&mut head).await {
+                if head[..n].windows(WS.len()).any(|w| w == WS) {
+                    if let Err(e) =
+                        socket2::SockRef::from(&stream).set_send_buffer_size(SYNCPLAY_SEND_BUFFER)
+                    {
+                        debug!(%peer, error = %e, "could not size the Syncplay WebSocket send buffer");
+                    }
+                }
+            }
             let meta = ConnMeta { peer, tls: false };
             let _ = shared.http.send((Box::new(stream), meta)).await;
             None
@@ -570,6 +593,9 @@ async fn serve_conn(stream: TcpStream, peer: SocketAddr, shared: Arc<Shared>) {
     let Some(stream) = sniff_http(stream, peer, &shared).await else {
         return;
     };
+    if let Err(e) = socket2::SockRef::from(&stream).set_send_buffer_size(SYNCPLAY_SEND_BUFFER) {
+        debug!(%peer, error = %e, "could not size the Syncplay send buffer");
+    }
     let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     debug!(%peer, id, "Syncplay connection");
     let mut reader = BufReader::new(stream);
@@ -638,33 +664,13 @@ async fn run_session<S>(
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let (tx, mut rx) = unbounded_channel::<Out>();
+    let (tx, rx) = unbounded_channel::<Out>();
     let stream = reader;
-    let (rd, mut wr) = tokio::io::split(stream);
+    let (rd, wr) = tokio::io::split(stream);
     let mut reader = BufReader::new(rd);
 
-    let writer = tokio::spawn(async move {
-        while let Some(out) = rx.recv().await {
-            match out {
-                Out::Line(l) => {
-                    if wr.write_all(l.as_bytes()).await.is_err() {
-                        break;
-                    }
-                }
-                Out::Voice(pkt) => {
-                    let Some(frame) = voice::encode_frame(&pkt) else {
-                        continue;
-                    };
-                    if wr.write_all(&frame).await.is_err() || wr.flush().await.is_err() {
-                        error!("voice relay failed to write a frame on the Syncplay connection");
-                        break;
-                    }
-                }
-                Out::Close => break,
-            }
-        }
-        let _ = wr.shutdown().await;
-    });
+    let mut writer = tokio::spawn(write_loop(wr, rx, peer));
+    let mut writer_done = false;
 
     let drop_with_error = |message: &str| {
         let _ = tx.send(Out::Line(line(&json!({ "Error": { "message": message } }))));
@@ -677,7 +683,15 @@ async fn run_session<S>(
         let message = if let Some(m) = pending.take() {
             m
         } else {
-            match voice::read_record(&mut reader).await {
+            // The writer ends on Close (a timeout, a kick) or a dead socket: so does the session.
+            let record = tokio::select! {
+                record = voice::read_record(&mut reader) => record,
+                _ = &mut writer, if !writer_done => {
+                    writer_done = true;
+                    break;
+                }
+            };
+            match record {
                 Ok(None) => break,
                 Ok(Some(voice::Record::Voice(pkt))) => {
                     if !logged {
@@ -810,7 +824,96 @@ async fn run_session<S>(
         (shared.notify)();
     }
     drop(tx);
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), writer).await;
+    if !writer_done
+        && tokio::time::timeout(Duration::from_secs(5), &mut writer)
+            .await
+            .is_err()
+    {
+        writer.abort();
+    }
+}
+
+/// The only task that writes to a Syncplay connection. Waiting lines go first,
+/// in order and flushed together, so pause, play and seek never queue behind
+/// audio. Voice fills the gaps and is dropped once it is too late to play.
+async fn write_loop<W: AsyncWrite + Unpin>(
+    mut wr: W,
+    mut rx: UnboundedReceiver<Out>,
+    peer: SocketAddr,
+) {
+    let mut lines = String::new();
+    let mut voice = voice::VoiceQueue::default();
+    let mut closing = false;
+    let mut dropped: u64 = 0;
+    loop {
+        if !closing && lines.is_empty() && voice.is_empty() {
+            match rx.recv().await {
+                Some(out) => queue(out, &mut lines, &mut voice, &mut closing),
+                None => break,
+            }
+        }
+        while !closing {
+            let Ok(out) = rx.try_recv() else { break };
+            queue(out, &mut lines, &mut voice, &mut closing);
+        }
+        let bytes = if !lines.is_empty() {
+            std::mem::take(&mut lines).into_bytes()
+        } else if closing {
+            break;
+        } else if let Some(packet) = voice.pop(std::time::Instant::now()) {
+            let Some(frame) = voice::encode_frame(&packet) else {
+                continue;
+            };
+            frame
+        } else {
+            // Every waiting frame was too old to play. Say so, then wait for more.
+            let late = voice.take_dropped();
+            if late > 0 && dropped == 0 {
+                warn!(
+                    %peer,
+                    "voice relay is dropping late audio: this client's connection can't keep up"
+                );
+            }
+            dropped += late;
+            continue;
+        };
+        let late = voice.take_dropped();
+        if late > 0 && dropped == 0 {
+            warn!(
+                %peer,
+                "voice relay is dropping late audio: this client's connection can't keep up"
+            );
+        }
+        dropped += late;
+        let sent = tokio::time::timeout(WRITE_STALL, async {
+            wr.write_all(&bytes).await?;
+            wr.flush().await
+        })
+        .await;
+        match sent {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                debug!(%peer, error = %e, "Syncplay connection write failed");
+                break;
+            }
+            Err(_) => {
+                warn!(%peer, "Syncplay client stopped reading for {WRITE_STALL:?}; closing the connection");
+                break;
+            }
+        }
+    }
+    if dropped > 0 {
+        info!(%peer, dropped, "voice frames dropped for a client that couldn't keep up");
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(2), wr.shutdown()).await;
+}
+
+fn queue(out: Out, lines: &mut String, voice: &mut voice::VoiceQueue, closing: &mut bool) {
+    match out {
+        Out::Line(l) => lines.push_str(&l),
+        Out::Voice(queued, packet) => voice.push(queued, packet),
+        Out::Close => *closing = true,
+    }
 }
 
 /// The device challenge a YarmiplayTV client goes through before its Hello

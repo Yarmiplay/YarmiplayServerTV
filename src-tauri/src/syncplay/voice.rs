@@ -101,7 +101,7 @@ pub struct VoiceRoomCount {
     pub users: usize,
 }
 const SEQ_WINDOW: u32 = 64;
-const AUDIO: u8 = 1;
+pub(super) const AUDIO: u8 = 1;
 const KEEPALIVE: u8 = 2;
 const BYE: u8 = 3;
 
@@ -724,7 +724,7 @@ fn header(
     h
 }
 
-fn seal(
+pub(super) fn seal(
     key: &[u8; 32],
     ty: u8,
     token: u64,
@@ -814,6 +814,51 @@ pub fn encode_frame(packet: &[u8]) -> Option<Vec<u8>> {
     out.extend_from_slice(&(packet.len() as u16).to_be_bytes());
     out.extend_from_slice(packet);
     Some(out)
+}
+
+/// Audio older than this is not worth sending: the listener's jitter buffer
+/// has moved on, and it would only delay the Syncplay lines behind it.
+pub const QUEUED_MAX_AGE: std::time::Duration = std::time::Duration::from_millis(300);
+/// Frames held for one connection at most (eight talkers for about 300 ms).
+pub const QUEUED_MAX: usize = 128;
+
+/// Voice waiting to be written to one client. A connection that can't keep up
+/// loses its oldest audio instead of growing a backlog that the room's
+/// pause, play and seek messages would have to wait behind.
+#[derive(Default)]
+pub struct VoiceQueue {
+    frames: VecDeque<(std::time::Instant, Vec<u8>)>,
+    dropped: u64,
+}
+
+impl VoiceQueue {
+    pub fn push(&mut self, queued: std::time::Instant, packet: Vec<u8>) {
+        self.frames.push_back((queued, packet));
+        while self.frames.len() > QUEUED_MAX {
+            self.frames.pop_front();
+            self.dropped += 1;
+        }
+    }
+
+    /// The oldest frame still fresh at `now`. Stale ones are dropped.
+    pub fn pop(&mut self, now: std::time::Instant) -> Option<Vec<u8>> {
+        while let Some((queued, packet)) = self.frames.pop_front() {
+            if now.saturating_duration_since(queued) <= QUEUED_MAX_AGE {
+                return Some(packet);
+            }
+            self.dropped += 1;
+        }
+        None
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
+    /// Frames dropped since the last call.
+    pub fn take_dropped(&mut self) -> u64 {
+        std::mem::take(&mut self.dropped)
+    }
 }
 
 /// What the next record on a Syncplay connection is.
@@ -931,9 +976,25 @@ pub async fn serve_ws(socket: axum::extract::ws::WebSocket, hub: Arc<VoiceHub>, 
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use tokio::io::BufReader;
     use tokio::sync::mpsc::unbounded_channel;
+
+    #[test]
+    fn a_slow_client_loses_old_voice_instead_of_growing_a_backlog() {
+        let mut q = VoiceQueue::default();
+        let t = Instant::now();
+        for i in 0..QUEUED_MAX + 40 {
+            q.push(t, vec![i as u8]);
+        }
+        assert_eq!(q.take_dropped(), 40);
+        assert!(q
+            .pop(t + QUEUED_MAX_AGE + Duration::from_millis(1))
+            .is_none());
+        assert_eq!(q.take_dropped(), QUEUED_MAX as u64);
+        q.push(t, b"fresh".to_vec());
+        assert_eq!(q.pop(t).as_deref(), Some(&b"fresh"[..]));
+    }
 
     fn mux_receiver(hub: &VoiceHub, conn: ConnId) -> tokio::sync::mpsc::UnboundedReceiver<Vec<u8>> {
         let (tx, rx) = unbounded_channel();
