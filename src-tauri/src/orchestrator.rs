@@ -54,6 +54,7 @@ fn voice_policy(s: &crate::config::SyncplaySettings) -> crate::syncplay::voice::
         diagnostics: s.voice_diagnostics,
         fec: s.voice_fec,
         dtx: s.voice_dtx,
+        discord_app_id: s.discord_app_id.clone(),
     }
 }
 

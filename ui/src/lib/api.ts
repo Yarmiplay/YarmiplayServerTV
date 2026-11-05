@@ -95,6 +95,8 @@ export interface SyncplaySettings {
   /** Exactly like the official server: no YarmiplayTV extensions, relay or Jellyfin sharing. */
   vanillaMode: boolean;
   fileRelay: boolean;
+  /** Discord Application ID for room voice chat lobbies. */
+  discordAppId: string;
   /** Relay voice in Syncplay rooms on the Syncplay port (no extra port). On by default, off in vanilla mode. */
   voice: boolean;
   /** Seats allowed in one room. */

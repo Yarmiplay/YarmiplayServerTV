@@ -12,6 +12,7 @@
     voiceMaxBitrate: snap.settings.syncplay.voiceMaxBitrate,
     voiceMaxPacketBytes: snap.settings.syncplay.voiceMaxPacketBytes,
     voiceActivityPerSec: snap.settings.syncplay.voiceActivityPerSec,
+    discordAppId: snap.settings.syncplay.discordAppId || "1210325027023753307",
   }));
 
   const pill = $derived(voicePill(snap));
@@ -53,6 +54,14 @@
             Starting
           {/if}
         </strong>
+      </li>
+      <li>
+        <span>Provider</span>
+        <strong>Discord Application Lobbies</strong>
+      </li>
+      <li>
+        <span>Application ID</span>
+        <strong class="selectable">{snap.settings.syncplay.discordAppId || "1210325027023753307"}</strong>
       </li>
       <li>
         <span>Syncplay port</span>
@@ -124,6 +133,11 @@
     <p class="sub">Saved limits apply to the running relay immediately. No restart.</p>
     <div class="fields">
       <label class="field">
+        Discord Application ID
+        <input type="text" bind:value={limits.draft.discordAppId} placeholder="1210325027023753307" />
+        <span class="hint">Discord Developer Application ID for room voice chat. Default: 1210325027023753307.</span>
+      </label>
+      <label class="field">
         Seats per room
         <input type="number" min="1" max="32" bind:value={limits.draft.voiceMaxParticipants} />
         <span class="hint">1–32. A room that is already over the new cap keeps its current people; the next join is refused.</span>
@@ -152,13 +166,13 @@
 
   <section class="card">
     <h2>Fixed by the protocol</h2>
-    <p class="sub">These are not settings. Version 1 of the voice protocol requires them.</p>
+    <p class="sub">These are not settings. Version 2 of the voice protocol uses Discord Application Lobbies.</p>
     <ul class="status">
-      <li><span>Codec</span><strong>Opus</strong></li>
-      <li><span>Clock</span><strong>48000 Hz</strong></li>
-      <li><span>Channels</span><strong>1 (mono)</strong></li>
-      <li><span>Frame</span><strong>20 ms</strong></li>
-      <li><span>Transport</span><strong>yv1 on the Syncplay connection</strong></li>
+      <li><span>Service</span><strong>Discord Voice Chat</strong></li>
+      <li><span>Privacy</span><strong>100% Private (Application Lobbies)</strong></li>
+      <li><span>Audio</span><strong>Krisp NS, Echo Cancellation, AGC</strong></li>
+      <li><span>Codec</span><strong>Opus (48000 Hz mono)</strong></li>
+      <li><span>Transport</span><strong>Discord Voice Edge Network</strong></li>
     </ul>
   </section>
 </div>

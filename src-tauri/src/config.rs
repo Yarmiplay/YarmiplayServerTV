@@ -130,6 +130,8 @@ pub struct SyncplaySettings {
     pub vanilla_mode: bool,
     /// Let YarmiplayTV clients stream each other's files through this server.
     pub file_relay: bool,
+    /// Discord Application ID for room voice chat lobbies.
+    pub discord_app_id: String,
     /// Relay voice between people in a Syncplay room, on the Syncplay port
     /// itself (no extra port). On by default; off in vanilla mode.
     /// `--voice` / `--no-voice` and `YARMIPLAYSERVERTV_VOICE` override this at startup.
@@ -185,6 +187,7 @@ impl Default for SyncplaySettings {
             upnp: false,
             vanilla_mode: false,
             file_relay: true,
+            discord_app_id: crate::syncplay::voice::DEFAULT_DISCORD_APP_ID.to_string(),
             voice: true,
             voice_max_participants: crate::syncplay::voice::MAX_SEATS as u32,
             voice_max_bitrate: crate::syncplay::voice::DEFAULT_BITRATE,

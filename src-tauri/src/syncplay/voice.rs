@@ -45,9 +45,10 @@ pub const BITRATE_MIN: u32 = 6_000;
 pub const BITRATE_MAX: u32 = 128_000;
 pub const ACTIVITY_MIN: u32 = 1;
 pub const ACTIVITY_MAX: u32 = 30;
+pub const DEFAULT_DISCORD_APP_ID: &str = "1210325027023753307";
 
 /// Limits the Voice page can change. The relay reads them on every join and frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoicePolicy {
     pub max_participants: usize,
     pub max_bitrate: u32,
@@ -56,6 +57,7 @@ pub struct VoicePolicy {
     pub diagnostics: bool,
     pub fec: bool,
     pub dtx: bool,
+    pub discord_app_id: String,
 }
 
 impl Default for VoicePolicy {
@@ -68,6 +70,7 @@ impl Default for VoicePolicy {
             diagnostics: true,
             fec: true,
             dtx: true,
+            discord_app_id: DEFAULT_DISCORD_APP_ID.to_string(),
         }
     }
 }
@@ -88,8 +91,14 @@ impl VoicePolicy {
         }
     }
 
-    fn advertised(self) -> (usize, u32, bool, bool) {
-        (self.max_participants, self.max_bitrate, self.fec, self.dtx)
+    fn advertised(&self) -> (usize, u32, bool, bool, &str) {
+        (
+            self.max_participants,
+            self.max_bitrate,
+            self.fec,
+            self.dtx,
+            &self.discord_app_id,
+        )
     }
 }
 
@@ -135,11 +144,18 @@ struct Seat {
     route: Route,
 }
 
+#[derive(Clone, Debug)]
+pub struct DiscordLobby {
+    pub lobby_id: String,
+    pub lobby_secret: String,
+}
+
 struct Inner {
     listening: bool,
     policy: VoicePolicy,
     seats: HashMap<ConnId, Seat>,
     by_token: HashMap<u64, ConnId>,
+    lobbies: HashMap<String, DiscordLobby>,
     next_gen: u64,
 }
 
@@ -161,6 +177,9 @@ pub struct SeatSecrets {
     pub key_b64: String,
     pub replaced: bool,
     pub port: u16,
+    pub app_id: String,
+    pub lobby_id: String,
+    pub lobby_secret: String,
 }
 
 #[derive(Debug)]
@@ -199,6 +218,7 @@ impl VoiceHub {
                 policy,
                 seats: HashMap::new(),
                 by_token: HashMap::new(),
+                lobbies: HashMap::new(),
                 next_gen: 1,
             }),
         })
@@ -218,10 +238,12 @@ impl VoiceHub {
     }
 
     pub fn descriptor(&self) -> Value {
-        let policy = self.inner.lock().policy;
+        let policy = self.inner.lock().policy.clone();
         json!({
             "version": VERSION,
             "enabled": true,
+            "provider": "discord-lobby",
+            "appId": policy.discord_app_id,
             "codec": "opus",
             "clockRate": 48000,
             "channels": 1,
@@ -292,6 +314,20 @@ impl VoiceHub {
         }
         let key: [u8; 32] = rng.gen();
         g.by_token.insert(token, conn);
+        let lobby = g
+            .lobbies
+            .entry(room.to_string())
+            .or_insert_with(|| {
+                let mut rng = rand::thread_rng();
+                let num: u64 = rng.gen();
+                let secret: [u8; 16] = rng.gen();
+                DiscordLobby {
+                    lobby_id: format!("{num}"),
+                    lobby_secret: hex::encode(secret),
+                }
+            })
+            .clone();
+        let app_id = g.policy.discord_app_id.clone();
         g.seats.insert(
             conn,
             Seat {
@@ -316,6 +352,9 @@ impl VoiceHub {
             key_b64: B64.encode(key),
             replaced,
             port: self.syncplay_port,
+            app_id,
+            lobby_id: lobby.lobby_id,
+            lobby_secret: lobby.lobby_secret,
         })
     }
 
@@ -343,6 +382,9 @@ impl VoiceHub {
             return false;
         };
         g.by_token.remove(&seat.token);
+        if !g.seats.values().any(|s| s.room == seat.room) {
+            g.lobbies.remove(&seat.room);
+        }
         true
     }
 
@@ -352,6 +394,7 @@ impl VoiceHub {
         ids.sort_unstable();
         g.seats.clear();
         g.by_token.clear();
+        g.lobbies.clear();
         ids
     }
 
@@ -795,6 +838,10 @@ impl SeatSecrets {
             "clockRate": 48000,
             "channels": 1,
             "ptime": 20,
+            "provider": "discord-lobby",
+            "appId": self.app_id,
+            "lobbyId": self.lobby_id,
+            "lobbySecret": self.lobby_secret,
         })
     }
 }
@@ -1118,12 +1165,15 @@ mod tests {
             diagnostics: false,
             fec: false,
             dtx: false,
+            discord_app_id: DEFAULT_DISCORD_APP_ID.to_string(),
         }));
         let described = hub.descriptor();
         assert_eq!(described["maxParticipants"], 1);
         assert_eq!(described["maxBitrate"], 16_000);
         assert_eq!(described["fec"], false);
         assert_eq!(described["dtx"], false);
+        assert_eq!(described["appId"], DEFAULT_DISCORD_APP_ID);
+        assert_eq!(described["provider"], "discord-lobby");
         let _a = joined(&hub, 1, "movie", "alice");
         assert!(matches!(hub.join(2, "movie", "bob", VERSION), Join::Full));
         assert!(matches!(
@@ -1144,6 +1194,7 @@ mod tests {
             diagnostics: true,
             fec: false,
             dtx: false,
+            discord_app_id: DEFAULT_DISCORD_APP_ID.to_string(),
         }));
     }
 
@@ -1306,6 +1357,9 @@ mod tests {
             key_b64: a_joined["key"].as_str().unwrap().into(),
             replaced: false,
             port: server.port,
+            app_id: a_joined["appId"].as_str().unwrap_or("").into(),
+            lobby_id: a_joined["lobbyId"].as_str().unwrap_or("").into(),
+            lobby_secret: a_joined["lobbySecret"].as_str().unwrap_or("").into(),
         };
         let b = SeatSecrets {
             participant_id: b_joined["participantId"].as_str().unwrap().into(),
@@ -1315,6 +1369,9 @@ mod tests {
             key_b64: b_joined["key"].as_str().unwrap().into(),
             replaced: false,
             port: server.port,
+            app_id: b_joined["appId"].as_str().unwrap_or("").into(),
+            lobby_id: b_joined["lobbyId"].as_str().unwrap_or("").into(),
+            lobby_secret: b_joined["lobbySecret"].as_str().unwrap_or("").into(),
         };
         let b_key = key_of(&b);
         let frame = encode_frame(&packet(&a, AUDIO, 2, b"mux-\nopus")).unwrap();
@@ -1436,6 +1493,9 @@ mod tests {
             key_b64: a_joined["key"].as_str().unwrap().into(),
             replaced: false,
             port: a_joined["port"].as_u64().unwrap() as u16,
+            app_id: a_joined["appId"].as_str().unwrap_or("").into(),
+            lobby_id: a_joined["lobbyId"].as_str().unwrap_or("").into(),
+            lobby_secret: a_joined["lobbySecret"].as_str().unwrap_or("").into(),
         };
         assert_eq!(a.port, server.port);
         assert!(a_joined.get("udpPort").is_none());
@@ -1447,6 +1507,9 @@ mod tests {
             key_b64: b_joined["key"].as_str().unwrap().into(),
             replaced: false,
             port: b_joined["port"].as_u64().unwrap() as u16,
+            app_id: b_joined["appId"].as_str().unwrap_or("").into(),
+            lobby_id: b_joined["lobbyId"].as_str().unwrap_or("").into(),
+            lobby_secret: b_joined["lobbySecret"].as_str().unwrap_or("").into(),
         };
         let b_key = key_of(&b);
 
