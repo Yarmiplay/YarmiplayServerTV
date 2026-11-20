@@ -19,10 +19,12 @@ use futures_util::future::BoxFuture;
 use parking_lot::Mutex;
 use serde_json::{json, Map, Value};
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
@@ -31,12 +33,19 @@ use tracing::{debug, error, info, warn};
 /// One write that makes no progress for this long means the client stopped
 /// reading; its connection is closed.
 pub(super) const WRITE_STALL: Duration = Duration::from_secs(15);
-/// Kernel send buffer of a Syncplay connection. Linux doubles the value passed
-/// to `SO_SNDBUF` and reports that, so this is about 16 KB of bytes in flight.
+/// Kernel send buffer of a Syncplay connection: about 16 KB of bytes in flight.
 /// Left to autotuning the buffer grows to megabytes, and a pause then waits
-/// behind all of that audio. 16 KB still covers eight voices at a 300 ms
-/// round trip; anything the link cannot carry is dropped instead.
+/// behind all of that audio. 16 KB carries four 128 kbps voices (eight at
+/// 64 kbps) at a 250 ms round trip; anything the link cannot carry is dropped
+/// by the voice queue instead of delaying the next pause.
+///
+/// Linux doubles the value passed to `SO_SNDBUF`; Windows and macOS use it as
+/// given, so they are asked for the whole 16 KB. They used to get half, which
+/// throttled voice on a Windows host and made it arrive in bursts.
+#[cfg(target_os = "linux")]
 const SYNCPLAY_SEND_BUFFER: usize = 8 * 1024;
+#[cfg(not(target_os = "linux"))]
+const SYNCPLAY_SEND_BUFFER: usize = 16 * 1024;
 /// A YarmiplayTV client must answer a device challenge within this.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a device may wait for the host to approve it.
@@ -557,14 +566,9 @@ async fn sniff_http(stream: TcpStream, peer: SocketAddr, shared: &Shared) -> Opt
             // gets the same small send buffer. Other HTTP (the file relay, Jellyfin,
             // Plex) keeps the large buffer a video stream needs.
             let mut head = [0u8; 160];
-            const WS: &[u8] = b"/yarmiplay/ws";
             if let Ok(n) = stream.peek(&mut head).await {
-                if head[..n].windows(WS.len()).any(|w| w == WS) {
-                    if let Err(e) =
-                        socket2::SockRef::from(&stream).set_send_buffer_size(SYNCPLAY_SEND_BUFFER)
-                    {
-                        debug!(%peer, error = %e, "could not size the Syncplay WebSocket send buffer");
-                    }
+                if is_syncplay_ws(&head[..n]) {
+                    cap_syncplay_send_buffer(&stream, peer);
                 }
             }
             let meta = ConnMeta { peer, tls: false };
@@ -577,10 +581,7 @@ async fn sniff_http(stream: TcpStream, peer: SocketAddr, shared: &Shared) -> Opt
             config.alpn_protocols = vec![b"http/1.1".to_vec()];
             let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
             match tokio::time::timeout(Duration::from_secs(15), acceptor.accept(stream)).await {
-                Ok(Ok(tls)) => {
-                    let meta = ConnMeta { peer, tls: true };
-                    let _ = shared.http.send((Box::new(tls), meta)).await;
-                }
+                Ok(Ok(tls)) => hand_https(tls, peer, shared).await,
                 Ok(Err(e)) => debug!(%peer, error = %e, "HTTPS handshake failed"),
                 Err(_) => debug!(%peer, "HTTPS handshake timed out"),
             }
@@ -589,13 +590,106 @@ async fn sniff_http(stream: TcpStream, peer: SocketAddr, shared: &Shared) -> Opt
     }
 }
 
+fn cap_syncplay_send_buffer(stream: &TcpStream, peer: SocketAddr) {
+    if let Err(e) = socket2::SockRef::from(stream).set_send_buffer_size(SYNCPLAY_SEND_BUFFER) {
+        debug!(%peer, error = %e, "could not size the Syncplay send buffer");
+    }
+}
+
+fn is_syncplay_ws(head: &[u8]) -> bool {
+    const WS: &[u8] = b"/yarmiplay/ws";
+    head.windows(WS.len()).any(|w| w == WS)
+}
+
+/// HTTPS on this port hides the request until the handshake. Read the start
+/// of it, cap the send buffer when it is the Syncplay WebSocket (a browser's
+/// voice would otherwise queue behind megabytes of autotuned buffer), and put
+/// those bytes back so axum still sees the whole request. Jellyfin and the
+/// file relay keep the large buffer a video stream needs.
+async fn hand_https(
+    mut tls: tokio_rustls::server::TlsStream<TcpStream>,
+    peer: SocketAddr,
+    shared: &Shared,
+) {
+    let mut head = [0u8; 160];
+    let n = match tokio::time::timeout(Duration::from_secs(15), tls.read(&mut head)).await {
+        Ok(Ok(n)) if n > 0 => n,
+        Ok(Ok(_)) => {
+            debug!(%peer, "HTTPS closed before a request");
+            return;
+        }
+        Ok(Err(e)) => {
+            debug!(%peer, error = %e, "HTTPS request read failed");
+            return;
+        }
+        Err(_) => {
+            debug!(%peer, "HTTPS request timed out");
+            return;
+        }
+    };
+    if is_syncplay_ws(&head[..n]) {
+        cap_syncplay_send_buffer(tls.get_ref().0, peer);
+    }
+    let io = Prefixed {
+        prefix: head[..n].to_vec(),
+        pos: 0,
+        inner: tls,
+    };
+    let meta = ConnMeta { peer, tls: true };
+    let _ = shared.http.send((Box::new(io), meta)).await;
+}
+
+/// Bytes already taken off a stream, played back before whatever follows.
+struct Prefixed<S> {
+    prefix: Vec<u8>,
+    pos: usize,
+    inner: S,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Prefixed<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if this.pos < this.prefix.len() {
+            let n = (this.prefix.len() - this.pos).min(buf.remaining());
+            buf.put_slice(&this.prefix[this.pos..this.pos + n]);
+            this.pos += n;
+            if this.pos == this.prefix.len() {
+                this.prefix.clear();
+                this.pos = 0;
+            }
+            return Poll::Ready(Ok(()));
+        }
+        Pin::new(&mut this.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Prefixed<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
 async fn serve_conn(stream: TcpStream, peer: SocketAddr, shared: Arc<Shared>) {
     let Some(stream) = sniff_http(stream, peer, &shared).await else {
         return;
     };
-    if let Err(e) = socket2::SockRef::from(&stream).set_send_buffer_size(SYNCPLAY_SEND_BUFFER) {
-        debug!(%peer, error = %e, "could not size the Syncplay send buffer");
-    }
+    cap_syncplay_send_buffer(&stream, peer);
     let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     debug!(%peer, id, "Syncplay connection");
     let mut reader = BufReader::new(stream);
