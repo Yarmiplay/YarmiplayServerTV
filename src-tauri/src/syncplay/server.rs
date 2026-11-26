@@ -73,6 +73,8 @@ pub struct Extensions {
     pub devices: Option<Arc<DeviceStore>>,
     /// Where the MyAnimeList passthrough goes (tests point it elsewhere).
     pub mal_upstream: Option<mux::MalUpstream>,
+    /// Where the online subtitles passthrough goes (tests point it elsewhere).
+    pub subs_upstream: Option<mux::SubsUpstream>,
     /// Voice relay, filled in once its sockets are bound. Shared with the HTTP mux.
     pub voice: Arc<Mutex<Option<Arc<VoiceHub>>>>,
 }

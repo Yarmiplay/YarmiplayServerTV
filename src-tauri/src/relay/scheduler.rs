@@ -7,31 +7,40 @@ use std::time::{Duration, Instant};
 
 /// Chunks kept ahead of a streaming reader (64 MiB).
 pub const READAHEAD_CHUNKS: u64 = 16;
-/// Longest run of chunks in one upload request.
+/// Longest run of chunks in one upload request (32 MiB).
 pub const RUN_CHUNKS: u64 = 8;
+/// Shorter upload runs for background playlist prefetching (8 MiB), so seeders
+/// stay responsive when someone seeks or starts a new video.
+pub const PREFETCH_RUN_CHUNKS: u64 = 2;
 /// Upload requests a seeder works on at once.
 pub const MAX_INFLIGHT_PER_SEEDER: usize = 2;
+/// Background prefetch uploads a seeder works on at once.
+pub const MAX_PREFETCH_INFLIGHT_PER_SEEDER: usize = 1;
 /// An upload with no new bytes for this long goes to someone else.
 pub const STALL: Duration = Duration::from_secs(10);
 /// How long a seeder that stalled or failed is skipped for that file.
 pub const PENALTY: Duration = Duration::from_secs(30);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mode {
     /// Playing: the next 64 MiB from the reader's position, first.
-    Stream,
+    Stream = 0,
     /// Copying the whole file: everything from the position on, after streams.
-    Download,
+    Download = 1,
+    /// Pre-downloading upcoming playlist entries at the lowest priority.
+    Prefetch = 2,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct Reader {
     pub chunk: u64,
     pub mode: Mode,
+    /// Playlist distance hint for [`Mode::Prefetch`] (`1` = next entry, `2` = after that).
+    pub order: u32,
 }
 
 /// Wanted chunk indexes, most urgent first: every stream window (nearest
-/// chunk first), then download ranges.
+/// chunk first), then download ranges, then background prefetch ranges.
 pub fn wanted(readers: &[Reader], chunks: u64) -> Vec<u64> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
@@ -57,12 +66,30 @@ pub fn wanted(readers: &[Reader], chunks: u64) -> Vec<u64> {
             }
         }
     }
+    let mut prefetches: Vec<&Reader> = readers
+        .iter()
+        .filter(|r| r.mode == Mode::Prefetch)
+        .collect();
+    prefetches.sort_by_key(|r| (r.order, r.chunk));
+    for r in prefetches {
+        for i in r.chunk..chunks {
+            if seen.insert(i) {
+                out.push(i);
+            }
+        }
+    }
     out
 }
 
 /// Split wanted chunks (in priority order) into runs of consecutive indexes,
 /// at most [`RUN_CHUNKS`] long, keeping the order of each run's first chunk.
 pub fn runs(missing: &[u64]) -> Vec<(u64, u64)> {
+    runs_capped(missing, RUN_CHUNKS)
+}
+
+/// Like [`runs`], capped at `max_run` chunks per upload request.
+pub fn runs_capped(missing: &[u64], max_run: u64) -> Vec<(u64, u64)> {
+    let cap = max_run.max(1);
     let mut out: Vec<(u64, u64)> = Vec::new();
     let mut taken = BTreeSet::new();
     let set: BTreeSet<u64> = missing.iter().copied().collect();
@@ -71,10 +98,7 @@ pub fn runs(missing: &[u64]) -> Vec<(u64, u64)> {
             continue;
         }
         let mut count = 0;
-        while count < RUN_CHUNKS
-            && set.contains(&(start + count))
-            && !taken.contains(&(start + count))
-        {
+        while count < cap && set.contains(&(start + count)) && !taken.contains(&(start + count)) {
             taken.insert(start + count);
             count += 1;
         }
@@ -90,12 +114,23 @@ pub fn pick_seeder(
     penalties: &HashMap<ConnId, Instant>,
     now: Instant,
 ) -> Option<ConnId> {
+    pick_seeder_capped(seeders, load, penalties, now, MAX_INFLIGHT_PER_SEEDER)
+}
+
+/// Like [`pick_seeder`], with a custom per-seeder concurrency cap.
+pub fn pick_seeder_capped(
+    seeders: &[ConnId],
+    load: &HashMap<ConnId, usize>,
+    penalties: &HashMap<ConnId, Instant>,
+    now: Instant,
+    max_inflight: usize,
+) -> Option<ConnId> {
     seeders
         .iter()
         .copied()
         .filter(|s| penalties.get(s).is_none_or(|until| *until <= now))
         .map(|s| (load.get(&s).copied().unwrap_or(0), s))
-        .filter(|(l, _)| *l < MAX_INFLIGHT_PER_SEEDER)
+        .filter(|(l, _)| *l < max_inflight)
         .min()
         .map(|(_, s)| s)
 }
@@ -136,21 +171,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn streams_come_before_downloads() {
+    fn streams_come_before_downloads_and_prefetches() {
         let readers = [
+            Reader {
+                chunk: 50,
+                mode: Mode::Prefetch,
+                order: 1,
+            },
             Reader {
                 chunk: 100,
                 mode: Mode::Download,
+                order: 0,
             },
             Reader {
                 chunk: 2,
                 mode: Mode::Stream,
+                order: 0,
             },
         ];
         let w = wanted(&readers, 105);
         assert_eq!(&w[..3], &[2, 3, 4]);
         assert_eq!(w[15], 17);
-        assert_eq!(&w[16..], &[100, 101, 102, 103, 104]);
+        assert_eq!(&w[16..21], &[100, 101, 102, 103, 104]);
+        assert_eq!(w[21], 50);
     }
 
     #[test]
@@ -159,6 +202,7 @@ mod tests {
             &[Reader {
                 chunk: 3,
                 mode: Mode::Stream,
+                order: 0,
             }],
             5,
         );

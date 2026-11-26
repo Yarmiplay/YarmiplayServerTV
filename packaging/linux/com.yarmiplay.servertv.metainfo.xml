@@ -77,6 +77,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="2.1.5" date="2026-11-26">
+      <description>
+        <p>Priority-aware relay scheduling for background playlist pre-downloading (active streams always preempt background prefetching and stay protected from cache eviction), plus a rate-limited online subtitle passthrough (/yarmiplay/subs/*) for browser clients. Pairs with YarmiplayTV 3.3.0.</p>
+      </description>
+    </release>
     <release version="2.1.4" date="2026-11-20">
       <description>
         <p>Voice reaches Windows hosts' listeners and browsers on the HTTPS port without bursts: the Syncplay send buffer is the intended 16 KB on every system, and the browser's /yarmiplay/ws on HTTPS gets the same cap.</p>

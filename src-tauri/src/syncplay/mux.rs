@@ -168,12 +168,70 @@ impl MalPass {
     }
 }
 
+/// Where the online subtitles passthrough sends requests: OpenSubtitles.com
+/// and Subdl, or stand-ins in tests.
+#[derive(Debug, Clone)]
+pub struct SubsUpstream {
+    pub opensubtitles_base: String,
+    pub subdl_api_base: String,
+    pub subdl_dl_base: String,
+    /// When set (tests only), allow `/yarmiplay/subs/opensubtitles-file?url=...`
+    /// to fetch from this host prefix in addition to `*.opensubtitles.com`.
+    pub opensubtitles_dl_prefix: Option<String>,
+}
+
+impl Default for SubsUpstream {
+    fn default() -> Self {
+        Self {
+            opensubtitles_base: "https://api.opensubtitles.com/api/v1".into(),
+            subdl_api_base: "https://api.subdl.com/api/v1".into(),
+            subdl_dl_base: "https://dl.subdl.com".into(),
+            opensubtitles_dl_prefix: None,
+        }
+    }
+}
+
+/// Requests per minute from one address to the online subtitles passthrough.
+const SUBS_PER_MINUTE: usize = 40;
+/// Upper bound on a subtitles passthrough request or answer.
+const SUBS_BODY_LIMIT: usize = 4 << 20;
+
+struct SubsPass {
+    upstream: SubsUpstream,
+    http: reqwest::Client,
+    hits: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
+}
+
+impl SubsPass {
+    fn allow(&self, ip: IpAddr) -> bool {
+        let now = Instant::now();
+        let mut hits = self.hits.lock();
+        hits.retain(|_, q| {
+            q.back()
+                .is_some_and(|t| now.duration_since(*t) < Duration::from_secs(60))
+        });
+        let q = hits.entry(ip).or_default();
+        while q
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60))
+        {
+            q.pop_front();
+        }
+        if q.len() >= SUBS_PER_MINUTE {
+            return false;
+        }
+        q.push_back(now);
+        true
+    }
+}
+
 #[derive(Clone)]
 struct Ctx {
     state: Weak<Mutex<ServerState>>,
     ext: Extensions,
     sessions: SessionSlot,
     mal: Arc<MalPass>,
+    subs: Arc<SubsPass>,
 }
 
 impl Ctx {
@@ -212,6 +270,8 @@ impl Ctx {
 struct Q {
     t: Option<String>,
     mode: Option<String>,
+    order: Option<u32>,
+    url: Option<String>,
 }
 
 fn reply(code: StatusCode, msg: &str) -> Response<Body> {
@@ -237,6 +297,11 @@ pub fn start_http(
         .unwrap_or_default();
     let mal = Arc::new(MalPass {
         upstream: ext.mal_upstream.clone().unwrap_or_default(),
+        http: http.clone(),
+        hits: Mutex::new(HashMap::new()),
+    });
+    let subs = Arc::new(SubsPass {
+        upstream: ext.subs_upstream.clone().unwrap_or_default(),
         http,
         hits: Mutex::new(HashMap::new()),
     });
@@ -245,6 +310,7 @@ pub fn start_http(
         ext,
         sessions,
         mal,
+        subs,
     };
     let app = Router::new()
         .route("/yarmiplay/info", get(info))
@@ -254,6 +320,16 @@ pub fn start_http(
         .route("/yarmiplay/upload/{id}", put(upload))
         .route("/yarmiplay/mal/token", post(mal_token))
         .route("/yarmiplay/mal/api/{*path}", any(mal_api))
+        .route(
+            "/yarmiplay/subs/opensubtitles/{*path}",
+            any(subs_opensubtitles),
+        )
+        .route(
+            "/yarmiplay/subs/opensubtitles-file",
+            get(subs_opensubtitles_file),
+        )
+        .route("/yarmiplay/subs/subdl/api/{*path}", get(subs_subdl_api))
+        .route("/yarmiplay/subs/subdl/dl/{*path}", get(subs_subdl_dl))
         .fallback(proxy)
         .layer(axum::middleware::from_fn_with_state(ctx.clone(), cors))
         .layer(axum::middleware::from_fn_with_state(ctx.clone(), guard))
@@ -286,7 +362,7 @@ async fn guard(State(ctx): State<Ctx>, req: Request, next: Next) -> Response<Bod
 
 const CORS_METHODS: &str = "GET, HEAD, PUT, POST, PATCH, DELETE, OPTIONS";
 const CORS_HEADERS: &str =
-    "Authorization, Range, Content-Type, X-Yarmiplay-Session, X-MAL-CLIENT-ID";
+    "Authorization, Range, Content-Type, X-Yarmiplay-Session, X-MAL-CLIENT-ID, Api-Key";
 const CORS_EXPOSE: &str = "Content-Range, Accept-Ranges, Content-Length, Content-Type";
 
 /// A page served from this very address (e.g. Jellyfin's web app through the
@@ -694,6 +770,216 @@ async fn mal_api(
     mal_reply(out.send().await).await
 }
 
+/// Online subtitles passthrough guard: allowed browser origin + per-IP rate limit.
+fn subs_check(ctx: &Ctx, headers: &HeaderMap, meta: &ConnMeta) -> Option<Response<Body>> {
+    let allowed = headers
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|o| ctx.origin_allowed(o));
+    if !allowed {
+        return Some(reply(
+            StatusCode::FORBIDDEN,
+            "Only the YarmiplayTV web app may use this",
+        ));
+    }
+    if !ctx.subs.allow(meta.peer.ip()) {
+        return Some(reply(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many subtitle requests; try again in a minute",
+        ));
+    }
+    None
+}
+
+async fn subs_reply(
+    provider: &str,
+    res: Result<reqwest::Response, reqwest::Error>,
+) -> Response<Body> {
+    let res = match res {
+        Ok(r) => r,
+        Err(e) => {
+            return reply(
+                StatusCode::BAD_GATEWAY,
+                &format!("{provider} didn't answer: {}", e.without_url()),
+            )
+        }
+    };
+    let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let content_type = res.headers().get(reqwest::header::CONTENT_TYPE).cloned();
+    let body = match res.bytes().await {
+        Ok(b) if b.len() <= SUBS_BODY_LIMIT => b,
+        Ok(_) => return reply(StatusCode::BAD_GATEWAY, "Subtitle answer is too large"),
+        Err(e) => {
+            return reply(
+                StatusCode::BAD_GATEWAY,
+                &format!("{provider} answer: {}", e.without_url()),
+            )
+        }
+    };
+    let mut r = Response::new(Body::from(body));
+    *r.status_mut() = status;
+    if let Some(ct) = content_type.and_then(|c| HeaderValue::from_bytes(c.as_bytes()).ok()) {
+        r.headers_mut().insert(header::CONTENT_TYPE, ct);
+    }
+    r
+}
+
+fn bad_sub_path(path: &str) -> bool {
+    path.is_empty()
+        || path
+            .split('/')
+            .any(|p| p == ".." || p.contains('\\') || p.contains('@'))
+}
+
+/// `ANY /yarmiplay/subs/opensubtitles/{*path}` -> OpenSubtitles REST API v1.
+async fn subs_opensubtitles(
+    State(ctx): State<Ctx>,
+    ConnectInfo(meta): ConnectInfo<ConnMeta>,
+    Path(path): Path<String>,
+    method: Method,
+    headers: HeaderMap,
+    req: Request,
+) -> Response<Body> {
+    if let Some(r) = subs_check(&ctx, &headers, &meta) {
+        return r;
+    }
+    if bad_sub_path(&path) {
+        return reply(StatusCode::BAD_REQUEST, "Bad path");
+    }
+    let query = req
+        .uri()
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
+    let url = format!(
+        "{}/{}{query}",
+        ctx.subs.upstream.opensubtitles_base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    );
+    let Ok(method) = reqwest::Method::from_bytes(method.as_str().as_bytes()) else {
+        return reply(StatusCode::METHOD_NOT_ALLOWED, "Bad method");
+    };
+    let body = match axum::body::to_bytes(req.into_body(), SUBS_BODY_LIMIT).await {
+        Ok(b) => b,
+        Err(_) => return reply(StatusCode::PAYLOAD_TOO_LARGE, "Request too large"),
+    };
+    let mut out = ctx
+        .subs
+        .http
+        .request(method, url)
+        .header(reqwest::header::USER_AGENT, "YarmiplayTV v3.3.0");
+    for name in [
+        header::AUTHORIZATION.as_str(),
+        "api-key",
+        header::CONTENT_TYPE.as_str(),
+        header::ACCEPT.as_str(),
+    ] {
+        if let Some(v) = headers.get(name) {
+            out = out.header(name, v.as_bytes());
+        }
+    }
+    if !body.is_empty() {
+        out = out.body(body);
+    }
+    subs_reply("OpenSubtitles", out.send().await).await
+}
+
+/// Allow only HTTPS links on OpenSubtitles' own domains (or test prefix) to prevent SSRF.
+fn allowed_opensubtitles_file_url(url: &str, test_prefix: Option<&str>) -> bool {
+    if let Some(prefix) = test_prefix {
+        if url.starts_with(prefix) {
+            return true;
+        }
+    }
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    host == "opensubtitles.com"
+        || host.ends_with(".opensubtitles.com")
+        || host == "opensubtitles.org"
+        || host.ends_with(".opensubtitles.org")
+}
+
+/// `GET /yarmiplay/subs/opensubtitles-file?url=...`: fetches a temporary subtitle
+/// download URL returned by OpenSubtitles `/download` without CORS errors.
+async fn subs_opensubtitles_file(
+    State(ctx): State<Ctx>,
+    ConnectInfo(meta): ConnectInfo<ConnMeta>,
+    Query(q): Query<Q>,
+    headers: HeaderMap,
+) -> Response<Body> {
+    if let Some(r) = subs_check(&ctx, &headers, &meta) {
+        return r;
+    }
+    let Some(url) = q.url.as_deref() else {
+        return reply(StatusCode::BAD_REQUEST, "Missing url");
+    };
+    if !allowed_opensubtitles_file_url(url, ctx.subs.upstream.opensubtitles_dl_prefix.as_deref()) {
+        return reply(StatusCode::FORBIDDEN, "URL is not an OpenSubtitles download");
+    }
+    let out = ctx
+        .subs
+        .http
+        .get(url)
+        .header(reqwest::header::USER_AGENT, "YarmiplayTV v3.3.0");
+    subs_reply("OpenSubtitles", out.send().await).await
+}
+
+/// `GET /yarmiplay/subs/subdl/api/{*path}` -> Subdl API v1.
+async fn subs_subdl_api(
+    State(ctx): State<Ctx>,
+    ConnectInfo(meta): ConnectInfo<ConnMeta>,
+    Path(path): Path<String>,
+    headers: HeaderMap,
+    req: Request,
+) -> Response<Body> {
+    if let Some(r) = subs_check(&ctx, &headers, &meta) {
+        return r;
+    }
+    if bad_sub_path(&path) {
+        return reply(StatusCode::BAD_REQUEST, "Bad path");
+    }
+    let query = req
+        .uri()
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
+    let url = format!(
+        "{}/{}{query}",
+        ctx.subs.upstream.subdl_api_base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    );
+    subs_reply("Subdl", ctx.subs.http.get(url).send().await).await
+}
+
+/// `GET /yarmiplay/subs/subdl/dl/{*path}` -> Subdl subtitle zip download.
+async fn subs_subdl_dl(
+    State(ctx): State<Ctx>,
+    ConnectInfo(meta): ConnectInfo<ConnMeta>,
+    Path(path): Path<String>,
+    headers: HeaderMap,
+) -> Response<Body> {
+    if let Some(r) = subs_check(&ctx, &headers, &meta) {
+        return r;
+    }
+    if bad_sub_path(&path) {
+        return reply(StatusCode::BAD_REQUEST, "Bad path");
+    }
+    let url = format!(
+        "{}/{}",
+        ctx.subs.upstream.subdl_dl_base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    );
+    subs_reply("Subdl", ctx.subs.http.get(url).send().await).await
+}
+
 async fn info(State(ctx): State<Ctx>) -> Response<Body> {
     let Some(state) = ctx.state.upgrade() else {
         return reply(StatusCode::NOT_FOUND, "Not found");
@@ -722,9 +1008,11 @@ async fn file(
     };
     let mode = match q.mode.as_deref() {
         Some("download") => Mode::Download,
+        Some("prefetch") => Mode::Prefetch,
         _ => Mode::Stream,
     };
-    crate::relay::http::get_file(relay, &room, &id, &method, &headers, mode).await
+    crate::relay::http::get_file(relay, &room, &id, &method, &headers, mode, q.order.unwrap_or(0))
+        .await
 }
 
 async fn upload(

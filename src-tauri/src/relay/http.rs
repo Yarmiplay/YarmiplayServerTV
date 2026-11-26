@@ -74,8 +74,10 @@ pub fn content_type(name: &str) -> &'static str {
 
 struct ReadStream {
     relay: Relay,
+    room: String,
     id: String,
     reader: u64,
+    mode: Mode,
     rx: watch::Receiver<u64>,
     offset: u64,
     end: u64,
@@ -94,6 +96,7 @@ pub async fn get_file(
     method: &Method,
     headers: &HeaderMap,
     mode: Mode,
+    order: u32,
 ) -> Response<Body> {
     let Some(info) = relay.file_info(room, id) else {
         return status(StatusCode::NOT_FOUND, "No such file in your room");
@@ -118,13 +121,15 @@ pub async fn get_file(
     let body = if *method == Method::HEAD || len == 0 {
         Body::empty()
     } else {
-        let Some((reader, rx)) = relay.open_reader(id, start, mode) else {
+        let Some((reader, rx)) = relay.open_reader(id, start, mode, order) else {
             return status(StatusCode::NOT_FOUND, "No such file in your room");
         };
         let rs = ReadStream {
             relay: relay.clone(),
+            room: room.to_string(),
             id: id.to_string(),
             reader,
+            mode,
             rx,
             offset: start,
             end: end + 1,
@@ -132,6 +137,11 @@ pub async fn get_file(
         let stream = futures_util::stream::unfold(rs, |mut rs| async move {
             if rs.offset >= rs.end {
                 return None;
+            }
+            // Yield outbound bandwidth whenever a viewer in this room is actively streaming
+            // and waiting for bytes ahead of playback.
+            if rs.mode == Mode::Prefetch && rs.relay.room_has_waiting_stream(&rs.room) {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
             }
             let max = (rs.end - rs.offset).min(PIECE);
             let relay = rs.relay.clone();

@@ -21,7 +21,7 @@ use scheduler::{Mode, RateMeter, Reader};
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -110,6 +110,7 @@ struct Upload {
     seeder: ConnId,
     first: u64,
     count: u64,
+    mode: Mode,
     last_progress: Instant,
 }
 
@@ -275,7 +276,7 @@ impl Relay {
         let mut st = self.inner.st.lock();
         st.limit = limit_bytes;
         st.budget = cache::budget(limit_bytes, st.cache_bytes, self.inner.store.free_space());
-        self.evict(&mut st, 0);
+        self.evict(&mut st, 0, Mode::Stream);
     }
 
     /// Drop every cached chunk nobody is reading right now.
@@ -474,26 +475,96 @@ impl Relay {
 
     /// Free space for `need` more bytes by dropping the least recently used
     /// finished chunks that nobody is reading and no reader is about to.
-    fn evict(&self, st: &mut State, need: u64) -> bool {
-        while st.cache_bytes + need > st.budget {
-            let victim =
-                st.files
+    /// Background [`Mode::Prefetch`] requests never evict chunks of files with
+    /// active stream/download readers and stay within half the cache budget.
+    fn evict(&self, st: &mut State, need: u64, caller_mode: Mode) -> bool {
+        if caller_mode == Mode::Prefetch && need > 0 {
+            let prefetch_cap = st.budget / 2;
+            if need > prefetch_cap {
+                return false;
+            }
+            let prefetch_bytes: u64 = st
+                .files
+                .values()
+                .filter(|f| {
+                    !f.readers
+                        .values()
+                        .any(|r| r.mode == Mode::Stream || r.mode == Mode::Download)
+                })
+                .map(|f| {
+                    f.chunks
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, c)| c.state != ChunkState::Missing)
+                        .map(|(i, _)| chunk_len(f.size, i as u64))
+                        .sum::<u64>()
+                })
+                .sum();
+            let mut over = (prefetch_bytes + need).saturating_sub(prefetch_cap);
+            while over > 0 {
+                let victim = st
+                    .files
                     .iter()
+                    .filter(|(_, f)| {
+                        !f.readers
+                            .values()
+                            .any(|r| r.mode == Mode::Stream || r.mode == Mode::Download)
+                    })
                     .flat_map(|(id, f)| {
                         f.chunks
                             .iter()
                             .enumerate()
-                            .filter(|(i, c)| {
-                                let i = *i as u64;
-                                let ahead = f.readers.values().any(|r| {
-                                    i >= r.chunk && i < r.chunk + scheduler::READAHEAD_CHUNKS
-                                });
-                                c.state == ChunkState::Done && c.pins == 0 && !ahead
-                            })
+                            .filter(|(_, c)| c.state == ChunkState::Done && c.pins == 0)
                             .map(move |(i, c)| (c.last_used, id.clone(), i))
                     })
                     .min();
-            let Some((_, id, i)) = victim else {
+                let Some((_, id, i)) = victim else {
+                    return false;
+                };
+                let f = st.files.get_mut(&id).unwrap();
+                let len = chunk_len(f.size, i as u64);
+                let c = &mut f.chunks[i];
+                c.state = ChunkState::Missing;
+                c.have = 0;
+                st.cache_bytes -= len;
+                over = over.saturating_sub(len);
+                self.inner.store.remove_chunk(&id, i as u64);
+            }
+        }
+        while st.cache_bytes + need > st.budget {
+            let victim = st
+                .files
+                .iter()
+                .filter(|(_, f)| {
+                    if caller_mode == Mode::Prefetch {
+                        !f.readers
+                            .values()
+                            .any(|r| r.mode == Mode::Stream || r.mode == Mode::Download)
+                    } else {
+                        true
+                    }
+                })
+                .flat_map(|(id, f)| {
+                    let urgent_file = f
+                        .readers
+                        .values()
+                        .any(|r| r.mode == Mode::Stream || r.mode == Mode::Download);
+                    f.chunks
+                        .iter()
+                        .enumerate()
+                        .filter(move |(i, c)| {
+                            let i = *i as u64;
+                            let ahead = f.readers.values().any(|r| {
+                                r.mode != Mode::Prefetch
+                                    && i >= r.chunk
+                                    && i < r.chunk + scheduler::READAHEAD_CHUNKS
+                            });
+                            c.state == ChunkState::Done && c.pins == 0 && !ahead
+                        })
+                        .map(move |(i, c)| (urgent_file, c.last_used, id.clone(), i))
+                })
+                .min();
+            let Some((_, _, id, i)) = victim else {
                 return false;
             };
             let f = st.files.get_mut(&id).unwrap();
@@ -553,13 +624,31 @@ impl Relay {
         for u in st.uploads.values() {
             *load.entry(u.seeder).or_default() += 1;
         }
-        let ids: Vec<String> = st
+        // Order files strictly by highest urgency reader: Stream > Download > Prefetch
+        // (and within Prefetch, soonest playlist order first).
+        let mut prioritized: Vec<(Mode, u32, String)> = st
             .files
             .iter()
             .filter(|(_, f)| !f.readers.is_empty() && !f.seeders.is_empty())
-            .map(|(id, _)| id.clone())
+            .filter_map(|(id, f)| {
+                let top_mode = f.readers.values().map(|r| r.mode).min()?;
+                let min_order = f
+                    .readers
+                    .values()
+                    .filter(|r| r.mode == top_mode)
+                    .map(|r| r.order)
+                    .min()
+                    .unwrap_or(0);
+                Some((top_mode, min_order, id.clone()))
+            })
             .collect();
-        for id in ids {
+        prioritized.sort();
+
+        // Seeders that still have pending Stream/Download demand on any file must not
+        // be handed background Prefetch work.
+        let mut urgent_seeders: HashSet<ConnId> = HashSet::new();
+
+        for (file_mode, _, id) in prioritized {
             let (runs, size) = {
                 let f = &st.files[&id];
                 let readers: Vec<Reader> = f.readers.values().copied().collect();
@@ -567,17 +656,82 @@ impl Relay {
                     .into_iter()
                     .filter(|i| f.chunks[*i as usize].state == ChunkState::Missing)
                     .collect();
-                (scheduler::runs(&missing), f.size)
+                let run_cap = if file_mode == Mode::Prefetch {
+                    scheduler::PREFETCH_RUN_CHUNKS
+                } else {
+                    scheduler::RUN_CHUNKS
+                };
+                (scheduler::runs_capped(&missing, run_cap), f.size)
             };
+            if runs.is_empty() {
+                continue;
+            }
+            if file_mode != Mode::Prefetch {
+                for &s in &st.files[&id].seeders {
+                    urgent_seeders.insert(s);
+                }
+            }
             for (first, mut count) in runs {
-                let seeder = {
+                let seeder = if file_mode == Mode::Prefetch {
                     let f = &st.files[&id];
-                    scheduler::pick_seeder(&f.seeders, &load, &f.penalties, now)
+                    let eligible: Vec<ConnId> = f
+                        .seeders
+                        .iter()
+                        .copied()
+                        .filter(|s| !urgent_seeders.contains(s))
+                        .collect();
+                    scheduler::pick_seeder_capped(
+                        &eligible,
+                        &load,
+                        &f.penalties,
+                        now,
+                        scheduler::MAX_PREFETCH_INFLIGHT_PER_SEEDER,
+                    )
+                } else {
+                    let picked = {
+                        let f = &st.files[&id];
+                        scheduler::pick_seeder(&f.seeders, &load, &f.penalties, now)
+                    };
+                    if picked.is_some() {
+                        picked
+                    } else {
+                        // Preempt a background Prefetch upload on one of this file's seeders
+                        // so active playback never waits behind playlist pre-downloading.
+                        let preempt = {
+                            let f = &st.files[&id];
+                            st.uploads
+                                .iter()
+                                .find(|(_, u)| {
+                                    u.mode == Mode::Prefetch
+                                        && f.seeders.contains(&u.seeder)
+                                        && f.penalties
+                                            .get(&u.seeder)
+                                            .is_none_or(|until| *until <= now)
+                                })
+                                .map(|(uid, u)| (uid.clone(), u.seeder))
+                        };
+                        if let Some((uid, seeder)) = preempt {
+                            debug!(
+                                upload = %uid,
+                                seeder,
+                                "preempting prefetch upload for active stream/download"
+                            );
+                            st.out
+                                .push(Msg::Conn(seeder, "uploadCancel", json!({ "id": uid })));
+                            self.fail_upload(st, &uid, false);
+                            if let Some(l) = load.get_mut(&seeder) {
+                                *l = l.saturating_sub(1);
+                            }
+                            Some(seeder)
+                        } else {
+                            None
+                        }
+                    }
                 };
                 let Some(seeder) = seeder else { break };
                 // Shorten the run until it fits the cache.
                 let run_len = |n: u64| (first..first + n).map(|i| chunk_len(size, i)).sum::<u64>();
-                while count > 0 && !self.evict(st, run_len(count)) {
+                while count > 0 && !self.evict(st, run_len(count), file_mode) {
                     count -= 1;
                 }
                 if count == 0 {
@@ -611,6 +765,7 @@ impl Relay {
                         seeder,
                         first,
                         count,
+                        mode: file_mode,
                         last_progress: now,
                     },
                 );
@@ -646,7 +801,7 @@ impl Relay {
             }
         }
         recount(st);
-        self.evict(st, 0);
+        self.evict(st, 0, Mode::Stream);
     }
 
     /// Deliver queued messages (outside the relay lock).
@@ -737,9 +892,31 @@ impl Relay {
             })
     }
 
+    /// True while any active streaming viewer in `room` is waiting on chunks
+    /// ahead of its read position (so background prefetch HTTP responses yield).
+    pub(crate) fn room_has_waiting_stream(&self, room: &str) -> bool {
+        let st = self.inner.st.lock();
+        st.files.values().any(|f| {
+            f.room == room
+                && f.readers.values().any(|r| {
+                    if r.mode != Mode::Stream {
+                        return false;
+                    }
+                    let end = (r.chunk + 2).min(f.chunks.len() as u64);
+                    (r.chunk..end).any(|i| f.chunks[i as usize].state != ChunkState::Done)
+                })
+        })
+    }
+
     /// Start reading `id` from byte `start`; the returned guard keeps the
     /// reader's demand registered until dropped.
-    fn open_reader(&self, id: &str, start: u64, mode: Mode) -> Option<(u64, watch::Receiver<u64>)> {
+    fn open_reader(
+        &self,
+        id: &str,
+        start: u64,
+        mode: Mode,
+        order: u32,
+    ) -> Option<(u64, watch::Receiver<u64>)> {
         let mut st = self.inner.st.lock();
         let reader = st.next_reader;
         st.next_reader += 1;
@@ -749,6 +926,7 @@ impl Relay {
             Reader {
                 chunk: start / CHUNK,
                 mode,
+                order,
             },
         );
         f.last_used = Instant::now();

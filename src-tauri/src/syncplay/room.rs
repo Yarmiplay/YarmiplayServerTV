@@ -677,12 +677,14 @@ impl ServerState {
         let on = !self.opts.vanilla_mode;
         json!({
             "fileRelay": on && self.opts.file_relay,
+            "prefetch": on && self.opts.file_relay,
             "jellyfin": on && self.jellyfin.is_some(),
             "plex": on && self.plex.is_some(),
             "https": on && self.tls.is_some(),
             "roomSettings": on,
             "websocket": on,
             "mal": on,
+            "subtitles": on,
             "voice": self.voice_offered(),
         })
     }

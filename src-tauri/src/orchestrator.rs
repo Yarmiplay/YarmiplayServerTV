@@ -464,6 +464,7 @@ impl App {
             plex_proxy: Some(self.plex_proxy.clone()),
             plex_invite: Some(plex_invite),
             mal_upstream: None,
+            subs_upstream: None,
             voice: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         }
     }

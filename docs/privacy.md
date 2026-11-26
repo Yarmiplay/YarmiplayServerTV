@@ -1,6 +1,6 @@
 # YarmiplayServerTV privacy policy
 
-Effective 24 October 2026. This policy covers the YarmiplayServerTV app for Windows, macOS and Linux, including
+Effective 26 November 2026. This policy covers the YarmiplayServerTV app for Windows, macOS and Linux, including
 the copy from the Microsoft Store.
 
 ## Summary
@@ -51,10 +51,16 @@ you switch it off (or use vanilla Syncplay mode). Each feature only talks to wha
   devices, not here. Voice uses the Syncplay port (default 8999). There is no extra voice port. When
   Syncplay's UPnP switch is on, the app asks the router to forward that Syncplay port only.
 - **File relay** (on by default, off in vanilla Syncplay mode): YarmiplayTV users in a room can play a video
-  file that someone else in the room has. The file's bytes travel from that person's device through your
+  file that someone else in the room has, and optionally pre-download upcoming playlist entries at lowest
+  priority while active playback always comes first. The file's bytes travel from that person's device through your
   computer to the people watching, and are cached on your computer's disk so each part is sent only once. The
   cache only holds what was relayed, is limited to the size you set, is deleted when the app starts, after a
   day without use, or when you click **Clear cache**, and is never sent anywhere else.
+- **Online subtitle passthrough for browser clients** (part of Yarmiplay extensions, off in vanilla Syncplay
+  mode): because OpenSubtitles.com and Subdl do not allow direct requests from web browsers, browser users who
+  explicitly enable **Online subtitles search** can send subtitle searches and downloads through `/yarmiplay/subs/*`
+  on your server. Requests are rate-limited, restricted to OpenSubtitles.com and Subdl hosts, and forwarded in
+  memory only; the server does not log or store subtitle queries, tokens, or downloaded subtitle files.
 - **Sharing Jellyfin with Syncplay users** (off until you switch it on): the Syncplay server tells YarmiplayTV
   users that your Jellyfin is available and approves their Quick Connect sign-ins for a hidden guest account
   that can watch but not change anything. Their Jellyfin traffic can reach Jellyfin through the Syncplay port.

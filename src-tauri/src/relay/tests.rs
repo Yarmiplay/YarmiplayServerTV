@@ -483,3 +483,130 @@ async fn concurrent_ranges_through_cors() {
     seeding.abort();
     server.stop();
 }
+
+#[tokio::test]
+async fn prefetch_mode_and_stream_preemption() {
+    let (server, _relay, _dir) = start().await;
+    let port = server.port;
+    let ep1 = Arc::new(content(CHUNK as usize + 512));
+    let ep2 = Arc::new(content(2 * CHUNK as usize + 1024));
+    let mut seeder = Client::connect(port, "seeder", true).await;
+    seeder
+        .send(json!({ "Yarmiplay": { "offer": { "files": [
+            { "name": "Ep1.mkv", "size": ep1.len(), "duration": 60.0, "quickHash": hash_of(&ep1) },
+            { "name": "Ep2.mkv", "size": ep2.len(), "duration": 60.0, "quickHash": hash_of(&ep2) }
+        ] } } }))
+        .await;
+    let files = seeder
+        .until(|m| {
+            m["Yarmiplay"]["files"]
+                .as_array()
+                .is_some_and(|a| a.len() == 2)
+        })
+        .await;
+    let list = files["Yarmiplay"]["files"].as_array().unwrap();
+    let id1 = list
+        .iter()
+        .find(|f| f["name"] == "Ep1.mkv")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let id2 = list
+        .iter()
+        .find(|f| f["name"] == "Ep2.mkv")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let leecher = Client::connect(port, "leecher", true).await;
+    let http = reqwest::Client::new();
+
+    // Check advertised capabilities include prefetch and subtitles.
+    let info: Value = http
+        .get(format!("http://127.0.0.1:{port}/yarmiplay/info"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(info["capabilities"]["prefetch"], true);
+    assert_eq!(info["capabilities"]["subtitles"], true);
+
+    // Start a prefetch read on Ep2; seeder gets an upload request for Ep2 (held open).
+    let prefetch_req = tokio::spawn({
+        let http = http.clone();
+        let token = leecher.token.clone();
+        let id2 = id2.clone();
+        async move {
+            http.get(format!(
+                "http://127.0.0.1:{port}/yarmiplay/files/{id2}?mode=prefetch&order=1"
+            ))
+            .bearer_auth(&token)
+            .header("Range", "bytes=0-1023")
+            .send()
+            .await
+        }
+    });
+    let first_upload = seeder.ext("upload").await;
+    assert_eq!(first_upload["file"], id2);
+    let prefetch_upload_id = first_upload["id"].as_str().unwrap().to_string();
+
+    // Now start an active stream read on Ep1; because seeder is busy with Ep2 prefetch
+    // (1/2 slots used, or if we saturate), Ep1 must immediately get scheduled first.
+    let stream_req = tokio::spawn({
+        let http = http.clone();
+        let token = leecher.token.clone();
+        let id1 = id1.clone();
+        async move {
+            let r = http
+                .get(format!(
+                    "http://127.0.0.1:{port}/yarmiplay/files/{id1}?mode=stream"
+                ))
+                .bearer_auth(&token)
+                .header("Range", "bytes=0-1023")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 206);
+            r.bytes().await.unwrap()
+        }
+    });
+    let stream_upload = seeder.ext("upload").await;
+    assert_eq!(stream_upload["file"], id1, "stream must be scheduled ahead of prefetch");
+
+    // Fulfill Ep1 upload and verify stream finishes cleanly.
+    let su_id = stream_upload["id"].as_str().unwrap().to_string();
+    let su_off = stream_upload["offset"].as_u64().unwrap() as usize;
+    let su_len = stream_upload["length"].as_u64().unwrap() as usize;
+    let put1 = http
+        .put(format!("http://127.0.0.1:{port}/yarmiplay/upload/{su_id}"))
+        .bearer_auth(&seeder.token)
+        .body(ep1[su_off..su_off + su_len].to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put1.status(), 204);
+    let got1 = stream_req.await.unwrap();
+    assert_eq!(&got1[..], &ep1[..1024]);
+
+    // Fulfill Ep2 prefetch upload and verify prefetch finishes too.
+    let pu_off = first_upload["offset"].as_u64().unwrap() as usize;
+    let pu_len = first_upload["length"].as_u64().unwrap() as usize;
+    let put2 = http
+        .put(format!(
+            "http://127.0.0.1:{port}/yarmiplay/upload/{prefetch_upload_id}"
+        ))
+        .bearer_auth(&seeder.token)
+        .body(ep2[pu_off..pu_off + pu_len].to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put2.status(), 204);
+    let got2 = prefetch_req.await.unwrap().unwrap().bytes().await.unwrap();
+    assert_eq!(&got2[..], &ep2[..1024]);
+
+    server.stop();
+}
